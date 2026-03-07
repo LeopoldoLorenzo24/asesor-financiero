@@ -1,52 +1,15 @@
 import { fetchHistory, fetchQuote } from "./marketData.js";
 import { technicalAnalysis, fundamentalAnalysis, compositeScore } from "./analysis.js";
+import { diversifiedSelection } from "./diversifier.js";
 import CEDEARS from "./cedears.js";
 
-// Simulated diversified selection for backtest
-function backtestPicks(scored) {
-  const CATS = {
-    growth: ["Technology", "Consumer Cyclical", "E-Commerce", "Crypto"],
-    defensive: ["Consumer Defensive", "Healthcare", "ETF - Dividendos", "ETF - Índices"],
-    hedge: ["Materials", "Energy"],
-  };
-  function cat(sector) {
-    for (const [c, secs] of Object.entries(CATS)) if (secs.includes(sector)) return c;
-    return "neutral";
-  }
-  const buckets = { growth: [], defensive: [], hedge: [], neutral: [] };
-  for (const r of scored) buckets[cat(r.sector)].push(r);
-  for (const c of Object.keys(buckets)) buckets[c].sort((a, b) => b.score - a.score);
+export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profile = "moderate", picksPerMonth = 4 } = {}) {
+  const topN = 40;
 
-  const picks = [];
-  const used = new Set();
-  function add(bucket, n) {
-    for (const item of bucket) {
-      if (picks.length >= 4 || n <= 0) break;
-      if (used.has(item.ticker)) continue;
-      used.add(item.ticker);
-      picks.push(item);
-      n--;
-    }
-  }
-  add(buckets.growth, 1);
-  add(buckets.defensive, 1);
-  add(buckets.hedge, 1);
-  // Fill rest from best overall
-  const rest = scored.filter(s => !used.has(s.ticker));
-  add(rest, 4 - picks.length);
-  return picks;
-}
-
-export async function runBacktest(months = 6) {
-  const BUDGET_ARS = 1000000;
-  const topN = 35;
-
-  // Pick a subset of liquid/common CEDEARs for speed
   const candidates = CEDEARS.filter(c =>
     !c.sector.startsWith("ETF") || c.ticker === "SPY" || c.ticker === "QQQ"
   ).slice(0, topN);
 
-  // We need history going back (months) + a buffer for indicators (~6 months)
   const totalMonths = months + 7;
 
   // Fetch all histories
@@ -64,64 +27,91 @@ export async function runBacktest(months = 6) {
     }
   }
 
-  // Cut history to the start date (months ago)
-  const cutoffDate = new Date();
-  cutoffDate.setMonth(cutoffDate.getMonth() - months);
-  const cutoffStr = cutoffDate.toISOString().slice(0, 10);
+  // Simulate month by month
+  const allHoldings = []; // accumulated positions
+  const meses = []; // month-by-month breakdown
+  const now = new Date();
 
-  // Score each CEDEAR with data up to cutoff
-  const scored = [];
-  for (const c of candidates) {
-    const fullHistory = historyMap[c.ticker];
-    if (!fullHistory) continue;
-    const cutHistory = fullHistory.filter(p => p.date <= cutoffStr);
-    if (cutHistory.length < 30) continue;
+  for (let m = months; m >= 1; m--) {
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - m);
+    const cutoffStr = cutoffDate.toISOString().slice(0, 10);
+    const monthLabel = cutoffDate.toLocaleDateString("es-AR", { year: "numeric", month: "short" });
 
-    const tech = technicalAnalysis(cutHistory);
-    const scores = compositeScore(tech, { score: 50, signals: [] }, null, c.sector);
-    const priceAtCut = cutHistory[cutHistory.length - 1].close;
+    // Score each CEDEAR with data up to this cutoff
+    const scored = [];
+    for (const c of candidates) {
+      const fullHistory = historyMap[c.ticker];
+      if (!fullHistory) continue;
+      const cutHistory = fullHistory.filter(p => p.date <= cutoffStr);
+      if (cutHistory.length < 30) continue;
 
-    scored.push({
-      ticker: c.ticker,
-      name: c.name,
-      sector: c.sector,
-      score: scores.composite,
-      signal: scores.signal,
-      priceAtEntry: priceAtCut,
-    });
+      const tech = technicalAnalysis(cutHistory);
+      const scores = compositeScore(tech, { score: 50, signals: [] }, null, c.sector, profile);
+      const priceAtCut = cutHistory[cutHistory.length - 1].close;
+
+      scored.push({
+        cedear: c,
+        ticker: c.ticker,
+        name: c.name,
+        sector: c.sector,
+        scores: { composite: scores.composite, signal: scores.signal },
+        priceAtEntry: priceAtCut,
+      });
+    }
+
+    scored.sort((a, b) => b.scores.composite - a.scores.composite);
+
+    // Use the real diversifier to pick from multiple sectors
+    const { picks } = diversifiedSelection(scored, [], profile);
+    const monthPicks = picks.slice(0, picksPerMonth);
+
+    if (monthPicks.length === 0) continue;
+
+    const perPick = monthlyDeposit / monthPicks.length;
+    const bought = [];
+
+    for (const pick of monthPicks) {
+      const ticker = pick.cedear?.ticker || pick.ticker;
+      const sector = pick.cedear?.sector || pick.sector;
+      const name = pick.cedear?.name || pick.name;
+      const priceAtEntry = pick.priceAtEntry || 0;
+      if (priceAtEntry <= 0) continue;
+
+      const shares = Math.floor(perPick / priceAtEntry);
+      if (shares <= 0) continue;
+
+      allHoldings.push({
+        ticker, name, sector,
+        scoreAtEntry: pick.scores?.composite ?? 0,
+        signal: pick.scores?.signal || "?",
+        priceAtEntry: Math.round(priceAtEntry * 100) / 100,
+        shares,
+        invested: Math.round(shares * priceAtEntry),
+        boughtMonth: cutoffStr,
+      });
+
+      bought.push({ ticker, sector });
+    }
+
+    meses.push({ month: monthLabel, date: cutoffStr, bought, holdingsCount: allHoldings.length });
   }
 
-  scored.sort((a, b) => b.score - a.score);
-
-  // Select top 4 diversified picks
-  const picks = backtestPicks(scored);
-  if (picks.length === 0) {
+  if (allHoldings.length === 0) {
     return { error: "No hay suficientes datos históricos para el backtest." };
   }
 
-  const perPick = BUDGET_ARS / picks.length;
-
-  // Get current prices for each pick
+  // Calculate current values for all accumulated holdings
   const holdings = [];
-  for (const pick of picks) {
-    const fullHistory = historyMap[pick.ticker];
-    const currentPrice = fullHistory ? fullHistory[fullHistory.length - 1].close : pick.priceAtEntry;
-
-    const sharesSimulated = Math.floor(perPick / pick.priceAtEntry);
-    const invested = sharesSimulated * pick.priceAtEntry;
-    const currentValue = sharesSimulated * currentPrice;
-    const returnPct = ((currentValue - invested) / invested) * 100;
+  for (const h of allHoldings) {
+    const fullHistory = historyMap[h.ticker];
+    const currentPrice = fullHistory ? fullHistory[fullHistory.length - 1].close : h.priceAtEntry;
+    const currentValue = h.shares * currentPrice;
+    const returnPct = h.invested > 0 ? ((currentValue - h.invested) / h.invested) * 100 : 0;
 
     holdings.push({
-      ticker: pick.ticker,
-      name: pick.name,
-      sector: pick.sector,
-      scoreAtEntry: pick.score,
-      signal: pick.signal,
-      priceAtEntry: Math.round(pick.priceAtEntry * 100) / 100,
+      ...h,
       priceNow: Math.round(currentPrice * 100) / 100,
-      shares: sharesSimulated,
-      invested: Math.round(invested),
       currentValue: Math.round(currentValue),
       returnPct: Math.round(returnPct * 100) / 100,
     });
@@ -135,17 +125,22 @@ export async function runBacktest(months = 6) {
   let spyReturn = null;
   try {
     const spyHistory = await fetchHistory("SPY.BA", totalMonths);
-    const spyCut = spyHistory.filter(p => p.date <= cutoffStr);
+    const startCutoff = new Date();
+    startCutoff.setMonth(startCutoff.getMonth() - months);
+    const startStr = startCutoff.toISOString().slice(0, 10);
+    const spyCut = spyHistory.filter(p => p.date <= startStr);
     if (spyCut.length > 0 && spyHistory.length > 0) {
       const spyEntry = spyCut[spyCut.length - 1].close;
       const spyNow = spyHistory[spyHistory.length - 1].close;
       spyReturn = Math.round(((spyNow - spyEntry) / spyEntry) * 10000) / 100;
     }
   } catch (e) {
-    // Fallback: use USD SPY
     try {
       const spyH = await fetchHistory("SPY", totalMonths);
-      const spyCut = spyH.filter(p => p.date <= cutoffStr);
+      const startCutoff = new Date();
+      startCutoff.setMonth(startCutoff.getMonth() - months);
+      const startStr = startCutoff.toISOString().slice(0, 10);
+      const spyCut = spyH.filter(p => p.date <= startStr);
       if (spyCut.length > 0 && spyH.length > 0) {
         spyReturn = Math.round(((spyH[spyH.length - 1].close - spyCut[spyCut.length - 1].close) / spyCut[spyCut.length - 1].close) * 10000) / 100;
       }
@@ -155,20 +150,38 @@ export async function runBacktest(months = 6) {
   holdings.sort((a, b) => b.returnPct - a.returnPct);
   const best = holdings[0];
   const worst = holdings[holdings.length - 1];
+  const beatsSPY = spyReturn != null ? totalReturn > spyReturn : null;
+
+  const entryDate = new Date();
+  entryDate.setMonth(entryDate.getMonth() - months);
+
+  const returnPctRounded = Math.round(totalReturn * 100) / 100;
+  const spyRounded = spyReturn != null ? Math.round(spyReturn * 100) / 100 : null;
+
+  let veredicto;
+  if (beatsSPY === true) {
+    veredicto = `El bot generó alfa: +${returnPctRounded}% vs SPY ${spyRounded}%. La estrategia diversificada funciona.`;
+  } else if (beatsSPY === false) {
+    veredicto = `SPY rindió más (${spyRounded}%) que el bot (${returnPctRounded}%). En este período habría convenido indexar.`;
+  } else {
+    veredicto = `Retorno del bot: ${returnPctRounded}%. No se pudo comparar contra SPY.`;
+  }
 
   return {
-    months,
-    entryDate: cutoffStr,
-    budget: BUDGET_ARS,
+    config: { months, monthlyDeposit, profile, picksPerMonth },
+    entryDate: entryDate.toISOString().slice(0, 10),
     holdings,
-    summary: {
-      totalInvested,
-      totalCurrent,
-      totalReturnPct: Math.round(totalReturn * 100) / 100,
-      spyReturnPct: spyReturn,
+    meses,
+    resultado: {
+      totalInvertido: totalInvested,
+      valorFinal: totalCurrent,
+      returnPct: returnPctRounded,
+      spyReturnPct: spyRounded,
       alpha: spyReturn != null ? Math.round((totalReturn - spyReturn) * 100) / 100 : null,
+      beatsSPY,
       bestPick: best ? { ticker: best.ticker, returnPct: best.returnPct } : null,
       worstPick: worst ? { ticker: worst.ticker, returnPct: worst.returnPct } : null,
     },
+    veredicto,
   };
 }

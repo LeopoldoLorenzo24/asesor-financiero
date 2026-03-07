@@ -246,7 +246,10 @@ export default function App() {
   const [benchLoading, setBenchLoading] = useState(false);
   const [backtest, setBacktest] = useState(null);
   const [backtestLoading, setBacktestLoading] = useState(false);
-  const [backtestMonths, setBacktestMonths] = useState(6);
+  const [btMonths, setBtMonths] = useState(6);
+  const [btDeposit, setBtDeposit] = useState(1000000);
+  const [btProfile, setBtProfile] = useState(profile);
+  const [btPicks, setBtPicks] = useState(4);
 
   if (!loggedIn) return <LoginScreen onAuth={() => setLoggedIn(true)} />;
 
@@ -260,10 +263,11 @@ export default function App() {
   const loadPerformance = useCallback(async () => { try { setPerformance(await api.getPerformance(60)); } catch (e) { console.error(e); } }, []);
   const loadSessions = useCallback(async () => { try { setAnalysisSessions(await api.getAnalysisSessions(10)); } catch (e) { console.error(e); } }, []);
   const loadBenchmarks = useCallback(async () => { setBenchLoading(true); try { setBenchmarks(await api.getBenchmarks()); } catch (e) { console.error(e); } finally { setBenchLoading(false); } }, []);
-  const loadBacktest = useCallback(async (m) => { setBacktestLoading(true); try { setBacktest(await api.getBacktest(m)); } catch (e) { console.error(e); } finally { setBacktestLoading(false); } }, []);
+  const runBacktestSim = useCallback(async () => { setBacktestLoading(true); try { setBacktest(await api.getBacktest(btMonths, btDeposit, btProfile, btPicks)); } catch (e) { console.error(e); } finally { setBacktestLoading(false); } }, [btMonths, btDeposit, btProfile, btPicks]);
 
   useEffect(() => { loadRanking(); loadPortfolioDB(); loadCapital(); }, [profile]);
-  useEffect(() => { if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); } if (view === "predicciones") { loadPredictions(); loadPerformance(); } if (view === "historial") loadSessions(); if (view === "benchmarks") loadBenchmarks(); if (view === "backtest") loadBacktest(backtestMonths); }, [view]);
+  useEffect(() => { if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); } if (view === "predicciones") { loadPredictions(); loadPerformance(); } if (view === "historial") loadSessions(); if (view === "benchmarks") loadBenchmarks(); }, [view]);
+  useEffect(() => { if (view === "dashboard" && portfolioDB.summary.length > 0 && !benchmarks) loadBenchmarks(); }, [view, portfolioDB]);
 
   const loadDetail = useCallback(async (ticker) => { setSelectedTicker(ticker); setDetailLoading(true); setAiSingle(null); try { setDetail(await api.getCedear(ticker, profile)); } catch (e) { console.error(e); } finally { setDetailLoading(false); } }, [profile]);
   const runAI = useCallback(async (investCapital) => { setAiLoading(true); setShowCapitalInput(false); try { const d = await api.aiAnalyze(portfolioDB.summary.map(p => ({ ticker: p.ticker, shares: p.total_shares, avgPrice: p.weighted_avg_price })), investCapital, profile); setAiAnalysis(d.analysis); } catch (e) { setAiAnalysis({ error: e.message }); } finally { setAiLoading(false); } }, [portfolioDB, profile]);
@@ -956,26 +960,73 @@ export default function App() {
       { name: "Plazo Fijo", value: b.benchmarks.plazoFijo, fill: T.yellow },
       { name: "Inflación", value: b.benchmarks.inflation, fill: T.red },
     ].filter(Boolean);
+
+    const benchItems = [
+      { id: "portfolio", name: "Tu Portfolio", return_pct: b.portfolio.returnPct, color: T.green },
+      b.benchmarks.spy != null && { id: "spy", name: "SPY (S&P 500)", return_pct: b.benchmarks.spy, color: T.blue },
+      b.benchmarks.qqq != null && { id: "qqq", name: "QQQ (Nasdaq)", return_pct: b.benchmarks.qqq, color: T.purple },
+      { id: "plazoFijo", name: "Plazo Fijo (75% TNA)", return_pct: b.benchmarks.plazoFijo, color: T.yellow },
+      { id: "inflation", name: "Inflación (~3.5%/mes)", return_pct: b.benchmarks.inflation, color: T.red },
+    ].filter(Boolean);
+
     return (
       <div style={{ animation: "fadeUp 0.4s ease" }}>
         <div style={{ ...S.label, fontSize: 13, color: T.textMuted, marginBottom: 16 }}>COMPARACIÓN DE RENDIMIENTO</div>
-        {/* Verdict card */}
-        <div style={{ ...S.card, marginBottom: 20, borderLeft: `4px solid ${verdictColors[b.verdictLevel] || T.textMuted}`, background: `linear-gradient(135deg, ${verdictColors[b.verdictLevel] || T.textMuted}06, transparent)` }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: verdictColors[b.verdictLevel], marginBottom: 6 }}>{b.verdict}</div>
-          <div style={{ fontSize: 11, color: T.textDim }}>Período: {b.period.from} → {b.period.to} ({b.period.months} meses)</div>
-        </div>
-        {/* Stats */}
-        <div className="ca-stat-grid" style={S.grid()}>
-          <div style={{ ...S.card, borderLeft: `3px solid ${T.green}`, background: `linear-gradient(135deg, ${T.green}08, transparent)` }}>
-            <div style={S.label}>Tu Portfolio</div>
-            <div style={{ ...S.value, color: b.portfolio.returnPct >= 0 ? T.green : T.red }}>{b.portfolio.returnPct >= 0 ? "+" : ""}{b.portfolio.returnPct}%</div>
-            <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>Invertido: ${b.portfolio.investedARS?.toLocaleString()} → Actual: ${b.portfolio.currentValueARS?.toLocaleString()}</div>
+
+        {/* Representativity note */}
+        {b.nota_representatividad && (
+          <div style={{ fontSize: 11, color: T.yellow, marginBottom: 12, padding: "8px 14px", background: `${T.yellow}08`, borderRadius: 8, border: `1px solid ${T.yellow}15` }}>
+            {b.nota_representatividad}
           </div>
-          {b.benchmarks.spy != null && <div style={{ ...S.card, borderLeft: `3px solid ${T.blue}` }}><div style={S.label}>SPY (S&P 500)</div><div style={{ ...S.value, color: T.blue }}>{b.benchmarks.spy >= 0 ? "+" : ""}{b.benchmarks.spy}%</div></div>}
-          {b.benchmarks.qqq != null && <div style={{ ...S.card, borderLeft: `3px solid ${T.purple}` }}><div style={S.label}>QQQ (Nasdaq)</div><div style={{ ...S.value, color: T.purple }}>{b.benchmarks.qqq >= 0 ? "+" : ""}{b.benchmarks.qqq}%</div></div>}
-          <div style={{ ...S.card, borderLeft: `3px solid ${T.yellow}` }}><div style={S.label}>Plazo Fijo (75% TNA)</div><div style={{ ...S.value, color: T.yellow }}>+{b.benchmarks.plazoFijo}%</div></div>
-          <div style={{ ...S.card, borderLeft: `3px solid ${T.red}` }}><div style={S.label}>Inflación (~3.5%/mes)</div><div style={{ ...S.value, color: T.red }}>+{b.benchmarks.inflation}%</div></div>
+        )}
+
+        {/* Verdict card */}
+        <div style={{
+          padding: 16, borderRadius: 12, marginBottom: 16,
+          background: b.beatsMarket?.spy ? `${T.green}10` : `${T.yellow}10`,
+          border: `1px solid ${b.beatsMarket?.spy ? T.green : T.yellow}25`,
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: b.beatsMarket?.spy ? T.green : T.yellow }}>
+            {b.verdict}
+          </div>
+          <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>
+            Periodo: {b.period.from} → hoy ({b.period.months} meses)
+            {b.proyeccion_anual != null && ` | Proyección anual: ${b.proyeccion_anual >= 0 ? "+" : ""}${b.proyeccion_anual}%`}
+          </div>
         </div>
+
+        {/* Benchmark cards with context */}
+        <div style={S.grid(200)}>
+          {benchItems.map((item, i) => {
+            const isPortfolio = item.id === "portfolio";
+            const ctx = b.context?.[item.id];
+            return (
+              <div key={i} style={{
+                ...S.card, padding: 16,
+                borderLeft: `3px solid ${item.color}`,
+                background: isPortfolio ? `${item.color}08` : S.card.background,
+              }}>
+                <div style={{ fontSize: 10, color: item.color, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", marginBottom: 8 }}>
+                  {item.name}
+                </div>
+                <div style={{ fontSize: 28, fontWeight: 900, ...S.mono, color: item.return_pct >= 0 ? item.color : T.red, letterSpacing: "-1px" }}>
+                  {item.return_pct >= 0 ? "+" : ""}{item.return_pct}%
+                </div>
+                {ctx?.dato_clave && (
+                  <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8, lineHeight: 1.5 }}>
+                    {ctx.dato_clave}
+                  </div>
+                )}
+                {ctx?.por_que_importa && !isPortfolio && (
+                  <div style={{ fontSize: 10, color: T.textDim, marginTop: 6, lineHeight: 1.5, fontStyle: "italic" }}>
+                    {ctx.por_que_importa}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
         {/* Chart */}
         <div style={{ ...S.card, marginTop: 20 }}>
           <div style={S.label}>Rendimiento Comparado (%)</div>
@@ -997,104 +1048,197 @@ export default function App() {
 
   /* ─── BACKTEST ─── */
   const renderBacktest = () => {
-    const periods = [3, 6, 9, 12];
+    const bt = backtest;
+    const r = bt?.resultado || {};
     return (
       <div style={{ animation: "fadeUp 0.4s ease" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
-          <div style={{ ...S.label, fontSize: 13, color: T.textMuted, margin: 0 }}>BACKTESTING — SIMULACIÓN HISTÓRICA</div>
-          <div style={{ display: "flex", gap: 6 }}>
-            {periods.map(m => (
-              <button key={m} onClick={() => { setBacktestMonths(m); loadBacktest(m); }} style={{
-                padding: "7px 16px", borderRadius: 10, cursor: "pointer", fontFamily: T.font, fontSize: 12, fontWeight: 700, transition: "all 0.2s",
-                border: `1px solid ${backtestMonths === m ? T.cyan : T.border}`,
-                background: backtestMonths === m ? `${T.cyan}15` : "transparent",
-                color: backtestMonths === m ? T.cyan : T.textDim,
-              }}>{m}M</button>
-            ))}
+        <div style={{ ...S.label, fontSize: 13, color: T.textMuted, marginBottom: 16 }}>BACKTESTING — SIMULACIÓN HISTÓRICA INTERACTIVA</div>
+
+        {/* Controls panel */}
+        <div style={{ ...S.card, marginBottom: 20, display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div>
+            <div style={S.label}>Periodo</div>
+            <div style={{ display: "flex", gap: 4 }}>
+              {[3, 6, 9, 12].map(m => (
+                <button key={m} onClick={() => setBtMonths(m)} style={{
+                  padding: "8px 16px", borderRadius: 8, border: "none", cursor: "pointer",
+                  fontFamily: T.fontMono, fontSize: 13, fontWeight: 700,
+                  background: btMonths === m ? T.green : T.bg, color: btMonths === m ? T.bg : T.textDim,
+                }}>{m}M</button>
+              ))}
+            </div>
           </div>
+          <div>
+            <div style={S.label}>Depósito mensual</div>
+            <div style={{ display: "flex", gap: 4 }}>
+              {[500000, 1000000, 2000000, 5000000].map(d => (
+                <button key={d} onClick={() => setBtDeposit(d)} style={{
+                  padding: "8px 12px", borderRadius: 8, border: "none", cursor: "pointer",
+                  fontSize: 11, fontWeight: 600, fontFamily: T.font,
+                  background: btDeposit === d ? T.blue : T.bg, color: btDeposit === d ? T.bg : T.textDim,
+                }}>${(d / 1000000).toFixed(1)}M</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={S.label}>CEDEARs por mes</div>
+            <div style={{ display: "flex", gap: 4 }}>
+              {[2, 4, 6, 8].map(p => (
+                <button key={p} onClick={() => setBtPicks(p)} style={{
+                  padding: "8px 14px", borderRadius: 8, border: "none", cursor: "pointer",
+                  fontSize: 13, fontWeight: 700, fontFamily: T.fontMono,
+                  background: btPicks === p ? T.purple : T.bg, color: btPicks === p ? T.bg : T.textDim,
+                }}>{p}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={S.label}>Perfil</div>
+            <div style={{ display: "flex", gap: 4 }}>
+              {[
+                { id: "conservative", label: "Conservador", color: T.blue },
+                { id: "moderate", label: "Moderado", color: T.yellow },
+                { id: "aggressive", label: "Agresivo", color: T.red },
+              ].map(p => (
+                <button key={p.id} onClick={() => setBtProfile(p.id)} style={{
+                  padding: "8px 12px", borderRadius: 8, border: "none", cursor: "pointer",
+                  fontSize: 10, fontWeight: 700, fontFamily: T.font,
+                  background: btProfile === p.id ? p.color : T.bg, color: btProfile === p.id ? T.bg : T.textDim,
+                }}>{p.label}</button>
+              ))}
+            </div>
+          </div>
+          <button onClick={runBacktestSim} disabled={backtestLoading} style={{ ...S.btn(), minWidth: 180, opacity: backtestLoading ? 0.5 : 1 }}>
+            {backtestLoading ? "⟳ Simulando..." : "Correr Simulación"}
+          </button>
         </div>
+
         {backtestLoading && <div style={S.card}><Skeleton height={300} /></div>}
-        {!backtestLoading && backtest?.error && (
+        {!backtestLoading && bt?.error && (
           <div style={{ ...S.card, textAlign: "center", padding: 56 }}>
             <div style={{ fontSize: 40, marginBottom: 14, opacity: 0.3 }}>↺</div>
-            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10, color: T.textMuted }}>{backtest.error}</div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10, color: T.textMuted }}>{bt.error}</div>
           </div>
         )}
-        {!backtestLoading && backtest && !backtest.error && (() => {
-          const bt = backtest;
-          const s = bt.summary || {};
-          const totalReturn = s.totalReturnPct ?? 0;
-          const spyReturn = s.spyReturnPct;
-          const alpha = s.alpha;
-          return (
-            <>
-              {/* Summary */}
-              <div className="ca-stat-grid" style={S.grid()}>
-                <div style={{ ...S.card, borderLeft: `3px solid ${totalReturn >= 0 ? T.green : T.red}`, background: `linear-gradient(135deg, ${totalReturn >= 0 ? T.green : T.red}08, transparent)` }}>
-                  <div style={S.label}>Retorno Simulado</div>
-                  <div style={{ ...S.value, color: totalReturn >= 0 ? T.green : T.red }}>{totalReturn >= 0 ? "+" : ""}{totalReturn.toFixed(2)}%</div>
-                  <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>${bt.budget?.toLocaleString()} → ${Math.round(s.totalCurrent || 0).toLocaleString()}</div>
-                </div>
-                {spyReturn != null && (
-                  <div style={{ ...S.card, borderLeft: `3px solid ${T.blue}` }}>
-                    <div style={S.label}>SPY mismo período</div>
-                    <div style={{ ...S.value, color: T.blue }}>{spyReturn >= 0 ? "+" : ""}{spyReturn}%</div>
-                  </div>
-                )}
-                {alpha != null && (
-                  <div style={{ ...S.card, borderLeft: `3px solid ${alpha >= 0 ? T.green : T.red}` }}>
-                    <div style={S.label}>Alpha generado</div>
-                    <div style={{ ...S.value, color: alpha >= 0 ? T.green : T.red }}>{alpha >= 0 ? "+" : ""}{alpha.toFixed(2)}%</div>
-                  </div>
-                )}
-                <div style={{ ...S.card, borderLeft: `3px solid ${T.purple}` }}>
-                  <div style={S.label}>Período</div>
-                  <div style={{ ...S.value, color: T.purple, fontSize: 22 }}>{bt.entryDate || "?"} → hoy</div>
-                </div>
+        {!backtestLoading && bt && !bt.error && (
+          <>
+            {/* Summary cards */}
+            <div className="ca-stat-grid" style={S.grid()}>
+              <div style={{ ...S.card, borderLeft: `3px solid ${r.returnPct >= 0 ? T.green : T.red}`, background: `linear-gradient(135deg, ${r.returnPct >= 0 ? T.green : T.red}08, transparent)` }}>
+                <div style={S.label}>Retorno Simulado</div>
+                <div style={{ ...S.value, color: r.returnPct >= 0 ? T.green : T.red }}>{r.returnPct >= 0 ? "+" : ""}{(r.returnPct ?? 0).toFixed(2)}%</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>${(r.totalInvertido ?? 0).toLocaleString()} → ${(r.valorFinal ?? 0).toLocaleString()}</div>
               </div>
-
-              {/* Holdings */}
-              {bt.holdings?.length > 0 && (
-                <div style={{ marginTop: 20 }}>
-                  <div style={S.label}>Picks del Bot (simulados)</div>
-                  <div className="ca-table-wrap" style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                      <thead><tr>
-                        <th style={S.th}>CEDEAR</th>
-                        <th style={S.th}>Sector</th>
-                        <th style={{ ...S.th, textAlign: "center" }}>Score</th>
-                        <th style={{ ...S.th, textAlign: "center" }}>Señal</th>
-                        <th style={{ ...S.th, textAlign: "right" }}>Entrada</th>
-                        <th style={{ ...S.th, textAlign: "right" }}>Actual</th>
-                        <th style={{ ...S.th, textAlign: "right" }}>Invertido</th>
-                        <th style={{ ...S.th, textAlign: "right" }}>Valor Actual</th>
-                        <th style={{ ...S.th, textAlign: "center" }}>Retorno</th>
-                      </tr></thead>
-                      <tbody>{bt.holdings.map((h, i) => (
-                        <tr key={i}>
-                          <td style={{ ...S.td, fontWeight: 800, ...S.mono }}>{h.ticker}<div style={{ fontSize: 10, color: T.textDim, fontFamily: T.font, fontWeight: 400 }}>{h.name}</div></td>
-                          <td style={{ ...S.td, fontSize: 11, color: T.textDim }}>{h.sector}</td>
-                          <td style={{ ...S.td, textAlign: "center", ...S.mono }}>{h.scoreAtEntry}</td>
-                          <td style={{ ...S.td, textAlign: "center" }}><span style={S.badge(signalColors[h.signal] || T.yellow)}>{h.signal}</span></td>
-                          <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.priceAtEntry?.toLocaleString()}</td>
-                          <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.priceNow?.toLocaleString()}</td>
-                          <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.invested?.toLocaleString()}</td>
-                          <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.currentValue?.toLocaleString()}</td>
-                          <td style={{ ...S.td, textAlign: "center", ...S.mono, fontWeight: 700, color: h.returnPct >= 0 ? T.green : T.red }}>{h.returnPct >= 0 ? "+" : ""}{h.returnPct}%</td>
-                        </tr>
-                      ))}</tbody>
-                    </table>
-                  </div>
+              {r.spyReturnPct != null && (
+                <div style={{ ...S.card, borderLeft: `3px solid ${T.blue}` }}>
+                  <div style={S.label}>SPY mismo período</div>
+                  <div style={{ ...S.value, color: T.blue }}>{r.spyReturnPct >= 0 ? "+" : ""}{r.spyReturnPct}%</div>
                 </div>
               )}
-              <div style={{ ...S.card, marginTop: 20, background: `${T.cyan}06`, borderLeft: `3px solid ${T.cyan}` }}>
-                <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7 }}>
-                  <strong style={{ color: T.cyan }}>¿Cómo funciona?</strong> El bot viaja en el tiempo {backtestMonths} meses atrás, analiza los CEDEARs con los datos de ese momento (precios .BA, indicadores técnicos), arma un portfolio diversificado de 4 picks, y compara el rendimiento simulado contra SPY.
+              {r.alpha != null && (
+                <div style={{ ...S.card, borderLeft: `3px solid ${r.alpha >= 0 ? T.green : T.red}` }}>
+                  <div style={S.label}>Alpha generado</div>
+                  <div style={{ ...S.value, color: r.alpha >= 0 ? T.green : T.red }}>{r.alpha >= 0 ? "+" : ""}{r.alpha.toFixed(2)}%</div>
+                </div>
+              )}
+              <div style={{ ...S.card, borderLeft: `3px solid ${T.purple}` }}>
+                <div style={S.label}>Período</div>
+                <div style={{ ...S.value, color: T.purple, fontSize: 22 }}>{bt.entryDate || "?"} → hoy</div>
+              </div>
+            </div>
+
+            {/* Holdings table */}
+            {bt.holdings?.length > 0 && (
+              <div style={{ marginTop: 20 }}>
+                <div style={S.label}>Picks del Bot (simulados)</div>
+                <div className="ca-table-wrap" style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead><tr>
+                      <th style={S.th}>CEDEAR</th>
+                      <th style={S.th}>Sector</th>
+                      <th style={{ ...S.th, textAlign: "center" }}>Score</th>
+                      <th style={{ ...S.th, textAlign: "center" }}>Señal</th>
+                      <th style={{ ...S.th, textAlign: "right" }}>Entrada</th>
+                      <th style={{ ...S.th, textAlign: "right" }}>Actual</th>
+                      <th style={{ ...S.th, textAlign: "right" }}>Invertido</th>
+                      <th style={{ ...S.th, textAlign: "right" }}>Valor Actual</th>
+                      <th style={{ ...S.th, textAlign: "center" }}>Retorno</th>
+                    </tr></thead>
+                    <tbody>{bt.holdings.map((h, i) => (
+                      <tr key={i}>
+                        <td style={{ ...S.td, fontWeight: 800, ...S.mono }}>{h.ticker}<div style={{ fontSize: 10, color: T.textDim, fontFamily: T.font, fontWeight: 400 }}>{h.name}</div></td>
+                        <td style={{ ...S.td, fontSize: 11, color: T.textDim }}>{h.sector}</td>
+                        <td style={{ ...S.td, textAlign: "center", ...S.mono }}>{h.scoreAtEntry}</td>
+                        <td style={{ ...S.td, textAlign: "center" }}><span style={S.badge(signalColors[h.signal] || T.yellow)}>{h.signal}</span></td>
+                        <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.priceAtEntry?.toLocaleString()}</td>
+                        <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.priceNow?.toLocaleString()}</td>
+                        <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.invested?.toLocaleString()}</td>
+                        <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.currentValue?.toLocaleString()}</td>
+                        <td style={{ ...S.td, textAlign: "center", ...S.mono, fontWeight: 700, color: h.returnPct >= 0 ? T.green : T.red }}>{h.returnPct >= 0 ? "+" : ""}{h.returnPct}%</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
                 </div>
               </div>
-            </>
-          );
-        })()}
+            )}
+
+            {/* Month by month breakdown */}
+            {bt.meses && bt.meses.length > 0 && (
+              <div style={{ ...S.card, marginTop: 16 }}>
+                <div style={S.label}>Desglose mes a mes</div>
+                {bt.meses.map((mes, i) => (
+                  <div key={i} style={{ display: "flex", gap: 12, padding: "10px 0", borderBottom: `1px solid ${T.border}`, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ ...S.mono, fontSize: 12, color: T.blue, minWidth: 80 }}>{mes.month}</span>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {mes.bought.map((pick, j) => (
+                        <span key={j} style={{ ...S.badge(T.green), fontSize: 11 }}>{typeof pick === "string" ? pick : `${pick.ticker} (${pick.sector || ""})`}</span>
+                      ))}
+                    </div>
+                    <span style={{ fontSize: 11, color: T.textDim, marginLeft: "auto" }}>{mes.holdingsCount} posiciones acumuladas</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Verdict text */}
+            {bt.veredicto && (
+              <div style={{
+                ...S.card, marginTop: 16,
+                background: r.beatsSPY ? `${T.green}08` : `${T.yellow}08`,
+                border: `1px solid ${r.beatsSPY ? T.green : T.yellow}25`,
+              }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: r.beatsSPY ? T.green : T.yellow, marginBottom: 8 }}>
+                  {bt.veredicto}
+                </div>
+                <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7 }}>
+                  Si hubieras corrido este bot los últimos {bt.config?.months} meses,
+                  depositando ${((bt.config?.monthlyDeposit || 0) / 1000000).toFixed(1)}M por mes,
+                  habrías invertido ${(r.totalInvertido ?? 0).toLocaleString()} ARS
+                  y hoy tendrías ${(r.valorFinal ?? 0).toLocaleString()} ARS
+                  ({r.returnPct >= 0 ? "+" : ""}{r.returnPct}%).
+                  {r.beatsSPY === true
+                    ? ` Eso es ${Math.abs((r.returnPct || 0) - (r.spyReturnPct || 0)).toFixed(1)} puntos por encima de SPY. El bot funciona.`
+                    : r.beatsSPY === false
+                    ? ` SPY rindió ${r.spyReturnPct}% en el mismo periodo. Habría convenido invertir directo en SPY.`
+                    : ""}
+                </div>
+              </div>
+            )}
+
+            <div style={{ ...S.card, marginTop: 16, background: `${T.cyan}06`, borderLeft: `3px solid ${T.cyan}` }}>
+              <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7 }}>
+                <strong style={{ color: T.cyan }}>¿Cómo funciona?</strong> El bot viaja mes a mes desde hace {bt.config?.months} meses. Cada mes analiza todos los CEDEARs con los datos de ese momento, usa el diversificador algorítmico (perfil: {bt.config?.profile}) para elegir {bt.config?.picksPerMonth} picks de múltiples sectores, y simula la compra con ${((bt.config?.monthlyDeposit || 0) / 1000000).toFixed(1)}M. Al final compara el rendimiento acumulado vs SPY.
+              </div>
+            </div>
+          </>
+        )}
+        {!backtestLoading && !bt && (
+          <div style={{ ...S.card, textAlign: "center", padding: 56 }}>
+            <div style={{ fontSize: 40, marginBottom: 14, opacity: 0.3 }}>▶</div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10, color: T.textMuted }}>Configurá los parámetros y presioná "Correr Simulación"</div>
+            <div style={{ color: T.textDim, fontSize: 13 }}>El bot simulará compras diversificadas mes a mes y comparará el resultado contra SPY.</div>
+          </div>
+        )}
       </div>
     );
   };

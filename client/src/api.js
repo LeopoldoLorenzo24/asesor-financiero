@@ -99,7 +99,8 @@ export const api = {
 
   // New endpoints
   getBenchmarks: () => request("/benchmarks"),
-  getBacktest: (months = 6) => request(`/backtest?months=${months}`),
+  getBacktest: (months = 6, deposit = 1000000, profile = "moderate", picks = 4) =>
+    request(`/backtest?months=${months}&deposit=${deposit}&profile=${profile}&picks=${picks}`),
 };
 
 export default api;

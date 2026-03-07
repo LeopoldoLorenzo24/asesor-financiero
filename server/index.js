@@ -344,8 +344,11 @@ app.get("/api/benchmarks", async (req, res) => {
 // ---- Backtest ----
 app.get("/api/backtest", async (req, res) => {
   try {
-    const months = parseInt(req.query.months) || 6;
-    const result = await runBacktest(months);
+    const months = Math.min(12, Math.max(1, parseInt(req.query.months) || 6));
+    const monthlyDeposit = parseInt(req.query.deposit) || 1000000;
+    const profile = req.query.profile || "moderate";
+    const picksPerMonth = Math.min(8, Math.max(2, parseInt(req.query.picks) || 4));
+    const result = await runBacktest({ months, monthlyDeposit, profile, picksPerMonth });
     res.json(result);
   } catch (err) {
     console.error("Backtest error:", err);

@@ -84,6 +84,53 @@ export async function calculateBenchmarks(ranking = []) {
     verdictLevel = "neutral";
   }
 
+  // Projection
+  const monthlyReturnPortfolio = monthsBack > 0 ? pR / monthsBack : 0;
+  const projectedAnnual = Math.round(monthlyReturnPortfolio * 12 * 100) / 100;
+
+  const portfolioPnL = currentValueARS - totalInvestedARS;
+
+  const context = {
+    portfolio: {
+      que_es: "Tu cartera de CEDEARs manejada por el bot",
+      dato_clave: `${pR >= 0 ? "Ganás" : "Perdés"} $${Math.abs(Math.round(portfolioPnL)).toLocaleString()} ARS`,
+      proyeccion_anual: `Si sigue este ritmo: ${projectedAnnual >= 0 ? "+" : ""}${projectedAnnual}% anual`,
+    },
+    spy: {
+      que_es: "Fondo que replica las 500 empresas más grandes de EEUU. Es la referencia universal.",
+      dato_clave: "Si hubieras metido todo en SPY sin pensar, este sería tu retorno",
+      por_que_importa: "Si no le ganás a SPY, es mejor comprar SPY y no complicarse con stock picking",
+    },
+    qqq: {
+      que_es: "Fondo que replica las 100 empresas más grandes del Nasdaq (pesado en tech)",
+      dato_clave: "Referencia para portfolios tech-heavy",
+      por_que_importa: "Te muestra si tus otras posiciones suman o restan valor vs solo indexar en Nasdaq",
+    },
+    plazoFijo: {
+      que_es: "Plazo fijo tradicional en pesos argentinos con tasa ~75% TNA",
+      dato_clave: "La alternativa más segura en pesos. Cero riesgo, retorno fijo.",
+      por_que_importa: "En Argentina con tasas altas, el plazo fijo es un benchmark duro de batir en ARS",
+    },
+    inflation: {
+      que_es: "Estimación de inflación mensual (~3.5%/mes)",
+      dato_clave: "Si tu retorno no supera la inflación, estás perdiendo poder adquisitivo",
+      por_que_importa: "El piso mínimo que tenés que superar para no perder plata en términos reales",
+    },
+  };
+
+  const nota_representatividad = monthsBack < 3
+    ? "NOTA: Con menos de 3 meses de datos, estos números no son representativos. Volvé a chequear en unos meses."
+    : monthsBack < 6
+    ? "Los datos empiezan a ser significativos. A partir de 6 meses vas a tener una foto más clara."
+    : "Datos representativos. Esta comparación refleja bien el rendimiento real del bot.";
+
+  const beatsMarket = {
+    spy: spyReturn != null ? pR > spyReturn : null,
+    qqq: qqqReturn != null ? pR > qqqReturn : null,
+    plazoFijo: pR > plazoFijoReturn,
+    inflation: pR > inflationReturn,
+  };
+
   return {
     period: { months: monthsBack, from: firstDate.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) },
     portfolio: { investedARS: Math.round(totalInvestedARS), currentValueARS: Math.round(currentValueARS), returnPct: Math.round(pR * 100) / 100 },
@@ -95,5 +142,10 @@ export async function calculateBenchmarks(ranking = []) {
     },
     verdict,
     verdictLevel,
+    context,
+    proyeccion_anual: projectedAnnual,
+    meses_de_datos: monthsBack,
+    nota_representatividad,
+    beatsMarket,
   };
 }
