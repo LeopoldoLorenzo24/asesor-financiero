@@ -212,7 +212,12 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
       .map((block) => block.text);
 
     const fullText = textParts.join("");
-    const clean = fullText.replace(/```json|```/g, "").replace(/<cite[^>]*>|<\/cite>/g, "").trim();
+    const clean = fullText
+      .replace(/```json|```/g, "")
+      .replace(/<cite[^>]*>|<\/cite>/g, "")
+      .replace(/<search_quality_reflection>[\s\S]*?<\/search_quality_reflection>/g, "")
+      .replace(/<\/?[a-z_]+>/g, "")
+      .trim();
 
     // Try to extract JSON from the response
     const jsonMatch = clean.match(/\{[\s\S]*\}/);
@@ -221,7 +226,28 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
       return { error: "No se pudo parsear la respuesta de la IA", raw: clean.substring(0, 500) };
     }
 
-    const result = JSON.parse(jsonMatch[0]);
+    let jsonStr = jsonMatch[0];
+    // Fix common JSON issues: control chars inside strings, trailing commas
+    jsonStr = jsonStr.replace(/[\x00-\x1F\x7F]/g, (ch) => ch === '\n' || ch === '\r' || ch === '\t' ? ch : ' ');
+    jsonStr = jsonStr.replace(/,\s*([\]}])/g, '$1');
+
+    let result;
+    try {
+      result = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      console.error("JSON parse error:", parseErr.message);
+      console.error("Raw text (first 500):", jsonStr.substring(0, 500));
+      // Try a second pass: extract the outermost balanced braces more carefully
+      let depth = 0, start = -1, end = -1;
+      for (let i = 0; i < jsonStr.length; i++) {
+        if (jsonStr[i] === '{') { if (start === -1) start = i; depth++; }
+        else if (jsonStr[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+      }
+      if (start !== -1 && end !== -1) {
+        try { result = JSON.parse(jsonStr.substring(start, end + 1)); } catch { result = null; }
+      }
+      if (!result) return { error: "No se pudo parsear la respuesta de la IA", raw: jsonStr.substring(0, 500) };
+    }
 
     // --- LOG PREDICTIONS TO DATABASE ---
     try {
@@ -338,10 +364,11 @@ Buscá noticias recientes sobre ${ticker} y respondé SOLO con JSON:
     });
 
     const textParts = response.content.filter((b) => b.type === "text").map((b) => b.text);
-    const clean = textParts.join("").replace(/```json|```/g, "").trim();
+    const clean = textParts.join("").replace(/```json|```/g, "").replace(/<cite[^>]*>|<\/cite>/g, "").replace(/<\/?[a-z_]+>/g, "").trim();
     const jsonMatch = clean.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return { error: "Parse error" };
-    return JSON.parse(jsonMatch[0]);
+    let jsonStr = jsonMatch[0].replace(/[\x00-\x1F\x7F]/g, (ch) => ch === '\n' || ch === '\r' || ch === '\t' ? ch : ' ').replace(/,\s*([\]}])/g, '$1');
+    try { return JSON.parse(jsonStr); } catch { return { error: "Parse error" }; }
   } catch (err) {
     console.error(`AI single analysis error for ${ticker}:`, err.message);
     return { error: err.message };
