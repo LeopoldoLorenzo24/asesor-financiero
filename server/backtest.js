@@ -190,6 +190,7 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
     console.log(`[Backtest ${monthLabel}] Core: ${coreETF} $${Math.round(coreBudget).toLocaleString()} | Satellite: ${monthPicks.map(p => `${p.cedear?.ticker || p.ticker} (${p.cedear?.sector || p.sector})`).join(", ")}`);
 
     const bought = [];
+    const satellitePicks = [];
     if (coreBought) bought.push({ ticker: coreBought.ticker, sector: "ETF - Índices", isCore: true });
 
     if (monthPicks.length > 0 && satelliteBudget > 0) {
@@ -216,10 +217,20 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
         });
 
         bought.push({ ticker, sector, isCore: false });
+        satellitePicks.push({ ticker, sector, score: pick.scores?.composite ?? 0 });
       }
     }
 
-    meses.push({ month: monthLabel, date: cutoffStr, bought, holdingsCount: allHoldings.length + coreHoldings.length });
+    meses.push({
+      month: monthLabel,
+      date: cutoffStr,
+      bought,
+      core: { ticker: coreETF, shares: coreBought?.shares || 0, monto: Math.round(coreBudget) },
+      satellite: satellitePicks,
+      corePct: Math.round(corePct * 100),
+      satellitePct: Math.round(satellitePct * 100),
+      holdingsCount: allHoldings.length + coreHoldings.length,
+    });
   }
 
   if (allHoldings.length === 0 && coreHoldings.length === 0) {
@@ -289,6 +300,7 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
   holdings.sort((a, b) => b.returnPct - a.returnPct);
   const best = holdings[0];
   const worst = holdings[holdings.length - 1];
+  const spyVal = spyReturn || 0;
   const beatsSPY = spyReturn != null ? totalReturn > spyReturn : null;
 
   const entryDate = new Date();
@@ -297,45 +309,86 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
   const returnPctRounded = Math.round(totalReturn * 100) / 100;
   const spyRounded = spyReturn != null ? Math.round(spyReturn * 100) / 100 : null;
 
-  let veredicto;
-  if (beatsSPY === true) {
-    veredicto = `Core/Satellite generó +${returnPctRounded}% vs SPY puro ${spyRounded}%. La combinación ${coreETF} + stock picking funciona.`;
-  } else if (beatsSPY === false) {
-    veredicto = `SPY puro rindió más (${spyRounded}%) que core/satellite (${returnPctRounded}%). Los picks activos restaron valor — habría convenido 100% ${coreETF}.`;
-  } else {
-    veredicto = `Retorno core/satellite: ${returnPctRounded}%. No se pudo comparar contra SPY.`;
+  const corePnl = Math.round(coreCurrent - coreInvested);
+  const satellitePnl = Math.round(satelliteCurrent - satelliteInvested);
+  const satelliteGeneraAlfa = spyReturn != null ? satelliteReturnPct > spyReturn : null;
+  const satelliteAlpha = spyReturn != null ? Math.round((satelliteReturnPct - spyReturn) * 100) / 100 : null;
+
+  // Aggregate satellite holdings by ticker for the detail table
+  const satByTicker = {};
+  for (const h of holdings) {
+    if (!satByTicker[h.ticker]) {
+      satByTicker[h.ticker] = { ticker: h.ticker, sector: h.sector, shares: 0, invested: 0, currentValue: 0 };
+    }
+    satByTicker[h.ticker].shares += h.shares;
+    satByTicker[h.ticker].invested += h.invested;
+    satByTicker[h.ticker].currentValue += h.currentValue;
+  }
+  const satDetails = Object.values(satByTicker).map(d => ({
+    ...d,
+    returnPct: d.invested > 0 ? Math.round(((d.currentValue - d.invested) / d.invested) * 10000) / 100 : 0,
+  }));
+  satDetails.sort((a, b) => b.returnPct - a.returnPct);
+
+  function generateVerdict(total, spy, core, sat) {
+    const s = spy || 0;
+    if (total > s + 0.5) {
+      return `GANAMOS: El portfolio combinado (+${total}%) le ganó a SPY (+${s}%). El stock picking del satellite sumó valor.`;
+    }
+    if (sat > s + 0.5) {
+      return `SATELLITE GANA: Los picks del bot (+${sat}%) superaron a SPY (+${s}%), pero el mix con core diluyó el resultado total a +${total}%.`;
+    }
+    if (Math.abs(total - s) <= 3) {
+      return `EMPATE TÉCNICO: Portfolio +${total}% vs SPY +${s}%. La estrategia core protegió contra una caída mayor del satellite.`;
+    }
+    if (core > sat) {
+      return `CORE GANÓ: La parte ${coreETF} (+${core}%) rindió más que los picks del bot (+${sat}%). El satellite no generó alfa este periodo. Considerar aumentar el % core.`;
+    }
+    return `SPY GANÓ: +${s}% vs portfolio +${total}%. El satellite (+${sat}%) no superó al mercado. La parte core (+${core}%) evitó que la diferencia fuera mayor.`;
   }
 
   return {
-    config: { months, monthlyDeposit, profile, picksPerMonth },
+    config: { months, monthlyDeposit, profile, picksPerMonth, corePct: Math.round(corePct * 100) },
     entryDate: entryDate.toISOString().slice(0, 10),
-    holdings,
-    meses,
-    coreSatellite: {
-      coreETF,
-      corePct: Math.round(corePct * 100),
-      satellitePct: Math.round(satellitePct * 100),
-      core: {
-        invertido: coreInvested,
-        valorActual: Math.round(coreCurrent),
-        returnPct: coreReturnPct,
-      },
-      satellite: {
-        invertido: satelliteInvested,
-        valorActual: Math.round(satelliteCurrent),
-        returnPct: satelliteReturnPct,
-      },
-    },
+
     resultado: {
-      totalInvertido: totalInvested,
+      totalInvertido: Math.round(totalInvested),
       valorFinal: Math.round(totalCurrent),
       returnPct: returnPctRounded,
       spyReturnPct: spyRounded,
-      alpha: spyReturn != null ? Math.round((totalReturn - spyReturn) * 100) / 100 : null,
       beatsSPY,
-      bestPick: best ? { ticker: best.ticker, returnPct: best.returnPct } : null,
-      worstPick: worst ? { ticker: worst.ticker, returnPct: worst.returnPct } : null,
+      alpha: spyReturn != null ? Math.round((totalReturn - spyReturn) * 100) / 100 : null,
     },
-    veredicto,
+
+    core: {
+      etf: coreETF,
+      invertido: Math.round(coreInvested),
+      valorActual: Math.round(coreCurrent),
+      returnPct: coreReturnPct,
+      pnl: corePnl,
+      holdings: Object.entries(
+        coreHoldings.reduce((acc, h) => {
+          if (!acc[h.ticker]) acc[h.ticker] = { ticker: h.ticker, shares: 0 };
+          acc[h.ticker].shares += h.shares;
+          return acc;
+        }, {})
+      ).map(([, v]) => v),
+    },
+
+    satellite: {
+      invertido: Math.round(satelliteInvested),
+      valorActual: Math.round(satelliteCurrent),
+      returnPct: satelliteReturnPct,
+      pnl: satellitePnl,
+      generaAlfa: satelliteGeneraAlfa,
+      alpha: satelliteAlpha,
+      holdings: satDetails,
+      mejorPick: satDetails[0] || null,
+      peorPick: satDetails[satDetails.length - 1] || null,
+    },
+
+    meses,
+
+    veredicto: generateVerdict(returnPctRounded, spyRounded, coreReturnPct, satelliteReturnPct),
   };
 }
