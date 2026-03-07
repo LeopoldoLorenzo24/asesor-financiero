@@ -1,14 +1,93 @@
 import { fetchHistory, fetchQuote } from "./marketData.js";
 import { technicalAnalysis, fundamentalAnalysis, compositeScore } from "./analysis.js";
-import { diversifiedSelection } from "./diversifier.js";
 import CEDEARS from "./cedears.js";
 
-export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profile = "moderate", picksPerMonth = 4 } = {}) {
-  const topN = 40;
+// ── Sector categories for strict slot-based diversification ──
+const CATEGORIES = {
+  growth: ["Technology", "Consumer Cyclical", "E-Commerce", "Communication", "Crypto"],
+  defensive: ["Consumer Defensive", "Healthcare", "Financial"],
+  hedge: ["Energy", "Materials"],
+  index: ["ETF - Índices", "ETF - Internacional", "ETF - Sectorial", "ETF - Commodities", "ETF - Temático", "ETF - Dividendos", "ETF - Crypto"],
+};
 
-  const candidates = CEDEARS.filter(c =>
-    !c.sector.startsWith("ETF") || c.ticker === "SPY" || c.ticker === "QQQ"
-  ).slice(0, topN);
+function getCategory(sector) {
+  for (const [cat, sectors] of Object.entries(CATEGORIES)) {
+    if (sectors.includes(sector)) return cat;
+  }
+  return "other";
+}
+
+// ── Select candidates ensuring sector coverage ──
+function selectBacktestCandidates(allCedears, maxPerSector = 6, maxTotal = 60) {
+  const bySector = {};
+  for (const c of allCedears) {
+    if (c.sector.startsWith("ETF")) continue;
+    if (!bySector[c.sector]) bySector[c.sector] = [];
+    bySector[c.sector].push(c);
+  }
+  const selected = [];
+  for (const tickers of Object.values(bySector)) {
+    selected.push(...tickers.slice(0, maxPerSector));
+  }
+  return selected.slice(0, maxTotal);
+}
+
+// ── Strict slot-based diversification for backtest picks ──
+function selectDiversifiedPicks(scored, numPicks = 4) {
+  const picks = [];
+  const usedTickers = new Set();
+  const usedSectors = {};
+
+  function tryAdd(item) {
+    const ticker = item.cedear?.ticker || item.ticker;
+    if (usedTickers.has(ticker)) return false;
+    const sector = item.cedear?.sector || item.sector;
+    usedTickers.add(ticker);
+    usedSectors[sector] = (usedSectors[sector] || 0) + 1;
+    picks.push(item);
+    return true;
+  }
+
+  // SLOT 1: Best growth (tech, consumer cyclical, e-commerce, communication)
+  for (const item of scored) {
+    if (picks.length >= 1) break;
+    if (getCategory(item.cedear?.sector || item.sector) === "growth") tryAdd(item);
+  }
+
+  // SLOT 2: Best defensive (consumer defensive, healthcare, financial)
+  for (const item of scored) {
+    if (picks.length >= 2) break;
+    if (getCategory(item.cedear?.sector || item.sector) === "defensive") tryAdd(item);
+  }
+
+  // SLOT 3: Best hedge (energy, materials)
+  for (const item of scored) {
+    if (picks.length >= 3) break;
+    if (getCategory(item.cedear?.sector || item.sector) === "hedge") tryAdd(item);
+  }
+
+  // REMAINING SLOTS: Fill with best that don't repeat sector
+  for (const item of scored) {
+    if (picks.length >= numPicks) break;
+    const ticker = item.cedear?.ticker || item.ticker;
+    const sector = item.cedear?.sector || item.sector;
+    if (usedTickers.has(ticker)) continue;
+    if ((usedSectors[sector] || 0) >= 1 && picks.length < numPicks - 1) continue;
+    tryAdd(item);
+  }
+
+  // FALLBACK: If still not enough, fill from any remaining
+  for (const item of scored) {
+    if (picks.length >= numPicks) break;
+    const ticker = item.cedear?.ticker || item.ticker;
+    if (!usedTickers.has(ticker)) tryAdd(item);
+  }
+
+  return picks;
+}
+
+export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profile = "moderate", picksPerMonth = 4 } = {}) {
+  const candidates = selectBacktestCandidates(CEDEARS);
 
   const totalMonths = months + 7;
 
@@ -62,9 +141,10 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
 
     scored.sort((a, b) => b.scores.composite - a.scores.composite);
 
-    // Use the real diversifier to pick from multiple sectors
-    const { picks } = diversifiedSelection(scored, [], profile);
-    const monthPicks = picks.slice(0, picksPerMonth);
+    // Strict slot-based diversification: growth + defensive + hedge + fill
+    const monthPicks = selectDiversifiedPicks(scored, picksPerMonth);
+
+    console.log(`[Backtest ${monthLabel}] Picks: ${monthPicks.map(p => `${p.cedear?.ticker || p.ticker} (${p.cedear?.sector || p.sector})`).join(", ")}`);
 
     if (monthPicks.length === 0) continue;
 
