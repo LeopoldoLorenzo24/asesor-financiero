@@ -342,7 +342,7 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
         if (!rec.ticker) continue;
         const pickData = topPicks.find((p) => p.cedear?.ticker === rec.ticker);
         try {
-          logPrediction({
+          await logPrediction({
             ticker: rec.ticker,
             action: rec.accion || "COMPRAR",
             confidence: rec.conviction || 70,
@@ -375,7 +375,7 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
             if (!acc.ticker) continue;
             const pickData = topPicks.find((p) => p.cedear?.ticker === acc.ticker);
             try {
-              logPrediction({
+              await logPrediction({
                 ticker: acc.ticker,
                 action: acc.accion,
                 confidence: acc.urgencia === "alta" ? 85 : 60,
@@ -406,7 +406,7 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
       console.log(`📊 Predictions saved: ${savedCount} (picks: ${picksActivos.length}, actions: ${(result.acciones_cartera_actual || []).filter(a => a.accion === "REDUCIR" || a.accion === "VENDER").length})`);
 
       // Log the full analysis session
-      logAnalysisSession({
+      await logAnalysisSession({
         capitalArs: capital,
         portfolioValueArs: 0, // Will be calculated from portfolio
         cclRate: ccl.venta,

@@ -33,6 +33,7 @@ import { canRegister, register, login, authMiddleware } from "./auth.js";
 import { calculateBenchmarks } from "./benchmarks.js";
 import { runBacktest } from "./backtest.js";
 import {
+  initDb,
   getPortfolio, getPortfolioSummary, addPosition, sellPosition,
   getTransactions, getPredictions, evaluatePredictionsForTicker,
   calculateBotPerformance, getCapitalHistory, logCapital,
@@ -53,22 +54,22 @@ if (existsSync(clientDist)) {
 }
 
 // ---- Auth routes (public) ----
-app.get("/api/auth/status", (req, res) => {
-  res.json({ canRegister: canRegister() });
+app.get("/api/auth/status", async (req, res) => {
+  res.json({ canRegister: await canRegister() });
 });
 
-app.post("/api/auth/register", (req, res) => {
+app.post("/api/auth/register", async (req, res) => {
   try {
     const { email, password } = req.body;
-    const token = register(email, password);
+    const token = await register(email, password);
     res.json({ token, email });
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    const token = login(email, password);
+    const token = await login(email, password);
     res.json({ token, email });
   } catch (err) { res.status(401).json({ error: err.message }); }
 });
@@ -272,7 +273,7 @@ app.post("/api/ai/analyze", async (req, res) => {
     rankedResults.sort((a, b) => b.scores.composite - a.scores.composite);
 
     // Algorithmic diversification: pre-filter before AI
-    const portfolioPositions = getPortfolioSummary();
+    const portfolioPositions = await getPortfolioSummary();
     const { picks: topPicks, diversification, warnings } = diversifiedSelection(rankedResults, portfolioPositions, profileId);
 
     console.log(`🎯 Diversifier: ${topPicks.length} picks across ${diversification.sectorsRepresented} sectors`);
@@ -367,17 +368,17 @@ app.get("/api/sectors", (req, res) => {
 });
 
 // ---- Portfolio exposure by sector ----
-app.get("/api/portfolio/exposure", (req, res) => {
+app.get("/api/portfolio/exposure", async (req, res) => {
   try {
-    res.json(portfolioExposure());
+    res.json(await portfolioExposure());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // ---- Auto-seed portfolio if DB is empty ----
-function seedIfEmpty() {
-  const summary = getPortfolioSummary();
+async function seedIfEmpty() {
+  const summary = await getPortfolioSummary();
   if (summary.length > 0) return;
   console.log("⚡ DB vacía — seeding portfolio inicial...");
   const PORTFOLIO = [
@@ -395,34 +396,38 @@ function seedIfEmpty() {
     { ticker: "V", shares: 7, priceArs: 26400.25, notes: "Compra mes 1-2 - Financial / pagos" },
   ];
   for (const pos of PORTFOLIO) {
-    try { addPosition(pos.ticker, pos.shares, pos.priceArs, null, null, pos.notes); } catch (e) { console.error(`Seed error ${pos.ticker}:`, e.message); }
+    try { await addPosition(pos.ticker, pos.shares, pos.priceArs, null, null, pos.notes); } catch (e) { console.error(`Seed error ${pos.ticker}:`, e.message); }
   }
-  logCapital(35170, 1964830, null, 1000000);
+  await logCapital(35170, 1964830, null, 1000000);
   console.log(`✓ Portfolio seeded: ${PORTFOLIO.length} posiciones`);
 }
-seedIfEmpty();
 
 // ---- Start server ----
-app.listen(PORT, () => {
-  console.log(`
+async function startServer() {
+  await initDb();
+  await seedIfEmpty();
+  app.listen(PORT, () => {
+    console.log(`
 ╔══════════════════════════════════════════════╗
 ║     CEDEAR ADVISOR API - v1.0                ║
 ║     Running on port ${PORT}                     ║
 ║     CEDEARs loaded: ${CEDEARS.length}                      ║
 ║     AI: ${process.env.ANTHROPIC_API_KEY ? "✓ Configured" : "✗ Missing API key"}               ║
 ╚══════════════════════════════════════════════╝
-  `);
-});
+    `);
+  });
+}
+startServer();
 
 // ============================================================
 // DATABASE-BACKED ROUTES (Portfolio, Predictions, Performance)
 // ============================================================
 
 // ---- Portfolio CRUD ----
-app.get("/api/portfolio/db", (req, res) => {
+app.get("/api/portfolio/db", async (req, res) => {
   try {
-    const summary = getPortfolioSummary();
-    const positions = getPortfolio();
+    const summary = await getPortfolioSummary();
+    const positions = await getPortfolio();
     res.json({ summary, positions });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -433,7 +438,7 @@ app.post("/api/portfolio/buy", async (req, res) => {
     if (!ticker || !shares || !priceArs) return res.status(400).json({ error: "Faltan campos" });
     const ccl = await fetchCCL();
     const quote = await fetchQuote(ticker).catch(() => null);
-    addPosition(ticker.toUpperCase(), shares, priceArs, quote?.price || null, ccl.venta, notes || "");
+    await addPosition(ticker.toUpperCase(), shares, priceArs, quote?.price || null, ccl.venta, notes || "");
     res.json({ success: true, message: `Compra: ${shares} ${ticker} a $${priceArs}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -444,20 +449,20 @@ app.post("/api/portfolio/sell", async (req, res) => {
     if (!ticker || !shares || !priceArs) return res.status(400).json({ error: "Faltan campos" });
     const ccl = await fetchCCL();
     const quote = await fetchQuote(ticker).catch(() => null);
-    sellPosition(ticker.toUpperCase(), shares, priceArs, quote?.price || null, ccl.venta, notes || "");
+    await sellPosition(ticker.toUpperCase(), shares, priceArs, quote?.price || null, ccl.venta, notes || "");
     res.json({ success: true, message: `Venta: ${shares} ${ticker} a $${priceArs}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---- Transactions ----
-app.get("/api/transactions", (req, res) => {
-  try { res.json(getTransactions(req.query.ticker || null, parseInt(req.query.limit) || 50)); }
+app.get("/api/transactions", async (req, res) => {
+  try { res.json(await getTransactions(req.query.ticker || null, parseInt(req.query.limit) || 50)); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---- Predictions ----
-app.get("/api/predictions", (req, res) => {
-  try { res.json(getPredictions(req.query.ticker || null, req.query.unevaluated === "true", parseInt(req.query.limit) || 100)); }
+app.get("/api/predictions", async (req, res) => {
+  try { res.json(await getPredictions(req.query.ticker || null, req.query.unevaluated === "true", parseInt(req.query.limit) || 100)); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -467,20 +472,20 @@ app.post("/api/predictions/evaluate", async (req, res) => {
     if (!ticker) return res.status(400).json({ error: "Falta ticker" });
     const quote = await fetchQuote(ticker.toUpperCase());
     if (!quote) return res.status(404).json({ error: "No se pudo obtener precio" });
-    const results = evaluatePredictionsForTicker(ticker.toUpperCase(), quote.price);
+    const results = await evaluatePredictionsForTicker(ticker.toUpperCase(), quote.price);
     res.json({ ticker, currentPriceUsd: quote.price, evaluated: results.length, results });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post("/api/predictions/evaluate-all", async (req, res) => {
   try {
-    const pending = getPredictions(null, true);
+    const pending = await getPredictions(null, true);
     const tickers = [...new Set(pending.map((p) => p.ticker))];
     const allResults = [];
     for (const t of tickers) {
       try {
         const q = await fetchQuote(t);
-        if (q) allResults.push(...evaluatePredictionsForTicker(t, q.price));
+        if (q) allResults.push(...await evaluatePredictionsForTicker(t, q.price));
       } catch (e) { console.error(`Eval error ${t}:`, e.message); }
     }
     res.json({ tickersProcessed: tickers.length, totalEvaluated: allResults.length, results: allResults });
@@ -488,22 +493,22 @@ app.post("/api/predictions/evaluate-all", async (req, res) => {
 });
 
 // ---- Bot Performance ----
-app.get("/api/performance", (req, res) => {
-  try { res.json(calculateBotPerformance(parseInt(req.query.days) || 30)); }
+app.get("/api/performance", async (req, res) => {
+  try { res.json(await calculateBotPerformance(parseInt(req.query.days) || 30)); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---- Analysis sessions ----
-app.get("/api/analysis-sessions", (req, res) => {
+app.get("/api/analysis-sessions", async (req, res) => {
   try {
-    const sessions = getAnalysisSessions(parseInt(req.query.limit) || 20);
+    const sessions = await getAnalysisSessions(parseInt(req.query.limit) || 20);
     res.json(sessions.map((s) => ({ ...s, risks: s.risks ? JSON.parse(s.risks) : [], full_response: s.full_response ? JSON.parse(s.full_response) : null })));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---- Capital tracking ----
-app.get("/api/capital", (req, res) => {
-  try { res.json(getCapitalHistory(parseInt(req.query.limit) || 90)); }
+app.get("/api/capital", async (req, res) => {
+  try { res.json(await getCapitalHistory(parseInt(req.query.limit) || 90)); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -512,7 +517,7 @@ app.post("/api/capital", async (req, res) => {
     const { capitalArs, portfolioValueArs, monthlyDeposit } = req.body;
     if (capitalArs == null) return res.status(400).json({ error: "Falta capitalArs" });
     const ccl = await fetchCCL();
-    logCapital(capitalArs, portfolioValueArs || 0, ccl.venta, monthlyDeposit || 1000000);
+    await logCapital(capitalArs, portfolioValueArs || 0, ccl.venta, monthlyDeposit || 1000000);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

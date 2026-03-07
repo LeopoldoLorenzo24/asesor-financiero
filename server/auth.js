@@ -28,23 +28,23 @@ function verifyToken(token) {
   } catch { return null; }
 }
 
-export function canRegister() {
-  const count = db.prepare("SELECT COUNT(*) as count FROM users").get();
+export async function canRegister() {
+  const count = (await db.execute("SELECT COUNT(*) as count FROM users")).rows[0];
   return count.count === 0;
 }
 
-export function register(email, password) {
-  if (!canRegister()) throw new Error("Registro cerrado. Ya existe un usuario.");
+export async function register(email, password) {
+  if (!(await canRegister())) throw new Error("Registro cerrado. Ya existe un usuario.");
   if (email.toLowerCase() !== ALLOWED_EMAIL) throw new Error("Email no autorizado.");
   if (!password || password.length < 6) throw new Error("La contraseña debe tener al menos 6 caracteres.");
 
   const hash = hashPassword(password);
-  const result = db.prepare("INSERT INTO users (email, password_hash) VALUES (?, ?)").run(email.toLowerCase(), hash);
-  return generateToken(result.lastInsertRowid, email.toLowerCase());
+  const result = await db.execute({ sql: "INSERT INTO users (email, password_hash) VALUES (?, ?)", args: [email.toLowerCase(), hash] });
+  return generateToken(Number(result.lastInsertRowid), email.toLowerCase());
 }
 
-export function login(email, password) {
-  const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email.toLowerCase());
+export async function login(email, password) {
+  const user = (await db.execute({ sql: "SELECT * FROM users WHERE email = ?", args: [email.toLowerCase()] })).rows[0];
   if (!user) throw new Error("Usuario no encontrado.");
   const hash = hashPassword(password);
   if (user.password_hash.length !== hash.length) throw new Error("Contraseña incorrecta.");
