@@ -29,6 +29,7 @@ function verifyToken(token) {
 }
 
 export async function canRegister() {
+  if (process.env.AUTH_PASSWORD) return false; // env password mode: always login, never register
   const count = (await db.execute("SELECT COUNT(*) as count FROM users")).rows[0];
   return count.count === 0;
 }
@@ -44,6 +45,22 @@ export async function register(email, password) {
 }
 
 export async function login(email, password) {
+  if (email.toLowerCase() !== ALLOWED_EMAIL) throw new Error("Email no autorizado.");
+
+  // Validate password against env var if set
+  if (process.env.AUTH_PASSWORD) {
+    if (password !== process.env.AUTH_PASSWORD) throw new Error("Contraseña incorrecta.");
+    // Ensure user exists in DB (auto-create on first login)
+    let user = (await db.execute({ sql: "SELECT * FROM users WHERE email = ?", args: [email.toLowerCase()] })).rows[0];
+    if (!user) {
+      const hash = hashPassword(password);
+      const result = await db.execute({ sql: "INSERT INTO users (email, password_hash) VALUES (?, ?)", args: [email.toLowerCase(), hash] });
+      return generateToken(Number(result.lastInsertRowid), email.toLowerCase());
+    }
+    return generateToken(user.id, user.email);
+  }
+
+  // Fallback: validate against DB hash
   const user = (await db.execute({ sql: "SELECT * FROM users WHERE email = ?", args: [email.toLowerCase()] })).rows[0];
   if (!user) throw new Error("Usuario no encontrado.");
   const hash = hashPassword(password);

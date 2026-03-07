@@ -251,8 +251,6 @@ export default function App() {
   const [btProfile, setBtProfile] = useState(profile);
   const [btPicks, setBtPicks] = useState(4);
 
-  if (!loggedIn) return <LoginScreen onAuth={() => setLoggedIn(true)} />;
-
   const changeProfile = (p) => { setProfile(p); localStorage.setItem("cedear_profile", p); };
 
   const loadRanking = useCallback(async () => { setLoading(true); setError(null); try { const d = await api.getRanking({ profile }); setRanking(d.ranking || []); setCcl(d.ccl); } catch (e) { setError(`Error: ${e.message}`); } finally { setLoading(false); } }, [profile]);
@@ -265,9 +263,9 @@ export default function App() {
   const loadBenchmarks = useCallback(async () => { setBenchLoading(true); try { setBenchmarks(await api.getBenchmarks()); } catch (e) { console.error(e); } finally { setBenchLoading(false); } }, []);
   const runBacktestSim = useCallback(async () => { setBacktestLoading(true); try { setBacktest(await api.getBacktest(btMonths, btDeposit, btProfile, btPicks)); } catch (e) { console.error(e); } finally { setBacktestLoading(false); } }, [btMonths, btDeposit, btProfile, btPicks]);
 
-  useEffect(() => { loadRanking(); loadPortfolioDB(); loadCapital(); }, [profile]);
-  useEffect(() => { if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); } if (view === "predicciones") { loadPredictions(); loadPerformance(); } if (view === "historial") loadSessions(); if (view === "benchmarks") loadBenchmarks(); }, [view]);
-  useEffect(() => { if (view === "dashboard" && portfolioDB.summary.length > 0 && !benchmarks) loadBenchmarks(); }, [view, portfolioDB]);
+  useEffect(() => { if (loggedIn) { loadRanking(); loadPortfolioDB(); loadCapital(); } }, [profile, loggedIn]);
+  useEffect(() => { if (!loggedIn) return; if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); } if (view === "predicciones") { loadPredictions(); loadPerformance(); } if (view === "historial") loadSessions(); if (view === "benchmarks") loadBenchmarks(); }, [view, loggedIn]);
+  useEffect(() => { if (loggedIn && view === "dashboard" && portfolioDB.summary.length > 0 && !benchmarks) loadBenchmarks(); }, [view, portfolioDB, loggedIn]);
 
   const loadDetail = useCallback(async (ticker) => { setSelectedTicker(ticker); setDetailLoading(true); setAiSingle(null); try { setDetail(await api.getCedear(ticker, profile)); } catch (e) { console.error(e); } finally { setDetailLoading(false); } }, [profile]);
   const runAI = useCallback(async (investCapital) => { setAiLoading(true); setShowCapitalInput(false); try { const d = await api.aiAnalyze(portfolioDB.summary.map(p => ({ ticker: p.ticker, shares: p.total_shares, avgPrice: p.weighted_avg_price })), investCapital, profile); setAiAnalysis(d.analysis); } catch (e) { setAiAnalysis({ error: e.message }); } finally { setAiLoading(false); } }, [portfolioDB, profile]);
@@ -276,6 +274,8 @@ export default function App() {
   const handleBuy = async () => { try { setOpMsg(null); await api.buyPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Compra registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowBuyModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
   const handleSell = async () => { try { setOpMsg(null); await api.sellPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Venta registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowSellModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
   const handleEvaluateAll = async () => { setEvalLoading(true); setEvalResult(null); try { const r = await api.evaluateAll(); setEvalResult(r); loadPredictions(); loadPerformance(); } catch (e) { setEvalResult({ error: e.message }); } finally { setEvalLoading(false); } };
+
+  if (!loggedIn) return <LoginScreen onAuth={() => setLoggedIn(true)} />;
 
   const sectors = ["Todos", ...new Set(ranking.map(r => r.cedear?.sector).filter(Boolean))];
   const filtered = ranking.filter(r => filterSector === "Todos" || r.cedear?.sector === filterSector).sort((a, b) => { if (sortBy === "composite") return b.scores.composite - a.scores.composite; if (sortBy === "technical") return b.scores.techScore - a.scores.techScore; if (sortBy === "fundamental") return b.scores.fundScore - a.scores.fundScore; if (sortBy === "change") return (b.technical?.indicators?.performance?.month1 || 0) - (a.technical?.indicators?.performance?.month1 || 0); return 0; });
