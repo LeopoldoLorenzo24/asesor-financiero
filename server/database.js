@@ -8,11 +8,11 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, "data", "cedear-advisor.db");
+const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, "data", "cedear-advisor.db");
 
 // Ensure data directory exists
 import { mkdirSync } from "fs";
-mkdirSync(path.join(__dirname, "data"), { recursive: true });
+mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new DatabaseSync(DB_PATH);
 
