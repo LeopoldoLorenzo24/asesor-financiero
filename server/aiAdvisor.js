@@ -315,22 +315,42 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
       if (!result) return { error: "No se pudo parsear la respuesta de la IA", raw: jsonStr.substring(0, 500) };
     }
 
+    // --- NORMALIZE AI RESPONSE FORMAT ---
+    // The AI sometimes uses old format (nuevas_compras) instead of decision_mensual.picks_activos
+    if (!result.decision_mensual && result.nuevas_compras) {
+      result.decision_mensual = {
+        resumen: result.distribucion_capital?.estrategia || "",
+        core_etf: coreETF,
+        distribucion: result.distribucion_capital || {},
+        picks_activos: result.nuevas_compras.map(nc => ({
+          ...nc,
+          conviction: nc.conviction || 70,
+          por_que_le_gana_a_spy: nc.por_que_le_gana_a_spy || nc.razon,
+        })),
+      };
+    }
+    if (!result.honestidad && result.autoevaluacion) {
+      result.honestidad = result.autoevaluacion;
+    }
+
     // --- LOG PREDICTIONS TO DATABASE ---
+    let savedCount = 0;
     try {
       // Log picks activos (satellite) como predicciones
       const picksActivos = result.decision_mensual?.picks_activos || result.nuevas_compras || [];
-      if (picksActivos.length > 0) {
-        for (const rec of picksActivos) {
-          const pickData = topPicks.find((p) => p.cedear?.ticker === rec.ticker);
+      for (const rec of picksActivos) {
+        if (!rec.ticker) continue;
+        const pickData = topPicks.find((p) => p.cedear?.ticker === rec.ticker);
+        try {
           logPrediction({
             ticker: rec.ticker,
-            action: "COMPRAR",
+            action: rec.accion || "COMPRAR",
             confidence: rec.conviction || 70,
             targetPriceUsd: pickData?.quote?.price ? pickData.quote.price * (1 + (rec.target_pct || 0) / 100) : null,
             stopLossPct: rec.stop_loss_pct,
             targetPct: rec.target_pct,
             horizon: rec.horizonte,
-            reasoning: rec.razon,
+            reasoning: rec.razon || rec.por_que_le_gana_a_spy,
             newsContext: result.resumen_mercado,
             priceUsd: pickData?.quote?.price || null,
             priceArs: rec.precio_aprox_ars || null,
@@ -342,6 +362,9 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
             scoreSentiment: pickData?.scores?.sentScore || null,
             pe: pickData?.fundamentals?.pe || null,
           });
+          savedCount++;
+        } catch (e) {
+          console.error(`❌ Error saving prediction for ${rec.ticker}:`, e.message);
         }
       }
 
@@ -349,30 +372,38 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
       if (result.acciones_cartera_actual) {
         for (const acc of result.acciones_cartera_actual) {
           if (acc.accion === "REDUCIR" || acc.accion === "VENDER") {
+            if (!acc.ticker) continue;
             const pickData = topPicks.find((p) => p.cedear?.ticker === acc.ticker);
-            logPrediction({
-              ticker: acc.ticker,
-              action: acc.accion,
-              confidence: acc.urgencia === "alta" ? 85 : 60,
-              targetPriceUsd: null,
-              stopLossPct: null,
-              targetPct: null,
-              horizon: "Inmediato",
-              reasoning: acc.razon,
-              newsContext: result.resumen_mercado,
-              priceUsd: pickData?.quote?.price || null,
-              priceArs: null,
-              ccl: ccl.venta,
-              rsi: pickData?.technical?.indicators?.rsi || null,
-              scoreComposite: pickData?.scores?.composite || null,
-              scoreTechnical: pickData?.scores?.techScore || null,
-              scoreFundamental: pickData?.scores?.fundScore || null,
-              scoreSentiment: pickData?.scores?.sentScore || null,
-              pe: pickData?.fundamentals?.pe || null,
-            });
+            try {
+              logPrediction({
+                ticker: acc.ticker,
+                action: acc.accion,
+                confidence: acc.urgencia === "alta" ? 85 : 60,
+                targetPriceUsd: null,
+                stopLossPct: null,
+                targetPct: null,
+                horizon: "Inmediato",
+                reasoning: acc.razon,
+                newsContext: result.resumen_mercado,
+                priceUsd: pickData?.quote?.price || null,
+                priceArs: null,
+                ccl: ccl.venta,
+                rsi: pickData?.technical?.indicators?.rsi || null,
+                scoreComposite: pickData?.scores?.composite || null,
+                scoreTechnical: pickData?.scores?.techScore || null,
+                scoreFundamental: pickData?.scores?.fundScore || null,
+                scoreSentiment: pickData?.scores?.sentScore || null,
+                pe: pickData?.fundamentals?.pe || null,
+              });
+              savedCount++;
+            } catch (e) {
+              console.error(`❌ Error saving prediction for ${acc.ticker}:`, e.message);
+            }
           }
         }
       }
+
+      console.log(`📊 Predictions saved: ${savedCount} (picks: ${picksActivos.length}, actions: ${(result.acciones_cartera_actual || []).filter(a => a.accion === "REDUCIR" || a.accion === "VENDER").length})`);
 
       // Log the full analysis session
       logAnalysisSession({
@@ -385,7 +416,7 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
         fullResponse: result,
       });
     } catch (logErr) {
-      console.error("Error logging to database:", logErr.message);
+      console.error("❌ Error logging to database:", logErr.message);
       // Don't fail the response if logging fails
     }
 
