@@ -308,6 +308,33 @@ app.get("/api/portfolio/exposure", (req, res) => {
   }
 });
 
+// ---- Auto-seed portfolio if DB is empty ----
+function seedIfEmpty() {
+  const summary = getPortfolioSummary();
+  if (summary.length > 0) return;
+  console.log("⚡ DB vacía — seeding portfolio inicial...");
+  const PORTFOLIO = [
+    { ticker: "ABBV", shares: 5, priceArs: 34830.26, notes: "Compra mes 1-2 - Healthcare defensivo" },
+    { ticker: "AMZN", shares: 120, priceArs: 2197.24, notes: "Compra mes 1-2 - E-commerce/cloud growth" },
+    { ticker: "COIN", shares: 9, priceArs: 11054.19, notes: "Compra mes 1-2 - Crypto exposure" },
+    { ticker: "COST", shares: 5, priceArs: 30441.25, notes: "Compra mes 1-2 - Consumer defensive" },
+    { ticker: "GOOGL", shares: 12, priceArs: 8128.74, notes: "Compra mes 1-2 - Big tech / AI" },
+    { ticker: "MSFT", shares: 10, priceArs: 20867.96, notes: "Compra mes 1-2 - Big tech / cloud" },
+    { ticker: "NVDA", shares: 13, priceArs: 11697.33, notes: "Compra mes 1-2 - AI / semiconductors" },
+    { ticker: "QCOM", shares: 7, priceArs: 18381.52, notes: "Compra mes 1-2 - Semiconductors / mobile" },
+    { ticker: "QQQ", shares: 2, priceArs: 45561.21, notes: "Compra mes 1-2 - ETF Nasdaq 100" },
+    { ticker: "SPY", shares: 5, priceArs: 51440.07, notes: "Compra mes 1-2 - ETF S&P 500" },
+    { ticker: "UNH", shares: 15, priceArs: 12985.85, notes: "Compra mes 1-2 - Healthcare" },
+    { ticker: "V", shares: 7, priceArs: 26400.25, notes: "Compra mes 1-2 - Financial / pagos" },
+  ];
+  for (const pos of PORTFOLIO) {
+    try { addPosition(pos.ticker, pos.shares, pos.priceArs, null, null, pos.notes); } catch (e) { console.error(`Seed error ${pos.ticker}:`, e.message); }
+  }
+  logCapital(35170, 1964830, null, 1000000);
+  console.log(`✓ Portfolio seeded: ${PORTFOLIO.length} posiciones`);
+}
+seedIfEmpty();
+
 // ---- Start server ----
 app.listen(PORT, () => {
   console.log(`
