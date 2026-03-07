@@ -6,18 +6,31 @@
 import CEDEARS from "./cedears.js";
 import { getPortfolioSummary } from "./database.js";
 
-// --- Profile configuration for moderate-aggressive investor ---
-const PROFILE = {
-  maxSectorPct: 0.35,   // max 35% in any single sector
-  minSectors: 3,        // at least 3 different sectors
-  totalPicks: 8,        // send 8 picks to AI (down from 10)
-  slots: {
-    growth: 3,           // growth slots (Technology, Consumer Cyclical, E-Commerce)
-    defensive: 2,        // defensive slots (Consumer Defensive, Healthcare, ETFs dividendos)
-    hedge: 1,            // hedge slots (Materials, Energy, ETF Commodities)
-    best: 2,             // best remaining by score regardless of category
+// --- Profile configurations ---
+const PROFILES = {
+  conservative: {
+    maxSectorPct: 0.20,
+    minSectors: 4,
+    totalPicks: 8,
+    slots: { growth: 1, defensive: 4, hedge: 1, best: 2 },
+  },
+  moderate: {
+    maxSectorPct: 0.35,
+    minSectors: 3,
+    totalPicks: 8,
+    slots: { growth: 3, defensive: 2, hedge: 1, best: 2 },
+  },
+  aggressive: {
+    maxSectorPct: 0.50,
+    minSectors: 2,
+    totalPicks: 8,
+    slots: { growth: 4, defensive: 1, hedge: 1, best: 2 },
   },
 };
+
+function getProfile(profileId = "moderate") {
+  return PROFILES[profileId] || PROFILES.moderate;
+}
 
 // --- Sector category mapping ---
 const SECTOR_CATEGORIES = {
@@ -35,7 +48,8 @@ function categorize(sector) {
 }
 
 // --- Main diversified selection ---
-export function diversifiedSelection(rankedResults, portfolioPositions = []) {
+export function diversifiedSelection(rankedResults, portfolioPositions = [], profileId = "moderate") {
+  const PROFILE = getProfile(profileId);
   // 1. Calculate current portfolio exposure
   const exposure = {};
   let totalValue = 0;

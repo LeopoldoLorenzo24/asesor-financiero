@@ -1,0 +1,67 @@
+import crypto from "crypto";
+import db from "./database.js";
+
+const ALLOWED_EMAIL = "leolorenzo201123@gmail.com";
+const JWT_SECRET = process.env.JWT_SECRET || "cedear-advisor-secret-key-change-this";
+
+function hashPassword(password) {
+  const salt = JWT_SECRET;
+  return crypto.pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
+}
+
+function generateToken(userId, email) {
+  const payload = JSON.stringify({ userId, email, exp: Date.now() + 30 * 24 * 60 * 60 * 1000 });
+  const signature = crypto.createHmac("sha256", JWT_SECRET).update(payload).digest("hex");
+  return Buffer.from(payload).toString("base64url") + "." + signature;
+}
+
+function verifyToken(token) {
+  try {
+    const [payloadB64, signature] = token.split(".");
+    if (!payloadB64 || !signature) return null;
+    const payload = Buffer.from(payloadB64, "base64url").toString();
+    const expectedSig = crypto.createHmac("sha256", JWT_SECRET).update(payload).digest("hex");
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) return null;
+    const data = JSON.parse(payload);
+    if (data.exp < Date.now()) return null;
+    return data;
+  } catch { return null; }
+}
+
+export function canRegister() {
+  const count = db.prepare("SELECT COUNT(*) as count FROM users").get();
+  return count.count === 0;
+}
+
+export function register(email, password) {
+  if (!canRegister()) throw new Error("Registro cerrado. Ya existe un usuario.");
+  if (email.toLowerCase() !== ALLOWED_EMAIL) throw new Error("Email no autorizado.");
+  if (!password || password.length < 6) throw new Error("La contraseña debe tener al menos 6 caracteres.");
+
+  const hash = hashPassword(password);
+  const result = db.prepare("INSERT INTO users (email, password_hash) VALUES (?, ?)").run(email.toLowerCase(), hash);
+  return generateToken(result.lastInsertRowid, email.toLowerCase());
+}
+
+export function login(email, password) {
+  const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email.toLowerCase());
+  if (!user) throw new Error("Usuario no encontrado.");
+  const hash = hashPassword(password);
+  if (user.password_hash.length !== hash.length) throw new Error("Contraseña incorrecta.");
+  if (!crypto.timingSafeEqual(Buffer.from(user.password_hash), Buffer.from(hash))) {
+    throw new Error("Contraseña incorrecta.");
+  }
+  return generateToken(user.id, user.email);
+}
+
+export function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "No autenticado" });
+  }
+  const token = authHeader.split(" ")[1];
+  const data = verifyToken(token);
+  if (!data) return res.status(401).json({ error: "Token inválido o expirado" });
+  req.user = data;
+  next();
+}

@@ -137,6 +137,14 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Users: single-user auth
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_portfolio_ticker ON portfolio(ticker);
   CREATE INDEX IF NOT EXISTS idx_transactions_ticker ON transactions(ticker);
   CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date_executed);

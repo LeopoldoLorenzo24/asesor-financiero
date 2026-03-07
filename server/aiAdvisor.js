@@ -15,8 +15,46 @@ function getClient() {
   return client;
 }
 
+// Profile-specific system prompts
+const PROFILE_PROMPTS = {
+  conservative: {
+    label: "CONSERVADOR",
+    personality: `Sos un asesor financiero CONSERVADOR argentino experto en CEDEARs.
+Tu prioridad #1 es PRESERVAR CAPITAL. Ante la duda: NO comprar.
+Priorizar dividendos, empresas estables, baja volatilidad.
+Evitar empresas sin ganancias o con beta > 1.2.
+Stop loss ajustados: -5% a -8%.`,
+    rules: `Máximo 20% en un solo CEDEAR, 25% en un solo sector.
+Mínimo 4 sectores, al menos 40% en defensivos.
+Distribución: 40-50% defensivos, 20-25% ETFs, 15-20% cobertura, 10-15% crecimiento moderado.`,
+  },
+  moderate: {
+    label: "MODERADO-AGRESIVO",
+    personality: `Sos un asesor financiero argentino experto en CEDEARs.
+Buscás balance entre crecimiento y protección. Mix de growth + defensivo + cobertura.
+Stop loss: -8% a -12%.`,
+    rules: `Máximo 35% en un sector, mínimo 3 sectores.
+Distribución: 30-35% crecimiento, 20-25% defensivos, 15-20% financieros, 10-15% cobertura, 5-10% apuestas.`,
+  },
+  aggressive: {
+    label: "AGRESIVO",
+    personality: `Sos un asesor financiero AGRESIVO argentino experto en CEDEARs.
+Tu prioridad es MAXIMIZAR RETORNO. Tolerás volatilidad alta.
+Empresas sin ganancias OK si tienen potencial explosivo.
+Ante la duda: COMPRAR.
+Stop loss amplios: -15% a -20%.`,
+    rules: `Hasta 50% en un solo sector. Mínimo 2 sectores.
+Distribución: 50-60% alto crecimiento, 15-20% tech consolidada, 10-15% especulativo, 5-10% defensivo mínimo.`,
+  },
+};
+
+function getProfileConfig(profileId = "moderate") {
+  return PROFILE_PROMPTS[profileId] || PROFILE_PROMPTS.moderate;
+}
+
 // --- Generate full AI analysis ---
-export async function generateAnalysis({ topPicks, portfolio, capital, ccl, diversification, warnings, ranking }) {
+export async function generateAnalysis({ topPicks, portfolio, capital, ccl, diversification, warnings, ranking, profileId = "moderate" }) {
+  const profile = getProfileConfig(profileId);
   // Construir contexto mensual completo
   const cycleData = buildMonthlyCycleContext({ capital, ccl, ranking: ranking || topPicks });
   const monthlyContext = cycleData.context;
@@ -56,7 +94,9 @@ Tu trabajo es:
 
 Esto es la sesión mensual de ${new Date().toLocaleString("es-AR", { month: "long", year: "numeric" })}:
 
-PERFIL: Moderado-Agresivo
+PERFIL DE RIESGO: ${profile.label}
+REGLAS DEL PERFIL:
+${profile.rules}
 
 ${monthlyContext}
 
@@ -103,8 +143,7 @@ PASO 5 - RECOMENDAR NUEVAS POSICIONES:
 Con el capital real disponible (paso 4), recomendar nuevas compras priorizando diversificación sectorial.
 El total de las compras NO PUEDE superar el capital disponible post-ventas.
 
-El perfil es MODERADO-AGRESIVO. Puede tolerar volatilidad pero no apuestas extremas.
-Máximo 35% en un solo sector. Mínimo 3 sectores. Siempre algo defensivo + cobertura.
+El perfil es ${profile.label}. ${profile.rules}
 MIRÁ TU HISTORIAL DE PREDICCIONES: Si acertaste, repetí. Si fallaste, explicá por qué y ajustá.
 
 Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin texto adicional) con esta estructura:
@@ -194,7 +233,7 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
           name: "web_search",
         },
       ],
-      system: `Sos un asesor financiero argentino experto en CEDEARs. 
+      system: `${profile.personality}
 El inversor te consulta UNA VEZ POR MES para decidir qué hacer con su cartera.
 IMPORTANTE: El inversor NO tiene plata nueva para depositar cada mes. Su capital ya está invertido.
 Si querés que compre algo, primero tenés que recomendar vender algo para liberar plata.

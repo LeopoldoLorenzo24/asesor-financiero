@@ -1,12 +1,13 @@
 // ============================================================
-// CEDEAR ADVISOR v2 — Modern UI Redesign
+// CEDEAR ADVISOR v3 — Auth + Profiles + Benchmarks + Backtest
 // ============================================================
 import React, { useState, useEffect, useCallback } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, PieChart, Pie, Cell,
+  BarChart, Bar, Legend,
 } from "recharts";
-import api from "./api";
+import api, { auth } from "./api";
 
 /* ─────────── THEME ─────────── */
 const T = {
@@ -18,8 +19,9 @@ const T = {
   yellow: "#fbbf24", orange: "#f97316",
   blue: "#3b82f6", cyan: "#06b6d4",
   purple: "#8b5cf6", pink: "#ec4899",
+  gold: "#d4a017",
   text: "#f1f5f9", textMuted: "#94a3b8", textDim: "#64748b", textDark: "#475569",
-  font: "'Inter', system-ui, -apple-system, sans-serif",
+  font: "'DM Sans', 'Inter', system-ui, -apple-system, sans-serif",
   fontMono: "'JetBrains Mono', 'SF Mono', monospace",
 };
 
@@ -141,10 +143,77 @@ const PieLabel = ({ cx, cy, midAngle, outerRadius, name, percent }) => {
 };
 
 /* ═══════════════════════════════════════════════════════════
+   PROFILE CONFIG
+   ═══════════════════════════════════════════════════════════ */
+const PROFILES = {
+  conservative: { id: "conservative", label: "Conservador", icon: "🛡", color: T.blue, desc: "Preservar capital" },
+  moderate: { id: "moderate", label: "Moderado", icon: "⚖", color: T.yellow, desc: "Balance riesgo/retorno" },
+  aggressive: { id: "aggressive", label: "Agresivo", icon: "🔥", color: T.red, desc: "Máximo crecimiento" },
+};
+
+/* ═══════════════════════════════════════════════════════════
+   LOGIN SCREEN
+   ═══════════════════════════════════════════════════════════ */
+function LoginScreen({ onAuth }) {
+  const [mode, setMode] = useState(null); // null = checking, "login", "register"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    auth.status().then(s => setMode(s.canRegister ? "register" : "login")).catch(() => setMode("login"));
+  }, []);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError(null);
+    try {
+      if (mode === "register") await auth.register(email, password);
+      else await auth.login(email, password);
+      onAuth();
+    } catch (err) { setError(err.message); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" }}>
+      <div style={{ position: "fixed", top: -200, left: -200, width: 600, height: 600, borderRadius: "50%", background: `radial-gradient(circle, ${T.green}08, transparent 60%)`, pointerEvents: "none" }} />
+      <div style={{ position: "fixed", bottom: -200, right: -200, width: 600, height: 600, borderRadius: "50%", background: `radial-gradient(circle, ${T.purple}06, transparent 60%)`, pointerEvents: "none" }} />
+      <div style={{ width: "92%", maxWidth: 420, animation: "fadeUp 0.5s ease" }}>
+        <div style={{ textAlign: "center", marginBottom: 36 }}>
+          <div style={{ width: 64, height: 64, background: `linear-gradient(135deg, ${T.green}, ${T.cyan})`, borderRadius: 18, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 32, fontWeight: 900, color: "#030711", fontFamily: T.fontMono, boxShadow: `0 8px 40px ${T.green}30`, marginBottom: 18 }}>₵</div>
+          <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0, background: `linear-gradient(135deg, ${T.green}, ${T.cyan})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>CEDEAR ADVISOR</h1>
+          <p style={{ fontSize: 12, color: T.textDark, letterSpacing: "3px", marginTop: 6 }}>MOTOR DE INVERSIÓN IA</p>
+        </div>
+        <form onSubmit={handleSubmit} style={{ ...S.card, padding: 32, background: "rgba(15,23,42,0.7)", border: `1px solid ${T.borderLight}` }}>
+          <h2 style={{ margin: "0 0 24px", fontSize: 18, fontWeight: 800, textAlign: "center" }}>{mode === "register" ? "Crear Cuenta" : "Iniciar Sesión"}</h2>
+          {error && <div style={{ background: `${T.red}10`, border: `1px solid ${T.red}30`, borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 12, color: T.red }}>{error}</div>}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ ...S.label, display: "block", marginBottom: 6 }}>Email</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="tu@email.com" required style={S.input} />
+          </div>
+          <div style={{ marginBottom: 24 }}>
+            <label style={{ ...S.label, display: "block", marginBottom: 6 }}>Contraseña</label>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••" required minLength={6} style={S.input} />
+          </div>
+          <button type="submit" disabled={loading} style={{ ...S.btn(), width: "100%", padding: 14, fontSize: 15, opacity: loading ? 0.6 : 1 }}>
+            {loading ? "Procesando..." : mode === "register" ? "Registrarme" : "Entrar"}
+          </button>
+        </form>
+        <p style={{ textAlign: "center", fontSize: 10, color: T.textDark, marginTop: 20 }}>Acceso exclusivo · Un solo usuario autorizado</p>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
    APP
    ═══════════════════════════════════════════════════════════ */
 export default function App() {
+  const [loggedIn, setLoggedIn] = useState(auth.isLoggedIn());
   const [view, setView] = useState("dashboard");
+  const [profile, setProfile] = useState(localStorage.getItem("cedear_profile") || "moderate");
   const [ranking, setRanking] = useState([]);
   const [ccl, setCcl] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -172,20 +241,32 @@ export default function App() {
   const [sortBy, setSortBy] = useState("composite");
   const [showCapitalInput, setShowCapitalInput] = useState(false);
   const [capitalToInvest, setCapitalToInvest] = useState("");
+  // New: benchmarks & backtest
+  const [benchmarks, setBenchmarks] = useState(null);
+  const [benchLoading, setBenchLoading] = useState(false);
+  const [backtest, setBacktest] = useState(null);
+  const [backtestLoading, setBacktestLoading] = useState(false);
+  const [backtestMonths, setBacktestMonths] = useState(6);
 
-  const loadRanking = useCallback(async () => { setLoading(true); setError(null); try { const d = await api.getRanking(); setRanking(d.ranking || []); setCcl(d.ccl); } catch (e) { setError(`Error: ${e.message}. Verificá que el servidor esté corriendo.`); } finally { setLoading(false); } }, []);
+  if (!loggedIn) return <LoginScreen onAuth={() => setLoggedIn(true)} />;
+
+  const changeProfile = (p) => { setProfile(p); localStorage.setItem("cedear_profile", p); };
+
+  const loadRanking = useCallback(async () => { setLoading(true); setError(null); try { const d = await api.getRanking({ profile }); setRanking(d.ranking || []); setCcl(d.ccl); } catch (e) { setError(`Error: ${e.message}`); } finally { setLoading(false); } }, [profile]);
   const loadPortfolioDB = useCallback(async () => { try { setPortfolioDB(await api.getPortfolioDB()); } catch (e) { console.error(e); } }, []);
   const loadCapital = useCallback(async () => { try { const hist = await api.getCapitalHistory(1); if (hist.length > 0) setCapital(hist[0].capital_available_ars); } catch (e) { console.error(e); } }, []);
   const loadTransactions = useCallback(async () => { try { setTransactions(await api.getTransactions()); } catch (e) { console.error(e); } }, []);
   const loadPredictions = useCallback(async () => { try { setPredictions(await api.getPredictions()); } catch (e) { console.error(e); } }, []);
   const loadPerformance = useCallback(async () => { try { setPerformance(await api.getPerformance(60)); } catch (e) { console.error(e); } }, []);
   const loadSessions = useCallback(async () => { try { setAnalysisSessions(await api.getAnalysisSessions(10)); } catch (e) { console.error(e); } }, []);
+  const loadBenchmarks = useCallback(async () => { setBenchLoading(true); try { setBenchmarks(await api.getBenchmarks()); } catch (e) { console.error(e); } finally { setBenchLoading(false); } }, []);
+  const loadBacktest = useCallback(async (m) => { setBacktestLoading(true); try { setBacktest(await api.getBacktest(m)); } catch (e) { console.error(e); } finally { setBacktestLoading(false); } }, []);
 
-  useEffect(() => { loadRanking(); loadPortfolioDB(); loadCapital(); }, []);
-  useEffect(() => { if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); } if (view === "predicciones") { loadPredictions(); loadPerformance(); } if (view === "historial") loadSessions(); }, [view]);
+  useEffect(() => { loadRanking(); loadPortfolioDB(); loadCapital(); }, [profile]);
+  useEffect(() => { if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); } if (view === "predicciones") { loadPredictions(); loadPerformance(); } if (view === "historial") loadSessions(); if (view === "benchmarks") loadBenchmarks(); if (view === "backtest") loadBacktest(backtestMonths); }, [view]);
 
-  const loadDetail = useCallback(async (ticker) => { setSelectedTicker(ticker); setDetailLoading(true); setAiSingle(null); try { setDetail(await api.getCedear(ticker)); } catch (e) { console.error(e); } finally { setDetailLoading(false); } }, []);
-  const runAI = useCallback(async (investCapital) => { setAiLoading(true); setShowCapitalInput(false); try { const d = await api.aiAnalyze(portfolioDB.summary.map(p => ({ ticker: p.ticker, shares: p.total_shares, avgPrice: p.weighted_avg_price })), investCapital); setAiAnalysis(d.analysis); } catch (e) { setAiAnalysis({ error: e.message }); } finally { setAiLoading(false); } }, [portfolioDB]);
+  const loadDetail = useCallback(async (ticker) => { setSelectedTicker(ticker); setDetailLoading(true); setAiSingle(null); try { setDetail(await api.getCedear(ticker, profile)); } catch (e) { console.error(e); } finally { setDetailLoading(false); } }, [profile]);
+  const runAI = useCallback(async (investCapital) => { setAiLoading(true); setShowCapitalInput(false); try { const d = await api.aiAnalyze(portfolioDB.summary.map(p => ({ ticker: p.ticker, shares: p.total_shares, avgPrice: p.weighted_avg_price })), investCapital, profile); setAiAnalysis(d.analysis); } catch (e) { setAiAnalysis({ error: e.message }); } finally { setAiLoading(false); } }, [portfolioDB, profile]);
   const runAISingle = useCallback(async (ticker) => { setAiSingleLoading(true); try { setAiSingle((await api.aiAnalyzeSingle(ticker)).aiAnalysis); } catch (e) { setAiSingle({ error: e.message }); } finally { setAiSingleLoading(false); } }, []);
 
   const handleBuy = async () => { try { setOpMsg(null); await api.buyPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Compra registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowBuyModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
@@ -197,7 +278,7 @@ export default function App() {
   const topPicks = ranking.slice(0, 8);
   const portfolioValue = portfolioDB.summary.reduce((s, p) => { const r = ranking.find(x => x.cedear?.ticker === p.ticker); return s + (r?.priceARS ? r.priceARS * p.total_shares : p.weighted_avg_price * p.total_shares); }, 0);
 
-  const navItems = [{ id: "dashboard", label: "Dashboard", icon: "◈" }, { id: "ranking", label: "Ranking", icon: "◆" }, { id: "operaciones", label: "Operaciones", icon: "⟐" }, { id: "predicciones", label: "Predicciones", icon: "◎" }, { id: "historial", label: "Historial IA", icon: "◉" }];
+  const navItems = [{ id: "dashboard", label: "Dashboard", icon: "◈" }, { id: "ranking", label: "Ranking", icon: "◆" }, { id: "operaciones", label: "Operaciones", icon: "⟐" }, { id: "benchmarks", label: "Benchmarks", icon: "◧" }, { id: "backtest", label: "Backtest", icon: "↺" }, { id: "predicciones", label: "Predicciones", icon: "◎" }, { id: "historial", label: "Historial IA", icon: "◉" }];
   const nav = (v) => { setView(v); setSelectedTicker(null); setDetail(null); };
 
   /* ─── HEADER ─── */
@@ -222,9 +303,20 @@ export default function App() {
           </button>
         ))}
       </nav>
-      <div className="ca-header-info" style={{ display: "flex", gap: 20, fontSize: 12 }}>
+      <div className="ca-header-info" style={{ display: "flex", gap: 16, fontSize: 12, alignItems: "center", flexWrap: "wrap" }}>
         {ccl && <div style={{ color: T.textDim }}>CCL <span style={{ color: T.cyan, fontWeight: 700, fontFamily: T.fontMono }}>${ccl.venta}</span></div>}
-        <div style={{ color: T.textDim }}>Perfil <span style={{ color: T.yellow, fontWeight: 700 }}>MOD-AGRESIVO</span></div>
+        {/* Profile selector */}
+        <div style={{ display: "flex", gap: 3, background: "rgba(15,23,42,0.5)", borderRadius: 10, padding: 3, border: `1px solid ${T.border}` }}>
+          {Object.values(PROFILES).map(p => (
+            <button key={p.id} onClick={() => changeProfile(p.id)} title={p.desc} style={{
+              padding: "5px 10px", borderRadius: 8, border: "none", cursor: "pointer", fontFamily: T.font, fontSize: 10, fontWeight: 700, transition: "all 0.2s",
+              background: profile === p.id ? `${p.color}20` : "transparent",
+              color: profile === p.id ? p.color : T.textDark,
+              boxShadow: profile === p.id ? `0 0 8px ${p.color}15` : "none",
+            }}>{p.icon} {p.label}</button>
+          ))}
+        </div>
+        <button onClick={() => auth.logout()} title="Cerrar sesión" style={{ background: "transparent", border: `1px solid ${T.border}`, borderRadius: 8, color: T.textDim, cursor: "pointer", padding: "5px 10px", fontSize: 10, fontFamily: T.font, fontWeight: 600 }}>Salir ⏻</button>
       </div>
     </header>
   );
@@ -308,6 +400,7 @@ export default function App() {
       { l: "Portfolio (BD)", v: `$${Math.round(portfolioValue).toLocaleString()}`, sub: `${portfolioDB.summary.length} posiciones`, c: T.blue, grad: `linear-gradient(135deg, ${T.blue}12, transparent)` },
       { l: "Dólar CCL", v: ccl ? `$${ccl.venta}` : "—", sub: "", c: T.cyan, grad: `linear-gradient(135deg, ${T.cyan}12, transparent)` },
       { l: "Top Pick", v: topPicks[0]?.cedear?.ticker || "—", sub: topPicks[0] ? `Score ${topPicks[0].scores.composite}` : "", c: T.yellow, grad: `linear-gradient(135deg, ${T.yellow}12, transparent)` },
+      { l: "Perfil Activo", v: PROFILES[profile]?.label || "Moderado", sub: PROFILES[profile]?.desc, c: PROFILES[profile]?.color || T.yellow, grad: `linear-gradient(135deg, ${PROFILES[profile]?.color || T.yellow}12, transparent)` },
     ];
     return (
       <div style={{ animation: "fadeUp 0.4s ease" }}>
@@ -844,6 +937,165 @@ export default function App() {
     </div>
   );
 
+  /* ─── BENCHMARKS ─── */
+  const renderBenchmarks = () => {
+    if (benchLoading) return <div style={S.card}><Skeleton height={300} /></div>;
+    if (!benchmarks || benchmarks.error) return (
+      <div style={{ ...S.card, textAlign: "center", padding: 56, animation: "fadeUp 0.4s ease" }}>
+        <div style={{ fontSize: 40, marginBottom: 14, opacity: 0.3 }}>◧</div>
+        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>{benchmarks?.error || "Sin datos de benchmarks"}</div>
+        <div style={{ color: T.textDim, fontSize: 13 }}>Necesitás al menos una operación registrada para comparar.</div>
+      </div>
+    );
+    const b = benchmarks;
+    const verdictColors = { excellent: T.green, good: T.greenLight, warning: T.orange, danger: T.red, neutral: T.textMuted };
+    const barData = [
+      { name: "Tu Portfolio", value: b.portfolio.returnPct, fill: T.green },
+      b.benchmarks.spy != null && { name: "SPY", value: b.benchmarks.spy, fill: T.blue },
+      b.benchmarks.qqq != null && { name: "QQQ", value: b.benchmarks.qqq, fill: T.purple },
+      { name: "Plazo Fijo", value: b.benchmarks.plazoFijo, fill: T.yellow },
+      { name: "Inflación", value: b.benchmarks.inflation, fill: T.red },
+    ].filter(Boolean);
+    return (
+      <div style={{ animation: "fadeUp 0.4s ease" }}>
+        <div style={{ ...S.label, fontSize: 13, color: T.textMuted, marginBottom: 16 }}>COMPARACIÓN DE RENDIMIENTO</div>
+        {/* Verdict card */}
+        <div style={{ ...S.card, marginBottom: 20, borderLeft: `4px solid ${verdictColors[b.verdictLevel] || T.textMuted}`, background: `linear-gradient(135deg, ${verdictColors[b.verdictLevel] || T.textMuted}06, transparent)` }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: verdictColors[b.verdictLevel], marginBottom: 6 }}>{b.verdict}</div>
+          <div style={{ fontSize: 11, color: T.textDim }}>Período: {b.period.from} → {b.period.to} ({b.period.months} meses)</div>
+        </div>
+        {/* Stats */}
+        <div className="ca-stat-grid" style={S.grid()}>
+          <div style={{ ...S.card, borderLeft: `3px solid ${T.green}`, background: `linear-gradient(135deg, ${T.green}08, transparent)` }}>
+            <div style={S.label}>Tu Portfolio</div>
+            <div style={{ ...S.value, color: b.portfolio.returnPct >= 0 ? T.green : T.red }}>{b.portfolio.returnPct >= 0 ? "+" : ""}{b.portfolio.returnPct}%</div>
+            <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>Invertido: ${b.portfolio.investedARS?.toLocaleString()} → Actual: ${b.portfolio.currentValueARS?.toLocaleString()}</div>
+          </div>
+          {b.benchmarks.spy != null && <div style={{ ...S.card, borderLeft: `3px solid ${T.blue}` }}><div style={S.label}>SPY (S&P 500)</div><div style={{ ...S.value, color: T.blue }}>{b.benchmarks.spy >= 0 ? "+" : ""}{b.benchmarks.spy}%</div></div>}
+          {b.benchmarks.qqq != null && <div style={{ ...S.card, borderLeft: `3px solid ${T.purple}` }}><div style={S.label}>QQQ (Nasdaq)</div><div style={{ ...S.value, color: T.purple }}>{b.benchmarks.qqq >= 0 ? "+" : ""}{b.benchmarks.qqq}%</div></div>}
+          <div style={{ ...S.card, borderLeft: `3px solid ${T.yellow}` }}><div style={S.label}>Plazo Fijo (75% TNA)</div><div style={{ ...S.value, color: T.yellow }}>+{b.benchmarks.plazoFijo}%</div></div>
+          <div style={{ ...S.card, borderLeft: `3px solid ${T.red}` }}><div style={S.label}>Inflación (~3.5%/mes)</div><div style={{ ...S.value, color: T.red }}>+{b.benchmarks.inflation}%</div></div>
+        </div>
+        {/* Chart */}
+        <div style={{ ...S.card, marginTop: 20 }}>
+          <div style={S.label}>Rendimiento Comparado (%)</div>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={barData} layout="vertical" margin={{ left: 80 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={T.border} horizontal={false} />
+              <XAxis type="number" tick={{ fontSize: 11, fill: T.textDim }} tickLine={false} axisLine={false} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 12, fill: T.textMuted, fontWeight: 600 }} tickLine={false} axisLine={false} width={90} />
+              <Tooltip contentStyle={{ background: T.bgCardSolid, border: `1px solid ${T.borderLight}`, borderRadius: 10, fontSize: 12 }} formatter={v => `${v.toFixed(2)}%`} />
+              <Bar dataKey="value" radius={[0, 6, 6, 0]}>
+                {barData.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  };
+
+  /* ─── BACKTEST ─── */
+  const renderBacktest = () => {
+    const periods = [3, 6, 9, 12];
+    return (
+      <div style={{ animation: "fadeUp 0.4s ease" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+          <div style={{ ...S.label, fontSize: 13, color: T.textMuted, margin: 0 }}>BACKTESTING — SIMULACIÓN HISTÓRICA</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {periods.map(m => (
+              <button key={m} onClick={() => { setBacktestMonths(m); loadBacktest(m); }} style={{
+                padding: "7px 16px", borderRadius: 10, cursor: "pointer", fontFamily: T.font, fontSize: 12, fontWeight: 700, transition: "all 0.2s",
+                border: `1px solid ${backtestMonths === m ? T.cyan : T.border}`,
+                background: backtestMonths === m ? `${T.cyan}15` : "transparent",
+                color: backtestMonths === m ? T.cyan : T.textDim,
+              }}>{m}M</button>
+            ))}
+          </div>
+        </div>
+        {backtestLoading && <div style={S.card}><Skeleton height={300} /></div>}
+        {!backtestLoading && backtest?.error && (
+          <div style={{ ...S.card, textAlign: "center", padding: 56 }}>
+            <div style={{ fontSize: 40, marginBottom: 14, opacity: 0.3 }}>↺</div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10, color: T.textMuted }}>{backtest.error}</div>
+          </div>
+        )}
+        {!backtestLoading && backtest && !backtest.error && (() => {
+          const bt = backtest;
+          const alpha = bt.spyReturn != null ? (bt.totalReturn - bt.spyReturn) : null;
+          return (
+            <>
+              {/* Summary */}
+              <div className="ca-stat-grid" style={S.grid()}>
+                <div style={{ ...S.card, borderLeft: `3px solid ${bt.totalReturn >= 0 ? T.green : T.red}`, background: `linear-gradient(135deg, ${bt.totalReturn >= 0 ? T.green : T.red}08, transparent)` }}>
+                  <div style={S.label}>Retorno Simulado</div>
+                  <div style={{ ...S.value, color: bt.totalReturn >= 0 ? T.green : T.red }}>{bt.totalReturn >= 0 ? "+" : ""}{bt.totalReturn.toFixed(2)}%</div>
+                  <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>$1M ARS → ${Math.round(bt.totalCurrent).toLocaleString()}</div>
+                </div>
+                {bt.spyReturn != null && (
+                  <div style={{ ...S.card, borderLeft: `3px solid ${T.blue}` }}>
+                    <div style={S.label}>SPY mismo período</div>
+                    <div style={{ ...S.value, color: T.blue }}>{bt.spyReturn >= 0 ? "+" : ""}{bt.spyReturn}%</div>
+                  </div>
+                )}
+                {alpha != null && (
+                  <div style={{ ...S.card, borderLeft: `3px solid ${alpha >= 0 ? T.green : T.red}` }}>
+                    <div style={S.label}>Alpha generado</div>
+                    <div style={{ ...S.value, color: alpha >= 0 ? T.green : T.red }}>{alpha >= 0 ? "+" : ""}{alpha.toFixed(2)}%</div>
+                  </div>
+                )}
+                <div style={{ ...S.card, borderLeft: `3px solid ${T.purple}` }}>
+                  <div style={S.label}>Período</div>
+                  <div style={{ ...S.value, color: T.purple, fontSize: 22 }}>{bt.period?.from} → {bt.period?.to}</div>
+                </div>
+              </div>
+
+              {/* Holdings */}
+              {bt.holdings?.length > 0 && (
+                <div style={{ marginTop: 20 }}>
+                  <div style={S.label}>Picks del Bot (simulados)</div>
+                  <div className="ca-table-wrap" style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead><tr>
+                        <th style={S.th}>CEDEAR</th>
+                        <th style={S.th}>Sector</th>
+                        <th style={{ ...S.th, textAlign: "center" }}>Score</th>
+                        <th style={{ ...S.th, textAlign: "center" }}>Señal</th>
+                        <th style={{ ...S.th, textAlign: "right" }}>Entrada</th>
+                        <th style={{ ...S.th, textAlign: "right" }}>Actual</th>
+                        <th style={{ ...S.th, textAlign: "right" }}>Invertido</th>
+                        <th style={{ ...S.th, textAlign: "right" }}>Valor Actual</th>
+                        <th style={{ ...S.th, textAlign: "center" }}>Retorno</th>
+                      </tr></thead>
+                      <tbody>{bt.holdings.map((h, i) => (
+                        <tr key={i}>
+                          <td style={{ ...S.td, fontWeight: 800, ...S.mono }}>{h.ticker}<div style={{ fontSize: 10, color: T.textDim, fontFamily: T.font, fontWeight: 400 }}>{h.name}</div></td>
+                          <td style={{ ...S.td, fontSize: 11, color: T.textDim }}>{h.sector}</td>
+                          <td style={{ ...S.td, textAlign: "center", ...S.mono }}>{h.scoreAtEntry}</td>
+                          <td style={{ ...S.td, textAlign: "center" }}><span style={S.badge(signalColors[h.signal] || T.yellow)}>{h.signal}</span></td>
+                          <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.priceAtEntry?.toLocaleString()}</td>
+                          <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.priceNow?.toLocaleString()}</td>
+                          <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.invested?.toLocaleString()}</td>
+                          <td style={{ ...S.td, textAlign: "right", ...S.mono, fontSize: 11 }}>${h.currentValue?.toLocaleString()}</td>
+                          <td style={{ ...S.td, textAlign: "center", ...S.mono, fontWeight: 700, color: h.returnPct >= 0 ? T.green : T.red }}>{h.returnPct >= 0 ? "+" : ""}{h.returnPct}%</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              <div style={{ ...S.card, marginTop: 20, background: `${T.cyan}06`, borderLeft: `3px solid ${T.cyan}` }}>
+                <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7 }}>
+                  <strong style={{ color: T.cyan }}>¿Cómo funciona?</strong> El bot viaja en el tiempo {backtestMonths} meses atrás, analiza los CEDEARs con los datos de ese momento (precios .BA, indicadores técnicos), arma un portfolio diversificado de 4 picks, y compara el rendimiento simulado contra SPY.
+                </div>
+              </div>
+            </>
+          );
+        })()}
+      </div>
+    );
+  };
+
   /* ─── MODALS ─── */
   const renderOpModal = (type) => (
     <Modal show={type === "buy" ? showBuyModal : showSellModal} onClose={() => type === "buy" ? setShowBuyModal(false) : setShowSellModal(false)} title={<>{type === "buy" ? "Registrar Compra" : "Registrar Venta"} <span style={{ color: T.green }}>{opForm.ticker}</span></>}>
@@ -878,6 +1130,8 @@ export default function App() {
         {view === "ranking" && renderRanking()}
         {view === "detail" && renderDetail()}
         {view === "operaciones" && renderOperaciones()}
+        {view === "benchmarks" && renderBenchmarks()}
+        {view === "backtest" && renderBacktest()}
         {view === "predicciones" && renderPredicciones()}
         {view === "historial" && renderHistorial()}
       </main>

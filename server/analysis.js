@@ -312,7 +312,15 @@ export function fundamentalAnalysis(financials, quote) {
 
 // ---- COMPOSITE SCORING ----
 // Profile: Moderate-Aggressive (35% technical, 40% fundamental, 25% sentiment/momentum)
-export function compositeScore(techAnalysis, fundAnalysis, quote, sector = "") {
+// Profile weight presets
+const PROFILE_WEIGHTS = {
+  conservative: { tech: 0.25, fund: 0.50, sent: 0.25 },
+  moderate:     { tech: 0.35, fund: 0.40, sent: 0.25 },
+  aggressive:   { tech: 0.45, fund: 0.30, sent: 0.25 },
+};
+
+export function compositeScore(techAnalysis, fundAnalysis, quote, sector = "", profileId = "moderate") {
+  const weights = PROFILE_WEIGHTS[profileId] || PROFILE_WEIGHTS.moderate;
   const tech = techAnalysis?.score || 50;
   const fund = fundAnalysis?.score || 50;
 
@@ -327,14 +335,23 @@ export function compositeScore(techAnalysis, fundAnalysis, quote, sector = "") {
   const volTrend = techAnalysis?.indicators?.volume?.volumeTrend || 0;
   if (volTrend > 20) sentiment += 5;
 
-  // Beta adjustment for moderate-aggressive profile
+  // Beta adjustment per profile
   const beta = quote?.beta || 1;
-  if (beta > 1.8) sentiment -= 5; // Too volatile
-  if (beta < 0.5) sentiment -= 3; // Too defensive
+  if (profileId === "conservative") {
+    if (beta > 1.2) sentiment -= 10;
+    if (beta > 1.5) sentiment -= 5;
+    if (beta < 0.8) sentiment += 5;
+  } else if (profileId === "aggressive") {
+    if (beta > 2.0) sentiment -= 3;
+    if (beta < 0.5) sentiment -= 5;
+  } else {
+    if (beta > 1.8) sentiment -= 5;
+    if (beta < 0.5) sentiment -= 3;
+  }
 
   sentiment = Math.max(0, Math.min(100, sentiment));
 
-  const composite = Math.round(tech * 0.35 + fund * 0.40 + sentiment * 0.25);
+  const composite = Math.round(tech * weights.tech + fund * weights.fund + sentiment * weights.sent);
 
   // Generate signal
   let signal, signalColor;

@@ -29,6 +29,9 @@ import {
 } from "./analysis.js";
 import { generateAnalysis, analyzeSingle } from "./aiAdvisor.js";
 import { diversifiedSelection, portfolioExposure } from "./diversifier.js";
+import { canRegister, register, login, authMiddleware } from "./auth.js";
+import { calculateBenchmarks } from "./benchmarks.js";
+import { runBacktest } from "./backtest.js";
 import {
   getPortfolio, getPortfolioSummary, addPosition, sellPosition,
   getTransactions, getPredictions, evaluatePredictionsForTicker,
@@ -48,6 +51,33 @@ import { existsSync } from "fs";
 if (existsSync(clientDist)) {
   app.use(express.static(clientDist));
 }
+
+// ---- Auth routes (public) ----
+app.get("/api/auth/status", (req, res) => {
+  res.json({ canRegister: canRegister() });
+});
+
+app.post("/api/auth/register", (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const token = register(email, password);
+    res.json({ token, email });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.post("/api/auth/login", (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const token = login(email, password);
+    res.json({ token, email });
+  } catch (err) { res.status(401).json({ error: err.message }); }
+});
+
+// Protect all /api/ routes except /api/auth/*
+app.use("/api", (req, res, next) => {
+  if (req.path.startsWith("/auth")) return next();
+  authMiddleware(req, res, next);
+});
 
 // ---- Health check ----
 app.get("/api/health", (req, res) => {
@@ -75,6 +105,7 @@ app.get("/api/ranking", async (req, res) => {
     const ccl = await fetchCCL();
     const limit = parseInt(req.query.limit) || CEDEARS.length;
     const sector = req.query.sector || null;
+    const profileId = req.query.profile || "moderate";
 
     let cedearsToProcess = sector
       ? CEDEARS.filter((c) => c.sector === sector)
@@ -118,7 +149,7 @@ app.get("/api/ranking", async (req, res) => {
       const financials = financialsMap[cedear.ticker] || null;
       const tech = technicalAnalysis(history);
       const fund = fundamentalAnalysis(financials, quote);
-      const scores = compositeScore(tech, fund, quote, cedear.sector);
+      const scores = compositeScore(tech, fund, quote, cedear.sector, profileId);
 
       return {
         cedear,
@@ -164,7 +195,8 @@ app.get("/api/cedear/:ticker", async (req, res) => {
 
     const tech = technicalAnalysis(history);
     const fund = fundamentalAnalysis(financials, quote);
-    const scores = compositeScore(tech, fund, quote, cedear.sector);
+    const profileId = req.query.profile || "moderate";
+    const scores = compositeScore(tech, fund, quote, cedear.sector, profileId);
     const byma = bymaPrices[ticker];
 
     res.json({
@@ -202,7 +234,7 @@ app.post("/api/ai/analyze", async (req, res) => {
       return res.status(400).json({ error: "ANTHROPIC_API_KEY no configurada" });
     }
 
-    const { portfolio = [], capital = 0 } = req.body;
+    const { portfolio = [], capital = 0, profile: profileId = "moderate" } = req.body;
     const ccl = await fetchCCL();
 
     // Get top picks: fetch quotes first (fast), then full data for top 20
@@ -241,12 +273,12 @@ app.post("/api/ai/analyze", async (req, res) => {
 
     // Algorithmic diversification: pre-filter before AI
     const portfolioPositions = getPortfolioSummary();
-    const { picks: topPicks, diversification, warnings } = diversifiedSelection(rankedResults, portfolioPositions);
+    const { picks: topPicks, diversification, warnings } = diversifiedSelection(rankedResults, portfolioPositions, profileId);
 
     console.log(`🎯 Diversifier: ${topPicks.length} picks across ${diversification.sectorsRepresented} sectors`);
     if (warnings.length) console.log(`⚠️ Warnings: ${warnings.join(' | ')}`);
 
-    const analysis = await generateAnalysis({ topPicks, portfolio, capital, ccl, diversification, warnings, ranking: rankedResults });
+    const analysis = await generateAnalysis({ topPicks, portfolio, capital, ccl, diversification, warnings, ranking: rankedResults, profileId });
     res.json({ analysis, diversification, warnings, ccl, timestamp: new Date().toISOString() });
   } catch (err) {
     console.error("AI analyze error:", err);
@@ -285,6 +317,38 @@ app.get("/api/ai/analyze/:ticker", async (req, res) => {
     res.json({ ticker, aiAnalysis: aiResult, scores, ccl });
   } catch (err) {
     console.error(`AI single error for ${req.params.ticker}:`, err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Benchmarks ----
+app.get("/api/benchmarks", async (req, res) => {
+  try {
+    // Get latest ranking for portfolio valuation
+    const tickers = CEDEARS.map(c => c.ticker);
+    const [quotesMap, bymaPrices] = await Promise.all([fetchAllQuotes(tickers), fetchBymaPrices(tickers)]);
+    const ccl = await fetchCCL();
+    const rankingForBench = CEDEARS.map(cedear => {
+      const quote = quotesMap[cedear.ticker];
+      const byma = bymaPrices[cedear.ticker];
+      return { cedear, quote, priceARS: byma?.priceARS || (quote?.price ? Math.round((quote.price * ccl.venta) / cedear.ratio) : null) };
+    });
+    const result = await calculateBenchmarks(rankingForBench);
+    res.json(result);
+  } catch (err) {
+    console.error("Benchmarks error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Backtest ----
+app.get("/api/backtest", async (req, res) => {
+  try {
+    const months = parseInt(req.query.months) || 6;
+    const result = await runBacktest(months);
+    res.json(result);
+  } catch (err) {
+    console.error("Backtest error:", err);
     res.status(500).json({ error: err.message });
   }
 });
