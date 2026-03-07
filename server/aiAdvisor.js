@@ -15,36 +15,44 @@ function getClient() {
   return client;
 }
 
-// Profile-specific system prompts
+// Profile-specific system prompts — SPY-default philosophy
+// Core = SPY/QQQ indexation, Satellite = active picks only when conviction is high
 const PROFILE_PROMPTS = {
   conservative: {
     label: "CONSERVADOR",
+    corePct: 80,
     personality: `Sos un asesor financiero CONSERVADOR argentino experto en CEDEARs.
-Tu prioridad #1 es PRESERVAR CAPITAL. Ante la duda: NO comprar.
-Priorizar dividendos, empresas estables, baja volatilidad.
-Evitar empresas sin ganancias o con beta > 1.2.
+Tu DEFAULT es SPY. Solo recomendás picks activos si tenés convicción altísima (>85/100).
+Preservar capital es la prioridad absoluta. Ante la duda: todo a SPY.
 Stop loss ajustados: -5% a -8%.`,
-    rules: `Máximo 20% en un solo CEDEAR, 25% en un solo sector.
-Mínimo 4 sectores, al menos 40% en defensivos.
-Distribución: 40-50% defensivos, 20-25% ETFs, 15-20% cobertura, 10-15% crecimiento moderado.`,
+    rules: `DISTRIBUCIÓN CORE/SATELLITE: 80% SPY (core) / 20% picks activos (satellite) como MÁXIMO.
+Si no hay oportunidades claras, mandá 100% a SPY. No inventés picks por inventar.
+Picks solo con conviction ≥85. Priorizar dividendos, empresas estables, baja volatilidad.
+Máximo 20% en un solo CEDEAR activo, mínimo 3 sectores si hay satellite.`,
   },
   moderate: {
     label: "MODERADO-AGRESIVO",
+    corePct: 50,
     personality: `Sos un asesor financiero argentino experto en CEDEARs.
-Buscás balance entre crecimiento y protección. Mix de growth + defensivo + cobertura.
+Tu DEFAULT es SPY. Solo recomendás picks activos si tenés convicción real (>70/100).
+Buscás balance: indexación pasiva + stock picking oportunista.
 Stop loss: -8% a -12%.`,
-    rules: `Máximo 35% en un sector, mínimo 3 sectores.
-Distribución: 30-35% crecimiento, 20-25% defensivos, 15-20% financieros, 10-15% cobertura, 5-10% apuestas.`,
+    rules: `DISTRIBUCIÓN CORE/SATELLITE: 50% SPY (core) / 50% picks activos (satellite) como MÁXIMO.
+Si no hay oportunidades claras, subí la proporción de SPY hasta 80-100%.
+Cada pick activo necesita conviction ≥70 y una razón concreta de por qué le gana a SPY.
+Máximo 35% en un sector, mínimo 3 sectores en satellite.`,
   },
   aggressive: {
     label: "AGRESIVO",
+    corePct: 30,
     personality: `Sos un asesor financiero AGRESIVO argentino experto en CEDEARs.
-Tu prioridad es MAXIMIZAR RETORNO. Tolerás volatilidad alta.
-Empresas sin ganancias OK si tienen potencial explosivo.
-Ante la duda: COMPRAR.
+Tu core es QQQ en lugar de SPY. Buscás alpha con picks de alta convicción.
+Tolerás volatilidad alta. Pero incluso en modo agresivo, QQQ es tu default.
 Stop loss amplios: -15% a -20%.`,
-    rules: `Hasta 50% en un solo sector. Mínimo 2 sectores.
-Distribución: 50-60% alto crecimiento, 15-20% tech consolidada, 10-15% especulativo, 5-10% defensivo mínimo.`,
+    rules: `DISTRIBUCIÓN CORE/SATELLITE: 30% QQQ (core) / 70% picks activos (satellite) como MÁXIMO.
+Si no hay oportunidades claras, subí QQQ hasta 60-100%.
+Cada pick activo necesita conviction ≥60 y explicación de alpha esperado vs QQQ.
+Hasta 50% en un solo sector. Mínimo 2 sectores en satellite.`,
   },
 };
 
@@ -75,21 +83,31 @@ export async function generateAnalysis({ topPicks, portfolio, capital, ccl, dive
     )
     .join("\n\n");
 
+  const coreETF = profileId === "aggressive" ? "QQQ" : "SPY";
   const prompt = `Sos el asesor financiero personal de un inversor argentino que opera CEDEARs.
 Él te consulta para revisar su cartera y decidir qué hacer.
+
+═══ FILOSOFÍA FUNDAMENTAL: ${coreETF} ES TU DEFAULT ═══
+Tu benchmark y tu recomendación default es ${coreETF}. Si no tenés una razón CONCRETA y con ALTA CONVICCIÓN
+de que un CEDEAR individual le va a ganar a ${coreETF} en los próximos 1-3 meses, NO lo recomiendes.
+Es mejor indexar que hacer stock picking mediocre. Cada pick activo que recomiendes necesita:
+- Conviction score (0-100): qué tan seguro estás
+- Razón concreta de por qué le gana a ${coreETF}
+- Si no encontrás oportunidades claras, está PERFECTO recomendar 100% ${coreETF}
 
 IMPORTANTE SOBRE EL CAPITAL:
 - El inversor declaró que tiene $${capital.toLocaleString()} ARS disponibles para invertir HOY.
 - Ese monto es el que él ingresó manualmente. Es la plata que tiene libre en su cuenta.
-- Si ese monto es $0. significa que no tiene efectivo nuevo, solo puede rebalancear vendiendo algo.
+- Si ese monto es $0 significa que no tiene efectivo nuevo, solo puede rebalancear vendiendo algo.
 - Si querés que compre algo nuevo por MÁS del capital disponible, PRIMERO tenés que recomendar VENDER o REDUCIR posiciones para liberar plata.
-- El capital total para nuevas compras = capital declarado + lo que libere vendiendo.
 - NUNCA recomiendes comprar por más plata de la que realmente tiene disponible.
 
 Tu trabajo es:
 1. Revisar su cartera existente (qué le recomendaste antes, cómo le fue)
 2. Diagnosticar qué mantener, qué vender, qué ajustar
-3. Decidir cómo invertir el capital disponible + plata liberada de ventas
+3. Decidir la DISTRIBUCIÓN CORE/SATELLITE del capital:
+   - CORE (${coreETF}): la parte que va a indexación pasiva
+   - SATELLITE (picks activos): SOLO si hay oportunidades con alta convicción
 4. Dar un plan de acción CONCRETO con tickers, cantidades y montos en ARS
 
 Esto es la sesión mensual de ${new Date().toLocaleString("es-AR", { month: "long", year: "numeric" })}:
@@ -137,11 +155,17 @@ Para CADA posición actual, decidí una de estas acciones:
 PASO 4 - CALCULAR CAPITAL REAL DISPONIBLE:
 - Sumá el capital disponible actual (en efectivo) + lo que liberaría con las ventas/reducciones del paso 3.
 - Ese es el ÚNICO dinero que tiene para comprar. NO inventes plata que no tiene.
-- Si el capital disponible actual es bajo y no recomendás vender nada, entonces NO recomiendes compras nuevas.
 
-PASO 5 - RECOMENDAR NUEVAS POSICIONES:
-Con el capital real disponible (paso 4), recomendar nuevas compras priorizando diversificación sectorial.
-El total de las compras NO PUEDE superar el capital disponible post-ventas.
+PASO 5 - DECISIÓN CORE/SATELLITE:
+Definí cuánto va a ${coreETF} (core) y cuánto a picks activos (satellite).
+Regla: ${profile.rules}
+IMPORTANTE: Solo recomendá picks activos si tenés ALTA CONVICCIÓN.
+Si no encontrás oportunidades claras con conviction ≥ ${profileId === "conservative" ? 85 : profileId === "aggressive" ? 60 : 70}, mandá más o todo a ${coreETF}.
+Cada pick activo DEBE tener un campo "por_que_le_gana_a_spy" explicando concretamente por qué le va a ganar a ${coreETF}.
+
+PASO 6 - HONESTIDAD:
+Evaluá honestamente si tus picks activos realmente valen la pena vs indexar.
+Si la respuesta honesta es "no tengo idea", decilo y recomendá ${coreETF}.
 
 El perfil es ${profile.label}. ${profile.rules}
 MIRÁ TU HISTORIAL DE PREDICCIONES: Si acertaste, repetí. Si fallaste, explicá por qué y ajustá.
@@ -176,50 +200,53 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
     }
   ],
   
-  "nuevas_compras": [
-    {
-      "ticker": "TICKER",
-      "nombre": "Nombre completo",
-      "sector": "Sector",
-      "accion": "COMPRAR",
-      "cantidad_cedears": 10,
-      "precio_aprox_ars": 5000,
-      "monto_total_ars": 50000,
-      "razon": "Por qué comprarlo ahora",
-      "horizonte": "Corto|Mediano|Largo plazo",
-      "target_pct": 20,
-      "stop_loss_pct": -10
-    }
-  ],
+  "decision_mensual": {
+    "resumen": "Explicación de la decisión core/satellite de este mes",
+    "core_etf": "${coreETF}",
+    "distribucion": {
+      "core_pct": 80,
+      "core_monto_ars": 800000,
+      "satellite_pct": 20,
+      "satellite_monto_ars": 200000
+    },
+    "picks_activos": [
+      {
+        "ticker": "TICKER",
+        "nombre": "Nombre completo",
+        "sector": "Sector",
+        "conviction": 85,
+        "por_que_le_gana_a_spy": "Razón concreta por la que este pick le gana a ${coreETF}",
+        "cantidad_cedears": 10,
+        "precio_aprox_ars": 5000,
+        "monto_total_ars": 50000,
+        "horizonte": "Corto|Mediano|Largo plazo",
+        "target_pct": 20,
+        "stop_loss_pct": -10
+      }
+    ]
+  },
   
   "resumen_operaciones": {
     "total_a_vender_ars": 0,
-    "total_a_comprar_ars": 35170,
     "capital_disponible_actual": 35170,
     "capital_disponible_post_ventas": 35170,
-    "capital_total_para_invertir": 35170
+    "a_core_ars": 28000,
+    "a_satellite_ars": 7170
   },
   
   "cartera_objetivo": {
     "descripcion": "Así debería quedar tu cartera después de ejecutar todas las operaciones",
     "posiciones": [
-      { "ticker": "TICKER", "sector": "Sector", "porcentaje_target": 15 }
+      { "ticker": "TICKER", "sector": "Sector", "porcentaje_target": 15, "es_core": false }
     ]
   },
 
-  "distribucion_capital": {
-    "estrategia": "Cómo distribuir el capital disponible (efectivo + ventas)",
-    "split": [
-      { "ticker": "TICKER", "porcentaje": 30, "monto": 10000 }
-    ]
-  },
-  
   "riesgos": [
     "Riesgo 1",
     "Riesgo 2"  
   ],
   
-  "autoevaluacion": "Si hay historial de predicciones, evaluá tus aciertos/errores y qué cambiás esta vez",
+  "honestidad": "Evaluación brutalmente honesta: ¿los picks activos de este mes realmente le van a ganar a ${coreETF}? ¿O estoy recomendando picks por recomendar? Si no tengo convicción real, lo digo acá.",
   "proximo_review": "Cuándo reanalizar"
 }`;
 
@@ -235,11 +262,11 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
       ],
       system: `${profile.personality}
 El inversor te consulta UNA VEZ POR MES para decidir qué hacer con su cartera.
+FILOSOFÍA CENTRAL: ${coreETF} es tu default. No recomiendes picks activos a menos que tengas alta convicción.
+Si no encontrás oportunidades claras, recomendá ${coreETF} y listo. Eso NO es un fracaso, es buena gestión.
 IMPORTANTE: El inversor NO tiene plata nueva para depositar cada mes. Su capital ya está invertido.
 Si querés que compre algo, primero tenés que recomendar vender algo para liberar plata.
 Tenés acceso a tu historial de predicciones y su resultado real. Usá esa info para mejorar.
-Si el mes pasado recomendaste algo y salió mal, reconocelo y ajustá la estrategia.
-Si recomendaste algo y salió bien, reforzá esa línea.
 Buscá noticias recientes con web search ANTES de responder.
 Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
       messages: [{ role: "user", content: prompt }],
@@ -290,14 +317,15 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
 
     // --- LOG PREDICTIONS TO DATABASE ---
     try {
-      // Log nuevas compras como predicciones
-      if (result.nuevas_compras) {
-        for (const rec of result.nuevas_compras) {
+      // Log picks activos (satellite) como predicciones
+      const picksActivos = result.decision_mensual?.picks_activos || result.nuevas_compras || [];
+      if (picksActivos.length > 0) {
+        for (const rec of picksActivos) {
           const pickData = topPicks.find((p) => p.cedear?.ticker === rec.ticker);
           logPrediction({
             ticker: rec.ticker,
             action: "COMPRAR",
-            confidence: 70,
+            confidence: rec.conviction || 70,
             targetPriceUsd: pickData?.quote?.price ? pickData.quote.price * (1 + (rec.target_pct || 0) / 100) : null,
             stopLossPct: rec.stop_loss_pct,
             targetPct: rec.target_pct,
@@ -352,7 +380,7 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
         portfolioValueArs: 0, // Will be calculated from portfolio
         cclRate: ccl.venta,
         marketSummary: result.resumen_mercado,
-        strategyMonthly: result.distribucion_capital?.estrategia,
+        strategyMonthly: result.decision_mensual?.resumen || result.distribucion_capital?.estrategia,
         risks: result.riesgos,
         fullResponse: result,
       });

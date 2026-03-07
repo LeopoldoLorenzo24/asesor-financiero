@@ -86,12 +86,21 @@ function selectDiversifiedPicks(scored, numPicks = 4) {
   return picks;
 }
 
+// ── Core/Satellite allocation per profile ──
+const CORE_ALLOCATION = {
+  conservative: { corePct: 0.80, coreETF: "SPY" },
+  moderate:     { corePct: 0.50, coreETF: "SPY" },
+  aggressive:   { corePct: 0.30, coreETF: "QQQ" },
+};
+
 export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profile = "moderate", picksPerMonth = 4 } = {}) {
   const candidates = selectBacktestCandidates(CEDEARS);
+  const { corePct, coreETF } = CORE_ALLOCATION[profile] || CORE_ALLOCATION.moderate;
+  const satellitePct = 1 - corePct;
 
   const totalMonths = months + 7;
 
-  // Fetch all histories
+  // Fetch all histories (including core ETF)
   const historyMap = {};
   const batchSize = 8;
   for (let i = 0; i < candidates.length; i += batchSize) {
@@ -106,8 +115,18 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
     }
   }
 
+  // Fetch core ETF history
+  let coreHistory = null;
+  try {
+    coreHistory = await fetchHistory(`${coreETF}.BA`, totalMonths);
+    if (coreHistory.length < 30) coreHistory = null;
+  } catch {
+    try { coreHistory = await fetchHistory(coreETF, totalMonths); } catch { /* ignore */ }
+  }
+
   // Simulate month by month
-  const allHoldings = []; // accumulated positions
+  const allHoldings = []; // accumulated satellite positions
+  const coreHoldings = []; // accumulated core ETF positions
   const meses = []; // month-by-month breakdown
   const now = new Date();
 
@@ -116,6 +135,30 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
     cutoffDate.setMonth(cutoffDate.getMonth() - m);
     const cutoffStr = cutoffDate.toISOString().slice(0, 10);
     const monthLabel = cutoffDate.toLocaleDateString("es-AR", { year: "numeric", month: "short" });
+
+    // ── CORE: Buy ETF ──
+    const coreBudget = monthlyDeposit * corePct;
+    let coreBought = null;
+    if (coreHistory && coreBudget > 0) {
+      const coreCut = coreHistory.filter(p => p.date <= cutoffStr);
+      if (coreCut.length > 0) {
+        const corePrice = coreCut[coreCut.length - 1].close;
+        const coreShares = Math.floor(coreBudget / corePrice);
+        if (coreShares > 0) {
+          coreHoldings.push({
+            ticker: coreETF, name: `${coreETF} ETF`, sector: "ETF - Índices",
+            priceAtEntry: Math.round(corePrice * 100) / 100,
+            shares: coreShares,
+            invested: Math.round(coreShares * corePrice),
+            boughtMonth: cutoffStr,
+          });
+          coreBought = { ticker: coreETF, shares: coreShares, invested: Math.round(coreShares * corePrice) };
+        }
+      }
+    }
+
+    // ── SATELLITE: Score and pick CEDEARs ──
+    const satelliteBudget = monthlyDeposit * satellitePct;
 
     // Score each CEDEAR with data up to this cutoff
     const scored = [];
@@ -144,44 +187,46 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
     // Strict slot-based diversification: growth + defensive + hedge + fill
     const monthPicks = selectDiversifiedPicks(scored, picksPerMonth);
 
-    console.log(`[Backtest ${monthLabel}] Picks: ${monthPicks.map(p => `${p.cedear?.ticker || p.ticker} (${p.cedear?.sector || p.sector})`).join(", ")}`);
+    console.log(`[Backtest ${monthLabel}] Core: ${coreETF} $${Math.round(coreBudget).toLocaleString()} | Satellite: ${monthPicks.map(p => `${p.cedear?.ticker || p.ticker} (${p.cedear?.sector || p.sector})`).join(", ")}`);
 
-    if (monthPicks.length === 0) continue;
-
-    const perPick = monthlyDeposit / monthPicks.length;
     const bought = [];
+    if (coreBought) bought.push({ ticker: coreBought.ticker, sector: "ETF - Índices", isCore: true });
 
-    for (const pick of monthPicks) {
-      const ticker = pick.cedear?.ticker || pick.ticker;
-      const sector = pick.cedear?.sector || pick.sector;
-      const name = pick.cedear?.name || pick.name;
-      const priceAtEntry = pick.priceAtEntry || 0;
-      if (priceAtEntry <= 0) continue;
+    if (monthPicks.length > 0 && satelliteBudget > 0) {
+      const perPick = satelliteBudget / monthPicks.length;
 
-      const shares = Math.floor(perPick / priceAtEntry);
-      if (shares <= 0) continue;
+      for (const pick of monthPicks) {
+        const ticker = pick.cedear?.ticker || pick.ticker;
+        const sector = pick.cedear?.sector || pick.sector;
+        const name = pick.cedear?.name || pick.name;
+        const priceAtEntry = pick.priceAtEntry || 0;
+        if (priceAtEntry <= 0) continue;
 
-      allHoldings.push({
-        ticker, name, sector,
-        scoreAtEntry: pick.scores?.composite ?? 0,
-        signal: pick.scores?.signal || "?",
-        priceAtEntry: Math.round(priceAtEntry * 100) / 100,
-        shares,
-        invested: Math.round(shares * priceAtEntry),
-        boughtMonth: cutoffStr,
-      });
+        const shares = Math.floor(perPick / priceAtEntry);
+        if (shares <= 0) continue;
 
-      bought.push({ ticker, sector });
+        allHoldings.push({
+          ticker, name, sector,
+          scoreAtEntry: pick.scores?.composite ?? 0,
+          signal: pick.scores?.signal || "?",
+          priceAtEntry: Math.round(priceAtEntry * 100) / 100,
+          shares,
+          invested: Math.round(shares * priceAtEntry),
+          boughtMonth: cutoffStr,
+        });
+
+        bought.push({ ticker, sector, isCore: false });
+      }
     }
 
-    meses.push({ month: monthLabel, date: cutoffStr, bought, holdingsCount: allHoldings.length });
+    meses.push({ month: monthLabel, date: cutoffStr, bought, holdingsCount: allHoldings.length + coreHoldings.length });
   }
 
-  if (allHoldings.length === 0) {
+  if (allHoldings.length === 0 && coreHoldings.length === 0) {
     return { error: "No hay suficientes datos históricos para el backtest." };
   }
 
-  // Calculate current values for all accumulated holdings
+  // Calculate current values for satellite holdings
   const holdings = [];
   for (const h of allHoldings) {
     const fullHistory = historyMap[h.ticker];
@@ -197,14 +242,28 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
     });
   }
 
-  const totalInvested = holdings.reduce((s, h) => s + h.invested, 0);
-  const totalCurrent = holdings.reduce((s, h) => s + h.currentValue, 0);
+  // Calculate current values for core holdings
+  const coreCurrentPrice = coreHistory ? coreHistory[coreHistory.length - 1].close : 0;
+  let coreInvested = 0, coreCurrent = 0;
+  for (const h of coreHoldings) {
+    const value = h.shares * coreCurrentPrice;
+    coreInvested += h.invested;
+    coreCurrent += value;
+  }
+  const coreReturnPct = coreInvested > 0 ? Math.round(((coreCurrent - coreInvested) / coreInvested) * 10000) / 100 : 0;
+
+  const satelliteInvested = holdings.reduce((s, h) => s + h.invested, 0);
+  const satelliteCurrent = holdings.reduce((s, h) => s + h.currentValue, 0);
+  const satelliteReturnPct = satelliteInvested > 0 ? Math.round(((satelliteCurrent - satelliteInvested) / satelliteInvested) * 10000) / 100 : 0;
+
+  const totalInvested = coreInvested + satelliteInvested;
+  const totalCurrent = coreCurrent + satelliteCurrent;
   const totalReturn = totalInvested > 0 ? ((totalCurrent - totalInvested) / totalInvested) * 100 : 0;
 
-  // SPY benchmark for same period
+  // SPY benchmark for same period (pure SPY buy-and-hold)
   let spyReturn = null;
   try {
-    const spyHistory = await fetchHistory("SPY.BA", totalMonths);
+    const spyHistory = coreETF === "SPY" && coreHistory ? coreHistory : await fetchHistory("SPY.BA", totalMonths);
     const startCutoff = new Date();
     startCutoff.setMonth(startCutoff.getMonth() - months);
     const startStr = startCutoff.toISOString().slice(0, 10);
@@ -240,11 +299,11 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
 
   let veredicto;
   if (beatsSPY === true) {
-    veredicto = `El bot generó alfa: +${returnPctRounded}% vs SPY ${spyRounded}%. La estrategia diversificada funciona.`;
+    veredicto = `Core/Satellite generó +${returnPctRounded}% vs SPY puro ${spyRounded}%. La combinación ${coreETF} + stock picking funciona.`;
   } else if (beatsSPY === false) {
-    veredicto = `SPY rindió más (${spyRounded}%) que el bot (${returnPctRounded}%). En este período habría convenido indexar.`;
+    veredicto = `SPY puro rindió más (${spyRounded}%) que core/satellite (${returnPctRounded}%). Los picks activos restaron valor — habría convenido 100% ${coreETF}.`;
   } else {
-    veredicto = `Retorno del bot: ${returnPctRounded}%. No se pudo comparar contra SPY.`;
+    veredicto = `Retorno core/satellite: ${returnPctRounded}%. No se pudo comparar contra SPY.`;
   }
 
   return {
@@ -252,9 +311,24 @@ export async function runBacktest({ months = 6, monthlyDeposit = 1000000, profil
     entryDate: entryDate.toISOString().slice(0, 10),
     holdings,
     meses,
+    coreSatellite: {
+      coreETF,
+      corePct: Math.round(corePct * 100),
+      satellitePct: Math.round(satellitePct * 100),
+      core: {
+        invertido: coreInvested,
+        valorActual: Math.round(coreCurrent),
+        returnPct: coreReturnPct,
+      },
+      satellite: {
+        invertido: satelliteInvested,
+        valorActual: Math.round(satelliteCurrent),
+        returnPct: satelliteReturnPct,
+      },
+    },
     resultado: {
       totalInvertido: totalInvested,
-      valorFinal: totalCurrent,
+      valorFinal: Math.round(totalCurrent),
       returnPct: returnPctRounded,
       spyReturnPct: spyRounded,
       alpha: spyReturn != null ? Math.round((totalReturn - spyReturn) * 100) / 100 : null,

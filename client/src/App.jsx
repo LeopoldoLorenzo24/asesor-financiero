@@ -363,11 +363,68 @@ export default function App() {
         {a.resumen_operaciones && (
           <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 14, padding: 18, marginBottom: 14, border: `1px solid ${T.green}15`, display: "flex", gap: 24, flexWrap: "wrap" }}>
             {a.resumen_operaciones.total_a_vender_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.red, fontWeight: 600, letterSpacing: "1px" }}>LIBERAR (VENTAS)</div><div style={{ fontSize: 20, fontWeight: 800, color: T.red, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.total_a_vender_ars?.toLocaleString()}</div></div>}
-            <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.cyan, fontWeight: 600, letterSpacing: "1px" }}>CAPITAL DISPONIBLE</div><div style={{ fontSize: 20, fontWeight: 800, color: T.cyan, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.capital_total_para_invertir?.toLocaleString()}</div></div>
-            <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.green, fontWeight: 600, letterSpacing: "1px" }}>A INVERTIR</div><div style={{ fontSize: 20, fontWeight: 800, color: T.green, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.total_a_comprar_ars?.toLocaleString()}</div></div>
+            <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.cyan, fontWeight: 600, letterSpacing: "1px" }}>CAPITAL DISPONIBLE</div><div style={{ fontSize: 20, fontWeight: 800, color: T.cyan, ...S.mono, marginTop: 4 }}>${(a.resumen_operaciones.capital_disponible_post_ventas || a.resumen_operaciones.capital_total_para_invertir || 0)?.toLocaleString()}</div></div>
+            {a.resumen_operaciones.a_core_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.blue, fontWeight: 600, letterSpacing: "1px" }}>→ CORE ({a.decision_mensual?.core_etf || "SPY"})</div><div style={{ fontSize: 20, fontWeight: 800, color: T.blue, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.a_core_ars?.toLocaleString()}</div></div>}
+            {a.resumen_operaciones.a_satellite_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.purple, fontWeight: 600, letterSpacing: "1px" }}>→ SATELLITE</div><div style={{ fontSize: 20, fontWeight: 800, color: T.purple, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.a_satellite_ars?.toLocaleString()}</div></div>}
+            {!a.resumen_operaciones.a_core_ars && a.resumen_operaciones.total_a_comprar_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.green, fontWeight: 600, letterSpacing: "1px" }}>A INVERTIR</div><div style={{ fontSize: 20, fontWeight: 800, color: T.green, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.total_a_comprar_ars?.toLocaleString()}</div></div>}
           </div>
         )}
-        {a.nuevas_compras?.map((rec, i) => (
+        {/* Core/Satellite Decision */}
+        {a.decision_mensual && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ background: `${T.blue}08`, borderRadius: 14, padding: 20, border: `1px solid ${T.blue}20`, borderLeft: `3px solid ${T.blue}`, marginBottom: 12 }}>
+              <div style={{ ...S.label, color: T.blue }}>Decisión Mensual — Core/Satellite</div>
+              <p style={{ color: T.textMuted, fontSize: 13, margin: "8px 0" }}>{a.decision_mensual.resumen}</p>
+              {a.decision_mensual.distribucion && (
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 12 }}>
+                  <div style={{ background: T.bgCardSolid, borderRadius: 10, padding: "12px 20px", border: `1px solid ${T.blue}30`, textAlign: "center" }}>
+                    <div style={{ fontSize: 10, color: T.blue, fontWeight: 700, letterSpacing: "1px" }}>CORE ({a.decision_mensual.core_etf || "SPY"})</div>
+                    <div style={{ fontSize: 24, fontWeight: 800, color: T.blue, ...S.mono }}>{a.decision_mensual.distribucion.core_pct}%</div>
+                    {a.decision_mensual.distribucion.core_monto_ars > 0 && <div style={{ fontSize: 11, color: T.textDim }}>${a.decision_mensual.distribucion.core_monto_ars?.toLocaleString()}</div>}
+                  </div>
+                  <div style={{ background: T.bgCardSolid, borderRadius: 10, padding: "12px 20px", border: `1px solid ${T.purple}30`, textAlign: "center" }}>
+                    <div style={{ fontSize: 10, color: T.purple, fontWeight: 700, letterSpacing: "1px" }}>SATELLITE (PICKS)</div>
+                    <div style={{ fontSize: 24, fontWeight: 800, color: T.purple, ...S.mono }}>{a.decision_mensual.distribucion.satellite_pct}%</div>
+                    {a.decision_mensual.distribucion.satellite_monto_ars > 0 && <div style={{ fontSize: 11, color: T.textDim }}>${a.decision_mensual.distribucion.satellite_monto_ars?.toLocaleString()}</div>}
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Satellite Picks with Conviction */}
+            {a.decision_mensual.picks_activos?.length > 0 ? (
+              <div>
+                <div style={{ ...S.label, color: T.purple, marginBottom: 10 }}>Oportunidades Satellite (Picks Activos)</div>
+                {a.decision_mensual.picks_activos.map((rec, i) => (
+                  <div key={i} style={{ background: "rgba(3,7,17,0.4)", borderRadius: 14, padding: 18, border: `1px solid ${T.border}`, display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "center", minWidth: 60 }}>
+                      <span style={{ ...S.badge(rec.conviction >= 80 ? T.green : rec.conviction >= 60 ? T.yellow : T.orange), fontSize: 13, fontWeight: 800 }}>{rec.conviction}/100</span>
+                      <span style={{ fontSize: 9, color: T.textDim }}>Conviction</span>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 200 }}>
+                      <div style={{ fontWeight: 800, fontSize: 15 }}>{rec.ticker} <span style={{ color: T.textDim, fontWeight: 400, fontSize: 12 }}>{rec.nombre} · {rec.sector}</span></div>
+                      {rec.por_que_le_gana_a_spy && <p style={{ color: T.cyan, fontSize: 12, margin: "6px 0 0", fontWeight: 600 }}>vs {a.decision_mensual.core_etf || "SPY"}: {rec.por_que_le_gana_a_spy}</p>}
+                      <p style={{ color: T.textMuted, fontSize: 12, margin: "4px 0 0" }}>{rec.razon}</p>
+                    </div>
+                    <div style={{ textAlign: "right", fontSize: 11, color: T.textDim, minWidth: 130 }}>
+                      <div><strong style={{ color: T.green }}>${rec.monto_total_ars?.toLocaleString()}</strong> ARS</div>
+                      <div>~{rec.cantidad_cedears} CEDEARs</div>
+                      {rec.target_pct && <div style={{ color: T.green }}>Target: +{rec.target_pct}%</div>}
+                      {rec.stop_loss_pct && <div style={{ color: T.red }}>Stop: {rec.stop_loss_pct}%</div>}
+                      <div style={{ color: T.cyan, marginTop: 2 }}>{rec.horizonte}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ background: `${T.blue}08`, borderRadius: 14, padding: 20, border: `1px solid ${T.blue}20`, textAlign: "center" }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: T.blue, marginBottom: 6 }}>100% {a.decision_mensual.core_etf || "SPY"} este mes</div>
+                <div style={{ fontSize: 12, color: T.textMuted }}>No hay oportunidades con suficiente convicción. Todo el capital va al índice — y eso está perfecto.</div>
+              </div>
+            )}
+          </div>
+        )}
+        {/* Legacy: show nuevas_compras if AI responded with old format */}
+        {!a.decision_mensual && a.nuevas_compras?.map((rec, i) => (
           <div key={i} style={{ background: "rgba(3,7,17,0.4)", borderRadius: 14, padding: 18, border: `1px solid ${T.border}`, display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
             <span style={S.badge(signalColors[rec.accion] || T.green)}>{rec.accion}</span>
             <div style={{ flex: 1, minWidth: 200 }}><div style={{ fontWeight: 800, fontSize: 15 }}>{rec.ticker} <span style={{ color: T.textDim, fontWeight: 400, fontSize: 12 }}>{rec.nombre} · {rec.sector}</span></div><p style={{ color: T.textMuted, fontSize: 12, margin: "6px 0 0" }}>{rec.razon}</p></div>
@@ -390,7 +447,8 @@ export default function App() {
           </div>
         )}
         <div style={S.grid(280)}>
-          {(a.distribucion_capital || a.distribucion_mensual) && <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 14, padding: 18, border: `1px solid ${T.border}` }}><div style={{ ...S.label, color: T.purple }}>Distribución del Capital</div><p style={{ color: T.textMuted, fontSize: 12, margin: "8px 0" }}>{(a.distribucion_capital || a.distribucion_mensual).estrategia}</p>{(a.distribucion_capital || a.distribucion_mensual).split?.map((s, i) => <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${T.border}`, fontSize: 12 }}><span style={{ fontWeight: 700 }}>{s.ticker}</span><span style={{ color: T.green }}>${s.monto?.toLocaleString()} ({s.porcentaje}%)</span></div>)}</div>}
+          {a.honestidad && <div style={{ background: `${T.orange}08`, borderRadius: 14, padding: 18, border: `1px solid ${T.orange}20`, borderLeft: `3px solid ${T.orange}` }}><div style={{ ...S.label, color: T.orange }}>Honestidad del Bot</div><p style={{ color: T.textMuted, fontSize: 12, margin: "8px 0" }}>{a.honestidad}</p></div>}
+          {!a.honestidad && (a.distribucion_capital || a.distribucion_mensual) && <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 14, padding: 18, border: `1px solid ${T.border}` }}><div style={{ ...S.label, color: T.purple }}>Distribución del Capital</div><p style={{ color: T.textMuted, fontSize: 12, margin: "8px 0" }}>{(a.distribucion_capital || a.distribucion_mensual).estrategia}</p>{(a.distribucion_capital || a.distribucion_mensual).split?.map((s, i) => <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${T.border}`, fontSize: 12 }}><span style={{ fontWeight: 700 }}>{s.ticker}</span><span style={{ color: T.green }}>${s.monto?.toLocaleString()} ({s.porcentaje}%)</span></div>)}</div>}
           <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 14, padding: 18, border: `1px solid ${T.orange}15`, borderLeft: `3px solid ${T.orange}` }}><div style={{ ...S.label, color: T.yellow }}>Riesgos</div>{a.riesgos?.map((r, i) => <div key={i} style={{ color: T.textMuted, fontSize: 12, padding: "5px 0 5px 14px", borderLeft: `2px solid ${T.orange}25`, marginBottom: 4 }}>{r}</div>)}{a.proximo_review && <div style={{ marginTop: 12, fontSize: 11, color: T.textDim }}>Review: <strong style={{ color: T.cyan }}>{a.proximo_review}</strong></div>}</div>
         </div>
       </div>
@@ -1125,19 +1183,19 @@ export default function App() {
             {/* Summary cards */}
             <div className="ca-stat-grid" style={S.grid()}>
               <div style={{ ...S.card, borderLeft: `3px solid ${r.returnPct >= 0 ? T.green : T.red}`, background: `linear-gradient(135deg, ${r.returnPct >= 0 ? T.green : T.red}08, transparent)` }}>
-                <div style={S.label}>Retorno Simulado</div>
+                <div style={S.label}>Retorno Total (Core+Satellite)</div>
                 <div style={{ ...S.value, color: r.returnPct >= 0 ? T.green : T.red }}>{r.returnPct >= 0 ? "+" : ""}{(r.returnPct ?? 0).toFixed(2)}%</div>
                 <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>${(r.totalInvertido ?? 0).toLocaleString()} → ${(r.valorFinal ?? 0).toLocaleString()}</div>
               </div>
               {r.spyReturnPct != null && (
                 <div style={{ ...S.card, borderLeft: `3px solid ${T.blue}` }}>
-                  <div style={S.label}>SPY mismo período</div>
+                  <div style={S.label}>SPY puro mismo período</div>
                   <div style={{ ...S.value, color: T.blue }}>{r.spyReturnPct >= 0 ? "+" : ""}{r.spyReturnPct}%</div>
                 </div>
               )}
               {r.alpha != null && (
                 <div style={{ ...S.card, borderLeft: `3px solid ${r.alpha >= 0 ? T.green : T.red}` }}>
-                  <div style={S.label}>Alpha generado</div>
+                  <div style={S.label}>Alpha vs SPY puro</div>
                   <div style={{ ...S.value, color: r.alpha >= 0 ? T.green : T.red }}>{r.alpha >= 0 ? "+" : ""}{r.alpha.toFixed(2)}%</div>
                 </div>
               )}
@@ -1147,10 +1205,38 @@ export default function App() {
               </div>
             </div>
 
-            {/* Holdings table */}
+            {/* Core vs Satellite breakdown */}
+            {bt.coreSatellite && (
+              <div style={{ ...S.grid(2), marginTop: 16, gridTemplateColumns: "1fr 1fr" }}>
+                <div style={{ ...S.card, borderLeft: `3px solid ${T.blue}`, background: `${T.blue}06` }}>
+                  <div style={{ ...S.label, color: T.blue }}>CORE — {bt.coreSatellite.coreETF} ({bt.coreSatellite.corePct}%)</div>
+                  <div style={{ ...S.value, color: bt.coreSatellite.core.returnPct >= 0 ? T.green : T.red, fontSize: 28 }}>
+                    {bt.coreSatellite.core.returnPct >= 0 ? "+" : ""}{bt.coreSatellite.core.returnPct}%
+                  </div>
+                  <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
+                    ${bt.coreSatellite.core.invertido?.toLocaleString()} → ${bt.coreSatellite.core.valorActual?.toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: 10, color: T.textDim, marginTop: 4 }}>Indexación pasiva</div>
+                </div>
+                <div style={{ ...S.card, borderLeft: `3px solid ${T.purple}`, background: `${T.purple}06` }}>
+                  <div style={{ ...S.label, color: T.purple }}>SATELLITE — Picks Activos ({bt.coreSatellite.satellitePct}%)</div>
+                  <div style={{ ...S.value, color: bt.coreSatellite.satellite.returnPct >= 0 ? T.green : T.red, fontSize: 28 }}>
+                    {bt.coreSatellite.satellite.returnPct >= 0 ? "+" : ""}{bt.coreSatellite.satellite.returnPct}%
+                  </div>
+                  <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
+                    ${bt.coreSatellite.satellite.invertido?.toLocaleString()} → ${bt.coreSatellite.satellite.valorActual?.toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: 10, marginTop: 4, color: bt.coreSatellite.satellite.returnPct > bt.coreSatellite.core.returnPct ? T.green : T.red, fontWeight: 700 }}>
+                    {bt.coreSatellite.satellite.returnPct > bt.coreSatellite.core.returnPct ? "✓ Satellite genera alfa" : "✗ Satellite no genera alfa"}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Satellite Holdings table */}
             {bt.holdings?.length > 0 && (
               <div style={{ marginTop: 20 }}>
-                <div style={S.label}>Picks del Bot (simulados)</div>
+                <div style={S.label}>Picks Activos — Satellite</div>
                 <div className="ca-table-wrap" style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
@@ -1190,9 +1276,11 @@ export default function App() {
                   <div key={i} style={{ display: "flex", gap: 12, padding: "10px 0", borderBottom: `1px solid ${T.border}`, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ ...S.mono, fontSize: 12, color: T.blue, minWidth: 80 }}>{mes.month}</span>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {mes.bought.map((pick, j) => (
-                        <span key={j} style={{ ...S.badge(T.green), fontSize: 11 }}>{typeof pick === "string" ? pick : `${pick.ticker} (${pick.sector || ""})`}</span>
-                      ))}
+                      {mes.bought.map((pick, j) => {
+                        const isCore = pick.isCore;
+                        const label = typeof pick === "string" ? pick : `${pick.ticker} (${pick.sector || ""})`;
+                        return <span key={j} style={{ ...S.badge(isCore ? T.blue : T.green), fontSize: 11 }}>{isCore ? "📊 " : ""}{label}</span>;
+                      })}
                     </div>
                     <span style={{ fontSize: 11, color: T.textDim, marginLeft: "auto" }}>{mes.holdingsCount} posiciones acumuladas</span>
                   </div>
@@ -1211,15 +1299,15 @@ export default function App() {
                   {bt.veredicto}
                 </div>
                 <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7 }}>
-                  Si hubieras corrido este bot los últimos {bt.config?.months} meses,
-                  depositando ${((bt.config?.monthlyDeposit || 0) / 1000000).toFixed(1)}M por mes,
+                  Estrategia Core/Satellite con {bt.coreSatellite?.corePct || 50}% en {bt.coreSatellite?.coreETF || "SPY"} y {bt.coreSatellite?.satellitePct || 50}% en picks activos.
+                  Depositando ${((bt.config?.monthlyDeposit || 0) / 1000000).toFixed(1)}M por mes durante {bt.config?.months} meses,
                   habrías invertido ${(r.totalInvertido ?? 0).toLocaleString()} ARS
                   y hoy tendrías ${(r.valorFinal ?? 0).toLocaleString()} ARS
                   ({r.returnPct >= 0 ? "+" : ""}{r.returnPct}%).
                   {r.beatsSPY === true
-                    ? ` Eso es ${Math.abs((r.returnPct || 0) - (r.spyReturnPct || 0)).toFixed(1)} puntos por encima de SPY. El bot funciona.`
+                    ? ` Eso es ${Math.abs((r.returnPct || 0) - (r.spyReturnPct || 0)).toFixed(1)} puntos por encima de SPY puro. El core/satellite funciona.`
                     : r.beatsSPY === false
-                    ? ` SPY rindió ${r.spyReturnPct}% en el mismo periodo. Habría convenido invertir directo en SPY.`
+                    ? ` SPY puro rindió ${r.spyReturnPct}% en el mismo periodo. Habría convenido 100% SPY.`
                     : ""}
                 </div>
               </div>
@@ -1227,7 +1315,7 @@ export default function App() {
 
             <div style={{ ...S.card, marginTop: 16, background: `${T.cyan}06`, borderLeft: `3px solid ${T.cyan}` }}>
               <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7 }}>
-                <strong style={{ color: T.cyan }}>¿Cómo funciona?</strong> El bot viaja mes a mes desde hace {bt.config?.months} meses. Cada mes analiza todos los CEDEARs con los datos de ese momento, usa el diversificador algorítmico (perfil: {bt.config?.profile}) para elegir {bt.config?.picksPerMonth} picks de múltiples sectores, y simula la compra con ${((bt.config?.monthlyDeposit || 0) / 1000000).toFixed(1)}M. Al final compara el rendimiento acumulado vs SPY.
+                <strong style={{ color: T.cyan }}>¿Cómo funciona?</strong> Estrategia Core/Satellite: cada mes, {bt.coreSatellite?.corePct || 50}% del depósito va a {bt.coreSatellite?.coreETF || "SPY"} (indexación pasiva) y {bt.coreSatellite?.satellitePct || 50}% a {bt.config?.picksPerMonth} picks activos diversificados (perfil: {bt.config?.profile}). Al final se compara el rendimiento combinado vs invertir 100% en SPY.
               </div>
             </div>
           </>
