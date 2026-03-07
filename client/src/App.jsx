@@ -67,6 +67,49 @@ function Skeleton({ width = "100%", height = 20 }) {
         @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
         @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+        /* ── RESPONSIVE ── */
+        @media (max-width: 1024px) {
+          .ca-header { padding: 10px 16px !important; }
+          .ca-main { padding: 20px 16px !important; }
+          .ca-nav button { padding: 7px 10px !important; font-size: 10px !important; }
+          .ca-hero-detail { padding: 20px !important; }
+        }
+        @media (max-width: 768px) {
+          .ca-header { flex-direction: column !important; align-items: stretch !important; gap: 10px !important; padding: 10px 12px !important; }
+          .ca-header-brand { justify-content: center !important; }
+          .ca-nav { justify-content: center !important; overflow-x: auto !important; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch; }
+          .ca-nav button { white-space: nowrap !important; padding: 7px 10px !important; font-size: 10px !important; }
+          .ca-header-info { justify-content: center !important; }
+          .ca-main { padding: 14px 10px !important; }
+          .ca-stat-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 10px !important; }
+          .ca-stat-grid > div { padding: 16px !important; }
+          .ca-stat-value { font-size: 20px !important; }
+          .ca-picks-grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) !important; gap: 10px !important; }
+          .ca-ai-section { padding: 16px !important; }
+          .ca-ai-btn { min-width: unset !important; width: 100% !important; }
+          .ca-table-wrap { border-radius: 12px !important; }
+          .ca-table-wrap table { font-size: 11px !important; }
+          .ca-table-wrap th, .ca-table-wrap td { padding: 8px 6px !important; }
+          .ca-table-wrap .ca-hide-mobile { display: none !important; }
+          .ca-pie-wrap { flex-direction: column !important; }
+          .ca-pie-wrap > div { min-width: unset !important; }
+          .ca-hero-detail { padding: 16px !important; }
+          .ca-hero-detail h2 { font-size: 18px !important; }
+          .ca-hero-price { font-size: 22px !important; }
+          .ca-perf-grid { grid-template-columns: repeat(3, 1fr) !important; gap: 8px !important; }
+          .ca-perf-grid > div { padding: 10px !important; }
+          .ca-detail-grid { grid-template-columns: 1fr !important; }
+          .ca-sector-filter { overflow-x: auto !important; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch; padding-bottom: 6px !important; }
+          .ca-sector-filter button { white-space: nowrap !important; flex-shrink: 0 !important; }
+          .ca-ops-summary { grid-template-columns: 1fr !important; gap: 10px !important; }
+          .ca-footer { padding: 20px 12px !important; margin-top: 24px !important; }
+        }
+        @media (max-width: 480px) {
+          .ca-stat-grid { grid-template-columns: 1fr !important; }
+          .ca-picks-grid { grid-template-columns: 1fr 1fr !important; }
+          .ca-perf-grid { grid-template-columns: repeat(3, 1fr) !important; }
+        }
       `}</style>
     </div>
   );
@@ -159,15 +202,15 @@ export default function App() {
 
   /* ─── HEADER ─── */
   const renderHeader = () => (
-    <header style={{ background: "rgba(3,7,17,0.85)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${T.border}`, padding: "12px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, position: "sticky", top: 0, zIndex: 100 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+    <header className="ca-header" style={{ background: "rgba(3,7,17,0.85)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${T.border}`, padding: "12px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, position: "sticky", top: 0, zIndex: 100 }}>
+      <div className="ca-header-brand" style={{ display: "flex", alignItems: "center", gap: 14 }}>
         <div style={{ width: 42, height: 42, background: `linear-gradient(135deg, ${T.green}, ${T.cyan})`, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 900, color: "#030711", fontFamily: T.fontMono, boxShadow: `0 4px 20px ${T.green}30` }}>₵</div>
         <div>
           <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.5px", background: `linear-gradient(135deg, ${T.green}, ${T.cyan})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>CEDEAR ADVISOR</div>
           <div style={{ fontSize: 9, color: T.textDark, letterSpacing: "3px", fontWeight: 600, marginTop: 1 }}>MOTOR DE INVERSIÓN IA v2</div>
         </div>
       </div>
-      <nav style={{ display: "flex", gap: 3, background: "rgba(15,23,42,0.5)", borderRadius: 14, padding: 4, border: `1px solid ${T.border}`, flexWrap: "wrap", backdropFilter: "blur(10px)" }}>
+      <nav className="ca-nav" style={{ display: "flex", gap: 3, background: "rgba(15,23,42,0.5)", borderRadius: 14, padding: 4, border: `1px solid ${T.border}`, flexWrap: "wrap", backdropFilter: "blur(10px)" }}>
         {navItems.map(item => (
           <button key={item.id} onClick={() => nav(item.id)} style={{
             padding: "9px 16px", borderRadius: 10, border: "none", cursor: "pointer", fontFamily: T.font, fontWeight: 700, fontSize: 11, transition: "all 0.25s ease",
@@ -179,7 +222,7 @@ export default function App() {
           </button>
         ))}
       </nav>
-      <div style={{ display: "flex", gap: 20, fontSize: 12 }}>
+      <div className="ca-header-info" style={{ display: "flex", gap: 20, fontSize: 12 }}>
         {ccl && <div style={{ color: T.textDim }}>CCL <span style={{ color: T.cyan, fontWeight: 700, fontFamily: T.fontMono }}>${ccl.venta}</span></div>}
         <div style={{ color: T.textDim }}>Perfil <span style={{ color: T.yellow, fontWeight: 700 }}>MOD-AGRESIVO</span></div>
       </div>
@@ -268,19 +311,19 @@ export default function App() {
     ];
     return (
       <div style={{ animation: "fadeUp 0.4s ease" }}>
-        <div style={S.grid()}>
+        <div className="ca-stat-grid" style={S.grid()}>
           {stats.map((st, i) => (
             <div key={i} style={{ ...S.card, borderLeft: `3px solid ${st.c}`, background: st.grad, position: "relative", overflow: "hidden" }}>
               <div style={{ position: "absolute", top: -20, right: -20, width: 80, height: 80, borderRadius: "50%", background: `${st.c}06` }} />
               <div style={S.label}>{st.l}</div>
-              <div style={{ ...S.value, color: st.c }}>{loading ? <Skeleton height={32} width="60%" /> : st.v}</div>
+              <div className="ca-stat-value" style={{ ...S.value, color: st.c }}>{loading ? <Skeleton height={32} width="60%" /> : st.v}</div>
               {st.sub && <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>{st.sub}</div>}
             </div>
           ))}
         </div>
 
         {/* AI Section */}
-        <div style={{ ...S.card, margin: "24px 0", background: `linear-gradient(135deg, rgba(15,23,42,0.7), rgba(10,26,46,0.7))`, border: `1px solid ${T.green}18`, position: "relative", overflow: "hidden" }}>
+        <div className="ca-ai-section" style={{ ...S.card, margin: "24px 0", background: `linear-gradient(135deg, rgba(15,23,42,0.7), rgba(10,26,46,0.7))`, border: `1px solid ${T.green}18`, position: "relative", overflow: "hidden" }}>
           <div style={{ position: "absolute", top: -60, right: -60, width: 200, height: 200, borderRadius: "50%", background: `radial-gradient(circle, ${T.green}08, transparent 70%)`, pointerEvents: "none" }} />
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 14, position: "relative" }}>
             <div>
@@ -290,7 +333,7 @@ export default function App() {
               </h3>
               <div style={{ fontSize: 12, color: T.textDim, marginTop: 6 }}>Datos reales + noticias + historial de aciertos/errores</div>
             </div>
-            <button onClick={() => { setCapitalToInvest(""); setShowCapitalInput(true); }} disabled={aiLoading || loading} style={{ ...S.btn(), opacity: aiLoading || loading ? 0.5 : 1, minWidth: 220, fontSize: 13 }}>
+            <button className="ca-ai-btn" onClick={() => { setCapitalToInvest(""); setShowCapitalInput(true); }} disabled={aiLoading || loading} style={{ ...S.btn(), opacity: aiLoading || loading ? 0.5 : 1, minWidth: 220, fontSize: 13 }}>
               {aiLoading ? <span style={{ animation: "pulse 1s infinite" }}>⟳ Analizando mercado...</span> : `Análisis — ${new Date().toLocaleString("es-AR", { month: "long" })}`}
             </button>
           </div>
@@ -320,7 +363,7 @@ export default function App() {
         {/* TOP PICKS */}
         <div style={{ ...S.label, fontSize: 13, marginBottom: 4, color: T.textMuted }}>TOP PICKS</div>
         {loading ? <Skeleton height={200} /> : (
-          <div style={{ ...S.grid(240), marginTop: 12 }}>
+          <div className="ca-picks-grid" style={{ ...S.grid(240), marginTop: 12 }}>
             {topPicks.map((item, idx) => {
               const c = item.cedear, s = item.scores, perf = item.technical?.indicators?.performance;
               return (
@@ -357,7 +400,7 @@ export default function App() {
   /* ─── RANKING ─── */
   const renderRanking = () => (
     <div style={{ animation: "fadeUp 0.4s ease" }}>
-      <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
+      <div className="ca-sector-filter" style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
         <span style={{ fontSize: 10, color: T.textDark, fontWeight: 700, letterSpacing: "1.5px", marginRight: 6, lineHeight: "32px" }}>SECTOR</span>
         {sectors.map(sec => (
           <button key={sec} onClick={() => setFilterSector(sec)} style={{
@@ -382,9 +425,22 @@ export default function App() {
         <div style={{ marginLeft: "auto", fontSize: 12, color: T.textDim, fontFamily: T.fontMono }}>{filtered.length} <span style={{ fontFamily: T.font }}>CEDEARs</span></div>
       </div>
       {loading ? <div style={S.card}>{[1,2,3].map(i => <div key={i} style={{ marginBottom: 12 }}><Skeleton height={48} /></div>)}</div> : (
-        <div style={{ ...S.card, padding: 0, overflow: "auto", borderRadius: 16 }}>
+        <div className="ca-table-wrap" style={{ ...S.card, padding: 0, overflow: "auto", borderRadius: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr>{["#", "CEDEAR", "Score", "Señal", "ARS", "TEC", "FUN", "RSI", "1M", "3M", "Horizonte", ""].map((h, i) => <th key={i} style={{ ...S.th, textAlign: i > 1 ? "center" : "left" }}>{h}</th>)}</tr></thead>
+            <thead><tr>
+              <th style={{ ...S.th, textAlign: "left" }}>#</th>
+              <th style={{ ...S.th, textAlign: "left" }}>CEDEAR</th>
+              <th style={{ ...S.th, textAlign: "center" }}>Score</th>
+              <th style={{ ...S.th, textAlign: "center" }}>Señal</th>
+              <th style={{ ...S.th, textAlign: "center" }}>ARS</th>
+              <th className="ca-hide-mobile" style={{ ...S.th, textAlign: "center" }}>TEC</th>
+              <th className="ca-hide-mobile" style={{ ...S.th, textAlign: "center" }}>FUN</th>
+              <th className="ca-hide-mobile" style={{ ...S.th, textAlign: "center" }}>RSI</th>
+              <th style={{ ...S.th, textAlign: "center" }}>1M</th>
+              <th className="ca-hide-mobile" style={{ ...S.th, textAlign: "center" }}>3M</th>
+              <th className="ca-hide-mobile" style={{ ...S.th, textAlign: "center" }}>Horizonte</th>
+              <th className="ca-hide-mobile" style={S.th}></th>
+            </tr></thead>
             <tbody>{filtered.map((item, idx) => {
               const c = item.cedear, s = item.scores, perf = item.technical?.indicators?.performance || {};
               return (
@@ -395,13 +451,13 @@ export default function App() {
                   <td style={{ ...S.td, textAlign: "center" }}><span style={{ fontSize: 20, fontWeight: 900, ...S.mono, color: s.composite >= 62 ? T.green : s.composite >= 45 ? T.yellow : T.red }}>{s.composite}</span></td>
                   <td style={{ ...S.td, textAlign: "center" }}><span style={S.badge(signalColors[s.signal] || T.yellow)}>{s.signal}</span></td>
                   <td style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 12 }}>{item.priceARS ? `$${item.priceARS.toLocaleString()}` : "—"}</td>
-                  <td style={{ ...S.td, textAlign: "center", color: T.blue, ...S.mono }}>{s.techScore}</td>
-                  <td style={{ ...S.td, textAlign: "center", color: T.purple, ...S.mono }}>{s.fundScore}</td>
-                  <td style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 12 }}>{item.technical?.indicators?.rsi || "—"}</td>
+                  <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", color: T.blue, ...S.mono }}>{s.techScore}</td>
+                  <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", color: T.purple, ...S.mono }}>{s.fundScore}</td>
+                  <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 12 }}>{item.technical?.indicators?.rsi || "—"}</td>
                   <td style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 12, color: (perf.month1 || 0) >= 0 ? T.green : T.red }}>{perf.month1 != null ? `${perf.month1 >= 0 ? "+" : ""}${perf.month1}%` : "—"}</td>
-                  <td style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 12, color: (perf.month3 || 0) >= 0 ? T.green : T.red }}>{perf.month3 != null ? `${perf.month3 >= 0 ? "+" : ""}${perf.month3}%` : "—"}</td>
-                  <td style={{ ...S.td, textAlign: "center", fontSize: 10, color: T.textDim }}>{s.horizon}</td>
-                  <td style={S.td}><button onClick={e => { e.stopPropagation(); setOpForm({ ticker: c.ticker, shares: 10, priceArs: item.priceARS || 0, notes: "" }); setShowBuyModal(true); }} style={{ ...S.btn("ghost"), padding: "6px 12px", fontSize: 10 }}>Comprar</button></td>
+                  <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 12, color: (perf.month3 || 0) >= 0 ? T.green : T.red }}>{perf.month3 != null ? `${perf.month3 >= 0 ? "+" : ""}${perf.month3}%` : "—"}</td>
+                  <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", fontSize: 10, color: T.textDim }}>{s.horizon}</td>
+                  <td className="ca-hide-mobile" style={S.td}><button onClick={e => { e.stopPropagation(); setOpForm({ ticker: c.ticker, shares: 10, priceArs: item.priceARS || 0, notes: "" }); setShowBuyModal(true); }} style={{ ...S.btn("ghost"), padding: "6px 12px", fontSize: 10 }}>Comprar</button></td>
                 </tr>
               );
             })}</tbody>
@@ -423,7 +479,7 @@ export default function App() {
         <button onClick={() => nav("ranking")} style={{ ...S.btn("ghost"), marginBottom: 20, fontSize: 12 }}>← Volver al Ranking</button>
 
         {/* Hero */}
-        <div style={{ ...S.card, background: `linear-gradient(135deg, rgba(15,23,42,0.7), rgba(10,26,46,0.7))`, padding: 28, marginBottom: 20, position: "relative", overflow: "hidden" }}>
+        <div className="ca-hero-detail" style={{ ...S.card, background: `linear-gradient(135deg, rgba(15,23,42,0.7), rgba(10,26,46,0.7))`, padding: 28, marginBottom: 20, position: "relative", overflow: "hidden" }}>
           <div style={{ position: "absolute", top: -60, right: -60, width: 200, height: 200, borderRadius: "50%", background: `${signalColors[s.signal] || T.yellow}08` }} />
           <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap", position: "relative" }}>
             <div style={{ width: 60, height: 60, background: `${signalColors[s.signal] || T.yellow}15`, borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 900, color: signalColors[s.signal], ...S.mono, border: `1px solid ${signalColors[s.signal] || T.yellow}25` }}>{c.ticker.slice(0, 2)}</div>
@@ -432,14 +488,14 @@ export default function App() {
               <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>{c.sector} · Ratio {c.ratio}:1 · Beta {quote?.beta?.toFixed(2) || "N/A"}</div>
             </div>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 30, fontWeight: 900, ...S.mono }}>US${quote?.price?.toFixed(2) || "—"}</div>
+              <div className="ca-hero-price" style={{ fontSize: 30, fontWeight: 900, ...S.mono }}>US${quote?.price?.toFixed(2) || "—"}</div>
               {priceARS && <div style={{ fontSize: 15, color: T.cyan, ...S.mono, marginTop: 4 }}>ARS ${priceARS.toLocaleString()}</div>}
               <span style={{ ...S.badge(signalColors[s.signal] || T.yellow), marginTop: 6, display: "inline-flex" }}>{s.signal}</span>
             </div>
           </div>
         </div>
 
-        <div style={S.grid()}>
+        <div className="ca-detail-grid" style={S.grid()}>
           <div style={S.card}>
             <div style={S.label}>Score Compuesto</div>
             <div style={{ fontSize: 52, fontWeight: 900, ...S.mono, letterSpacing: "-3px", color: s.composite >= 62 ? T.green : s.composite >= 45 ? T.yellow : T.red, lineHeight: 1 }}>{s.composite}<span style={{ fontSize: 16, color: T.textDark }}>/100</span></div>
@@ -468,7 +524,7 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ ...S.grid(120), margin: "20px 0" }}>
+        <div className="ca-perf-grid" style={{ ...S.grid(120), margin: "20px 0" }}>
           {[{ l: "1D", v: perf.day1 }, { l: "1S", v: perf.week1 }, { l: "1M", v: perf.month1 }, { l: "3M", v: perf.month3 }, { l: "6M", v: perf.month6 }].map((p, i) => (
             <div key={i} style={{ ...S.card, textAlign: "center", padding: 16 }}>
               <div style={{ fontSize: 10, color: T.textDark, letterSpacing: "1.5px", marginBottom: 8 }}>{p.l}</div>
@@ -543,8 +599,7 @@ export default function App() {
           <button onClick={() => { setOpForm({ ticker: "", shares: 10, priceArs: 0, notes: "" }); setShowBuyModal(true); }} style={S.btn()}>+ Registrar Compra</button>
           <button onClick={() => { setOpForm({ ticker: "", shares: 10, priceArs: 0, notes: "" }); setShowSellModal(true); }} style={S.btn("danger")}>- Registrar Venta</button>
         </div>
-        <div style={S.grid()}>
-          <div style={{ ...S.card, borderLeft: `3px solid ${T.green}`, background: `linear-gradient(135deg, ${T.green}08, transparent)` }}><div style={S.label}>Valor Portfolio</div><div style={{ ...S.value, color: T.green }}>${Math.round(portfolioValue).toLocaleString()}</div></div>
+        <div className="ca-ops-summary" style={S.grid()}>
           <div style={{ ...S.card, borderLeft: `3px solid ${T.cyan}` }}><div style={S.label}>Capital</div><input type="number" value={capital} onChange={e => setCapital(parseInt(e.target.value) || 0)} style={{ ...S.input, ...S.value, fontSize: 22, padding: "8px 12px" }} /></div>
           <div style={{ ...S.card, borderLeft: `3px solid ${T.purple}`, background: `linear-gradient(135deg, ${T.purple}08, transparent)` }}><div style={S.label}>Total Patrimonio</div><div style={{ ...S.value, color: T.purple }}>${Math.round(portfolioValue + capital).toLocaleString()}</div></div>
         </div>
@@ -552,9 +607,16 @@ export default function App() {
         {portfolioDB.summary.length > 0 && (
           <div style={{ marginTop: 24 }}>
             <div style={S.label}>Posiciones Actuales</div>
-            <div style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
+            <div className="ca-table-wrap" style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr>{["CEDEAR", "Cant.", "Precio Prom.", "Valor", "P&L", "Señal"].map((h, i) => <th key={i} style={{ ...S.th, textAlign: i === 0 ? "left" : "center" }}>{h}</th>)}</tr></thead>
+                <thead><tr>
+                  <th style={{ ...S.th, textAlign: "left" }}>CEDEAR</th>
+                  <th style={{ ...S.th, textAlign: "center" }}>Cant.</th>
+                  <th className="ca-hide-mobile" style={{ ...S.th, textAlign: "center" }}>Precio Prom.</th>
+                  <th style={{ ...S.th, textAlign: "center" }}>Valor</th>
+                  <th style={{ ...S.th, textAlign: "center" }}>P&L</th>
+                  <th className="ca-hide-mobile" style={{ ...S.th, textAlign: "center" }}>Señal</th>
+                </tr></thead>
                 <tbody>{portfolioDB.summary.map(p => {
                   const r = ranking.find(x => x.cedear?.ticker === p.ticker);
                   const curr = r?.priceARS || p.weighted_avg_price;
@@ -566,13 +628,13 @@ export default function App() {
                       onMouseEnter={e => e.currentTarget.style.background = `${T.green}06`} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                       <td style={S.td}><span style={{ fontWeight: 800, ...S.mono }}>{p.ticker}</span><div style={{ fontSize: 10, color: T.textDim }}>Desde {p.first_bought}</div></td>
                       <td style={{ ...S.td, textAlign: "center", ...S.mono }}>{p.total_shares}</td>
-                      <td style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 12 }}>${Math.round(p.weighted_avg_price).toLocaleString()}</td>
+                      <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 12 }}>${Math.round(p.weighted_avg_price).toLocaleString()}</td>
                       <td style={{ ...S.td, textAlign: "center", ...S.mono, fontWeight: 700 }}>${Math.round(val).toLocaleString()}</td>
                       <td style={{ ...S.td, textAlign: "center" }}>
                         <div style={{ ...S.mono, color: pnl >= 0 ? T.green : T.red, fontWeight: 700 }}>{pnl >= 0 ? "+" : ""}${Math.round(pnl).toLocaleString()}</div>
                         <div style={{ fontSize: 10, color: pnl >= 0 ? T.green : T.red }}>({inv > 0 ? ((pnl / inv) * 100).toFixed(1) : 0}%)</div>
                       </td>
-                      <td style={{ ...S.td, textAlign: "center" }}>{r && <span style={S.badge(signalColors[r.scores.signal] || T.yellow)}>{r.scores.signal}</span>}</td>
+                      <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center" }}>{r && <span style={S.badge(signalColors[r.scores.signal] || T.yellow)}>{r.scores.signal}</span>}</td>
                     </tr>
                   );
                 })}</tbody>
@@ -583,7 +645,7 @@ export default function App() {
 
         {/* PIE CHARTS — fixed: no fill override on Pie, custom PieLabel renders <text> with explicit fill */}
         {pieData.length > 1 && (
-          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 24 }}>
+          <div className="ca-pie-wrap" style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 24 }}>
             <div style={{ ...S.card, flex: 1, minWidth: 340 }}>
               <div style={{ ...S.label, textAlign: "center", marginBottom: 10 }}>Distribución por CEDEAR</div>
               <ResponsiveContainer width="100%" height={300}>
@@ -614,20 +676,30 @@ export default function App() {
         {transactions.length > 0 && (
           <div style={{ marginTop: 28 }}>
             <div style={S.label}>Historial de Operaciones</div>
-            <div style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
+            <div className="ca-table-wrap" style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr>{["Fecha", "Tipo", "CEDEAR", "Cant.", "Precio ARS", "Total ARS", "USD", "CCL", "Notas"].map((h, i) => <th key={i} style={S.th}>{h}</th>)}</tr></thead>
+                <thead><tr>
+                  <th style={S.th}>Fecha</th>
+                  <th style={S.th}>Tipo</th>
+                  <th style={S.th}>CEDEAR</th>
+                  <th style={S.th}>Cant.</th>
+                  <th className="ca-hide-mobile" style={S.th}>Precio ARS</th>
+                  <th style={S.th}>Total ARS</th>
+                  <th className="ca-hide-mobile" style={S.th}>USD</th>
+                  <th className="ca-hide-mobile" style={S.th}>CCL</th>
+                  <th className="ca-hide-mobile" style={S.th}>Notas</th>
+                </tr></thead>
                 <tbody>{transactions.map((tx, i) => (
                   <tr key={i} style={{ transition: "background 0.2s" }} onMouseEnter={e => e.currentTarget.style.background = "rgba(148,163,184,0.03)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                     <td style={{ ...S.td, ...S.mono, fontSize: 11 }}>{tx.date_executed}</td>
                     <td style={S.td}><span style={S.badge(tx.type === "BUY" ? T.green : T.red)}>{tx.type === "BUY" ? "COMPRA" : "VENTA"}</span></td>
                     <td style={{ ...S.td, fontWeight: 800, ...S.mono }}>{tx.ticker}</td>
                     <td style={{ ...S.td, ...S.mono, textAlign: "center" }}>{tx.shares}</td>
-                    <td style={{ ...S.td, ...S.mono, textAlign: "right" }}>${Math.round(tx.price_ars).toLocaleString()}</td>
+                    <td className="ca-hide-mobile" style={{ ...S.td, ...S.mono, textAlign: "right" }}>${Math.round(tx.price_ars).toLocaleString()}</td>
                     <td style={{ ...S.td, ...S.mono, textAlign: "right", fontWeight: 700 }}>${Math.round(tx.total_ars).toLocaleString()}</td>
-                    <td style={{ ...S.td, fontSize: 11, textAlign: "center" }}>{tx.price_usd ? `$${tx.price_usd.toFixed(2)}` : "—"}</td>
-                    <td style={{ ...S.td, fontSize: 11, textAlign: "center" }}>{tx.ccl_rate ? `$${tx.ccl_rate}` : "—"}</td>
-                    <td style={{ ...S.td, fontSize: 11, color: T.textDim }}>{tx.notes || "—"}</td>
+                    <td className="ca-hide-mobile" style={{ ...S.td, fontSize: 11, textAlign: "center" }}>{tx.price_usd ? `$${tx.price_usd.toFixed(2)}` : "—"}</td>
+                    <td className="ca-hide-mobile" style={{ ...S.td, fontSize: 11, textAlign: "center" }}>{tx.ccl_rate ? `$${tx.ccl_rate}` : "—"}</td>
+                    <td className="ca-hide-mobile" style={{ ...S.td, fontSize: 11, color: T.textDim }}>{tx.notes || "—"}</td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -643,7 +715,7 @@ export default function App() {
     const pending = predictions.filter(p => !p.evaluated);
     return (
       <div style={{ animation: "fadeUp 0.4s ease" }}>
-        <div style={S.grid()}>
+        <div className="ca-stat-grid" style={S.grid()}>
           {[
             { l: "Precisión", v: performance?.accuracy != null ? `${performance.accuracy}%` : "—", c: performance?.accuracy >= 60 ? T.green : performance?.accuracy >= 40 ? T.yellow : T.red, sub: `${performance?.correct || 0}/${performance?.total || 0} aciertos` },
             { l: "Retorno Real Prom.", v: performance?.avgActualReturn != null ? `${performance.avgActualReturn >= 0 ? "+" : ""}${performance.avgActualReturn}%` : "—", c: (performance?.avgActualReturn || 0) >= 0 ? T.green : T.red, sub: `vs ${performance?.avgTargetReturn || "—"}% predicho` },
@@ -678,18 +750,28 @@ export default function App() {
         {predictions.length > 0 ? (
           <div style={{ marginTop: 28 }}>
             <div style={S.label}>Historial ({predictions.length})</div>
-            <div style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
+            <div className="ca-table-wrap" style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr>{["Fecha", "CEDEAR", "Acción", "Conf.", "Score", "Precio USD", "Target", "Resultado", "Cambio Real"].map((h, i) => <th key={i} style={S.th}>{h}</th>)}</tr></thead>
+                <thead><tr>
+                  <th style={S.th}>Fecha</th>
+                  <th style={S.th}>CEDEAR</th>
+                  <th style={S.th}>Acción</th>
+                  <th className="ca-hide-mobile" style={S.th}>Conf.</th>
+                  <th className="ca-hide-mobile" style={S.th}>Score</th>
+                  <th className="ca-hide-mobile" style={S.th}>Precio USD</th>
+                  <th className="ca-hide-mobile" style={S.th}>Target</th>
+                  <th style={S.th}>Resultado</th>
+                  <th style={S.th}>Cambio Real</th>
+                </tr></thead>
                 <tbody>{predictions.map((p, i) => (
                   <tr key={i} style={{ background: p.evaluated ? (p.prediction_correct === 1 ? `${T.green}04` : p.prediction_correct === 0 ? `${T.red}04` : "transparent") : "transparent" }}>
                     <td style={{ ...S.td, ...S.mono, fontSize: 10 }}>{p.prediction_date?.slice(0, 10)}</td>
                     <td style={{ ...S.td, fontWeight: 800, ...S.mono }}>{p.ticker}</td>
                     <td style={S.td}><span style={S.badge(signalColors[p.action] || T.yellow)}>{p.action}</span></td>
-                    <td style={{ ...S.td, textAlign: "center", ...S.mono }}>{p.confidence || "—"}%</td>
-                    <td style={{ ...S.td, textAlign: "center", ...S.mono }}>{p.score_composite || "—"}</td>
-                    <td style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 11 }}>{p.price_usd_at_prediction ? `$${p.price_usd_at_prediction.toFixed(2)}` : "—"}</td>
-                    <td style={{ ...S.td, textAlign: "center", ...S.mono, color: T.green }}>{p.target_pct ? `+${p.target_pct}%` : "—"}</td>
+                    <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono }}>{p.confidence || "—"}%</td>
+                    <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono }}>{p.score_composite || "—"}</td>
+                    <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 11 }}>{p.price_usd_at_prediction ? `$${p.price_usd_at_prediction.toFixed(2)}` : "—"}</td>
+                    <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono, color: T.green }}>{p.target_pct ? `+${p.target_pct}%` : "—"}</td>
                     <td style={{ ...S.td, textAlign: "center" }}>{p.evaluated ? (p.prediction_correct === 1 ? <span style={S.badge(T.green)}>ACERTÓ ✓</span> : p.prediction_correct === 0 ? <span style={S.badge(T.red)}>FALLÓ ✗</span> : <span style={S.badge(T.textDim)}>N/A</span>) : <span style={{ fontSize: 10, color: T.yellow }}>⏳ Pendiente</span>}</td>
                     <td style={{ ...S.td, textAlign: "center", ...S.mono, fontWeight: 700, color: p.actual_change_pct != null ? (p.actual_change_pct >= 0 ? T.green : T.red) : T.textDark }}>{p.actual_change_pct != null ? `${p.actual_change_pct >= 0 ? "+" : ""}${p.actual_change_pct}%` : "—"}</td>
                   </tr>
@@ -790,7 +872,7 @@ export default function App() {
       <div style={{ position: "fixed", bottom: -200, right: -200, width: 500, height: 500, borderRadius: "50%", background: `radial-gradient(circle, ${T.purple}05, transparent 60%)`, pointerEvents: "none" }} />
 
       {renderHeader()}
-      <main style={{ maxWidth: 1440, margin: "0 auto", padding: "28px 32px", position: "relative" }}>
+      <main className="ca-main" style={{ maxWidth: 1440, margin: "0 auto", padding: "28px 32px", position: "relative" }}>
         {error && <StatusMsg type="error">{error}<br /><button onClick={loadRanking} style={{ ...S.btn(), marginTop: 10, fontSize: 11 }}>Reintentar</button></StatusMsg>}
         {view === "dashboard" && renderDashboard()}
         {view === "ranking" && renderRanking()}
@@ -800,7 +882,7 @@ export default function App() {
         {view === "historial" && renderHistorial()}
       </main>
       {renderOpModal("buy")}{renderOpModal("sell")}
-      <footer style={{ textAlign: "center", padding: "32px 24px", fontSize: 10, color: T.textDark, lineHeight: 2, borderTop: `1px solid ${T.border}`, marginTop: 40, background: "rgba(3,7,17,0.4)" }}>
+      <footer className="ca-footer" style={{ textAlign: "center", padding: "32px 24px", fontSize: 10, color: T.textDark, lineHeight: 2, borderTop: `1px solid ${T.border}`, marginTop: 40, background: "rgba(3,7,17,0.4)" }}>
         ⚠ DISCLAIMER: Herramienta informativa. No es asesoramiento financiero. Consultá un asesor matriculado (CNV).
       </footer>
     </div>
