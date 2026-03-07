@@ -984,7 +984,7 @@ export default function App() {
               <CartesianGrid strokeDasharray="3 3" stroke={T.border} horizontal={false} />
               <XAxis type="number" tick={{ fontSize: 11, fill: T.textDim }} tickLine={false} axisLine={false} />
               <YAxis type="category" dataKey="name" tick={{ fontSize: 12, fill: T.textMuted, fontWeight: 600 }} tickLine={false} axisLine={false} width={90} />
-              <Tooltip contentStyle={{ background: T.bgCardSolid, border: `1px solid ${T.borderLight}`, borderRadius: 10, fontSize: 12 }} formatter={v => `${v.toFixed(2)}%`} />
+              <Tooltip contentStyle={{ background: T.bgCardSolid, border: `1px solid ${T.borderLight}`, borderRadius: 10, fontSize: 12 }} formatter={v => `${(v ?? 0).toFixed(2)}%`} />
               <Bar dataKey="value" radius={[0, 6, 6, 0]}>
                 {barData.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
               </Bar>
@@ -1022,20 +1022,23 @@ export default function App() {
         )}
         {!backtestLoading && backtest && !backtest.error && (() => {
           const bt = backtest;
-          const alpha = bt.spyReturn != null ? (bt.totalReturn - bt.spyReturn) : null;
+          const s = bt.summary || {};
+          const totalReturn = s.totalReturnPct ?? 0;
+          const spyReturn = s.spyReturnPct;
+          const alpha = s.alpha;
           return (
             <>
               {/* Summary */}
               <div className="ca-stat-grid" style={S.grid()}>
-                <div style={{ ...S.card, borderLeft: `3px solid ${bt.totalReturn >= 0 ? T.green : T.red}`, background: `linear-gradient(135deg, ${bt.totalReturn >= 0 ? T.green : T.red}08, transparent)` }}>
+                <div style={{ ...S.card, borderLeft: `3px solid ${totalReturn >= 0 ? T.green : T.red}`, background: `linear-gradient(135deg, ${totalReturn >= 0 ? T.green : T.red}08, transparent)` }}>
                   <div style={S.label}>Retorno Simulado</div>
-                  <div style={{ ...S.value, color: bt.totalReturn >= 0 ? T.green : T.red }}>{bt.totalReturn >= 0 ? "+" : ""}{bt.totalReturn.toFixed(2)}%</div>
-                  <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>$1M ARS → ${Math.round(bt.totalCurrent).toLocaleString()}</div>
+                  <div style={{ ...S.value, color: totalReturn >= 0 ? T.green : T.red }}>{totalReturn >= 0 ? "+" : ""}{totalReturn.toFixed(2)}%</div>
+                  <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>${bt.budget?.toLocaleString()} → ${Math.round(s.totalCurrent || 0).toLocaleString()}</div>
                 </div>
-                {bt.spyReturn != null && (
+                {spyReturn != null && (
                   <div style={{ ...S.card, borderLeft: `3px solid ${T.blue}` }}>
                     <div style={S.label}>SPY mismo período</div>
-                    <div style={{ ...S.value, color: T.blue }}>{bt.spyReturn >= 0 ? "+" : ""}{bt.spyReturn}%</div>
+                    <div style={{ ...S.value, color: T.blue }}>{spyReturn >= 0 ? "+" : ""}{spyReturn}%</div>
                   </div>
                 )}
                 {alpha != null && (
@@ -1046,7 +1049,7 @@ export default function App() {
                 )}
                 <div style={{ ...S.card, borderLeft: `3px solid ${T.purple}` }}>
                   <div style={S.label}>Período</div>
-                  <div style={{ ...S.value, color: T.purple, fontSize: 22 }}>{bt.period?.from} → {bt.period?.to}</div>
+                  <div style={{ ...S.value, color: T.purple, fontSize: 22 }}>{bt.entryDate || "?"} → hoy</div>
                 </div>
               </div>
 
