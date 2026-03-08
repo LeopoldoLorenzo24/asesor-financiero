@@ -37,7 +37,7 @@ import {
   getPortfolio, getPortfolioSummary, addPosition, sellPosition,
   getTransactions, getPredictions, getPredictionById, evaluatePredictionsForTicker,
   calculateBotPerformance, getCapitalHistory, logCapital,
-  getAnalysisSessions,
+  getAnalysisSessions, savePostMortem, getPostMortems, getLatestLessons,
 } from "./database.js";
 
 const app = express();
@@ -229,13 +229,27 @@ app.get("/api/history/:ticker", async (req, res) => {
 });
 
 // ---- AI Analysis endpoint ----
+let lastAnalysisTimestamp = 0;
+const ANALYSIS_COOLDOWN_MS = 60 * 60 * 1000; // 1 hora entre análisis completos
+
 app.post("/api/ai/analyze", async (req, res) => {
   try {
     if (!process.env.ANTHROPIC_API_KEY) {
       return res.status(400).json({ error: "ANTHROPIC_API_KEY no configurada" });
     }
 
-    const { portfolio = [], capital = 0, profile: profileId = "moderate" } = req.body;
+    const now = Date.now();
+    const elapsed = now - lastAnalysisTimestamp;
+    if (elapsed < ANALYSIS_COOLDOWN_MS) {
+      const minutesLeft = Math.ceil((ANALYSIS_COOLDOWN_MS - elapsed) / 60000);
+      return res.status(429).json({
+        error: `Esperá ${minutesLeft} minuto${minutesLeft !== 1 ? "s" : ""} antes de correr otro análisis. El último fue hace ${Math.floor(elapsed / 60000)} minutos.`,
+        cooldownMinutes: minutesLeft,
+        lastAnalysis: new Date(lastAnalysisTimestamp).toISOString(),
+      });
+    }
+
+    const { capital = 0, profile: profileId = "moderate" } = req.body;
     const ccl = await fetchCCL();
 
     // Get top picks: fetch quotes first (fast), then full data for top 20
@@ -279,7 +293,8 @@ app.post("/api/ai/analyze", async (req, res) => {
     console.log(`🎯 Diversifier: ${topPicks.length} picks across ${diversification.sectorsRepresented} sectors`);
     if (warnings.length) console.log(`⚠️ Warnings: ${warnings.join(' | ')}`);
 
-    const analysis = await generateAnalysis({ topPicks, portfolio, capital, ccl, diversification, warnings, ranking: rankedResults, profileId });
+    const analysis = await generateAnalysis({ topPicks, capital, ccl, diversification, warnings, ranking: rankedResults, profileId });
+    lastAnalysisTimestamp = now;
     res.json({ analysis, diversification, warnings, ccl, timestamp: new Date().toISOString() });
   } catch (err) {
     console.error("AI analyze error:", err);
@@ -304,6 +319,12 @@ app.get("/api/ai/analyze/:ticker", async (req, res) => {
     const fund = fundamentalAnalysis(data.financials, data.quote);
     const scores = compositeScore(tech, fund, data.quote, cedear.sector);
 
+    const portfolioSummary = await getPortfolioSummary();
+    const currentPosition = portfolioSummary.find(p => p.ticker === ticker);
+    const portfolioContext = currentPosition
+      ? `\nCONTEXTO DE CARTERA: El inversor YA TIENE ${currentPosition.total_shares} CEDEARs de ${ticker}, comprados a un promedio de $${currentPosition.weighted_avg_price} ARS. Tené en cuenta si recomendás COMPRAR que está aumentando una posición existente.`
+      : `\nCONTEXTO DE CARTERA: El inversor NO tiene ${ticker} en su cartera actualmente. Si recomendás comprar, es una posición nueva.`;
+
     const aiResult = await analyzeSingle({
       ticker: cedear.ticker,
       name: cedear.name,
@@ -313,6 +334,7 @@ app.get("/api/ai/analyze/:ticker", async (req, res) => {
       fundamentals: fund,
       quote: data.quote,
       ccl,
+      portfolioContext,
     });
 
     res.json({ ticker, aiAnalysis: aiResult, scores, ccl });
@@ -370,7 +392,252 @@ app.get("/api/sectors", (req, res) => {
 // ---- Portfolio exposure by sector ----
 app.get("/api/portfolio/exposure", async (req, res) => {
   try {
-    res.json(await portfolioExposure());
+    const tickers = CEDEARS.map((c) => c.ticker);
+    const [quotesMap, bymaPrices, ccl] = await Promise.all([
+      fetchAllQuotes(tickers),
+      fetchBymaPrices(tickers),
+      fetchCCL(),
+    ]);
+    res.json(await portfolioExposure(quotesMap, bymaPrices, ccl.venta));
+  } catch (err) {
+    try { res.json(await portfolioExposure()); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  }
+});
+
+// ---- Seed historical lessons from backtest ----
+app.post("/api/seed-historical-lessons", authMiddleware, async (req, res) => {
+  try {
+    const bt = await runBacktest({ months: 12, monthlyDeposit: 1000000, profile: "moderate", picksPerMonth: 4 });
+    if (!bt || bt.error) return res.status(500).json({ error: "Backtest falló", detail: bt?.error });
+
+    const holdings = bt.satellite?.holdings || [];
+    const winners = holdings.filter((h) => h.returnPct > 0);
+    const losers = holdings.filter((h) => h.returnPct <= 0);
+
+    // Sector performance analysis
+    const sectorMap = {};
+    for (const h of holdings) {
+      if (!sectorMap[h.sector]) sectorMap[h.sector] = [];
+      sectorMap[h.sector].push(h.returnPct);
+    }
+    const sectorLessons = Object.entries(sectorMap)
+      .map(([sector, returns]) => ({
+        sector,
+        avgReturn: Math.round((returns.reduce((a, b) => a + b, 0) / returns.length) * 100) / 100,
+        count: returns.length,
+      }))
+      .sort((a, b) => b.avgReturn - a.avgReturn);
+
+    const bestSector = sectorLessons[0];
+    const worstSector = sectorLessons[sectorLessons.length - 1];
+    const accuracy = holdings.length > 0 ? Math.round((winners.length / holdings.length) * 100) : 0;
+    const generaAlfa = bt.satellite?.generaAlfa || false;
+
+    await savePostMortem({
+      monthLabel: "Histórico (12M backtest automático)",
+      totalPredictions: holdings.length,
+      correctPredictions: winners.length,
+      accuracyPct: accuracy,
+      totalReturnPct: bt.satellite?.returnPct || 0,
+      spyReturnPct: bt.resultado?.spyReturnPct || 0,
+      beatSpy: generaAlfa,
+      bestPick: bt.satellite?.mejorPick?.ticker || null,
+      bestPickReturn: bt.satellite?.mejorPick?.returnPct || null,
+      worstPick: bt.satellite?.peorPick?.ticker || null,
+      worstPickReturn: bt.satellite?.peorPick?.returnPct || null,
+      lessonsLearned:
+        `Análisis automático de 12 meses de backtest. ` +
+        `Mejor sector: ${bestSector?.sector || "N/A"} (promedio ${bestSector?.avgReturn}%). ` +
+        `Peor sector: ${worstSector?.sector || "N/A"} (promedio ${worstSector?.avgReturn}%). ` +
+        (generaAlfa
+          ? "El satellite generó alfa vs SPY, el stock picking agrega valor."
+          : "El satellite NO superó a SPY, priorizar core alto en SPY/QQQ."),
+      selfImposedRules: JSON.stringify([
+        `Priorizar ${bestSector?.sector || "sectores defensivos"} que históricamente rindió mejor (${bestSector?.avgReturn}% prom.)`,
+        `Ser cauteloso con ${worstSector?.sector || "sectores volátiles"} que históricamente rindió peor (${worstSector?.avgReturn}% prom.)`,
+        generaAlfa
+          ? "El stock picking agrega valor en este perfil, mantener satellite activo"
+          : "El stock picking NO superó a SPY, mantener core alto (60%+) y satellite mínimo",
+        `Accuracy histórica: ${winners.length}/${holdings.length} picks positivos (${accuracy}%)`,
+      ]),
+      patternsDetected: JSON.stringify(
+        sectorLessons.map((s) => `${s.sector}: promedio ${s.avgReturn >= 0 ? "+" : ""}${s.avgReturn}% en ${s.count} picks`)
+      ),
+      confidenceInStrategy: generaAlfa ? 65 : 45,
+      rawAiResponse: JSON.stringify({ type: "automated_backtest_analysis", satelliteReturn: bt.satellite?.returnPct, spyReturn: bt.resultado?.spyReturnPct }),
+    });
+
+    res.json({
+      message: "Lecciones históricas generadas exitosamente",
+      stats: { totalPicks: holdings.length, winners: winners.length, losers: losers.length, accuracy, satelliteAlfa: generaAlfa },
+      sectorAnalysis: sectorLessons,
+    });
+  } catch (err) {
+    console.error("Seed historical lessons error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Post-mortem: generate monthly review ----
+app.post("/api/postmortem/generate", authMiddleware, async (req, res) => {
+  try {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(400).json({ error: "ANTHROPIC_API_KEY no configurada" });
+    }
+    const tickersToEval = [...new Set(pending.map((p) => p.ticker))];
+    for (const t of tickersToEval) {
+      try {
+        const q = await fetchQuote(t);
+        if (q) await evaluatePredictionsForTicker(t, q.price);
+      } catch (e) { /* skip */ }
+    }
+
+    // 2. Predicciones evaluadas del último mes
+    const allPreds = await getPredictions(null, false, 50);
+    const oneMonthAgo = new Date(Date.now() - 35 * 86400000).toISOString();
+    const recentEvaluated = allPreds.filter(
+      (p) => p.evaluated && p.prediction_date > oneMonthAgo
+    );
+
+    if (recentEvaluated.length === 0) {
+      return res.json({ message: "No hay predicciones evaluadas del último mes para analizar." });
+    }
+
+    // 3. Estadísticas
+    const correct = recentEvaluated.filter((p) => p.prediction_correct === 1).length;
+    const total = recentEvaluated.length;
+    const accuracy = Math.round((correct / total) * 100);
+    const avgReturn = recentEvaluated.reduce((s, p) => s + (p.actual_change_pct || 0), 0) / total;
+
+    const sorted = [...recentEvaluated].sort(
+      (a, b) => (b.actual_change_pct || 0) - (a.actual_change_pct || 0)
+    );
+    const bestPick = sorted[0];
+    const worstPick = sorted[sorted.length - 1];
+
+    // 4. Claude post-mortem
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const predsDetail = recentEvaluated
+      .map(
+        (p) =>
+          `- ${p.prediction_date?.slice(0, 10)} | ${p.action} ${p.ticker} | Confianza: ${p.confidence}% | Resultado: ${
+            p.actual_change_pct != null
+              ? `${p.actual_change_pct >= 0 ? "+" : ""}${p.actual_change_pct}%`
+              : "N/A"
+          } | ${p.prediction_correct === 1 ? "ACERTÉ ✓" : "FALLÉ ✗"} | Razón: "${(p.reasoning || "").slice(0, 80)}"`
+      )
+      .join("\n");
+
+    const prevLessons = await getLatestLessons();
+    const prevContext =
+      prevLessons.length > 0
+        ? `\nLECCIONES DE MESES ANTERIORES:\n${prevLessons
+            .map(
+              (l) =>
+                `[${l.month_label}] Lecciones: ${l.lessons_learned}\nReglas: ${l.self_imposed_rules}`
+            )
+            .join("\n\n")}`
+        : "";
+
+    const pmPrompt = `Sos un asesor financiero haciendo tu POST-MORTEM MENSUAL. Revisá TODAS tus predicciones del último mes y generá un análisis honesto.
+
+ESTADÍSTICAS DEL MES:
+- Predicciones totales: ${total}
+- Aciertos: ${correct} (${accuracy}%)
+- Retorno promedio de tus picks: ${avgReturn.toFixed(2)}%
+- Mejor pick: ${bestPick?.ticker} (${bestPick?.actual_change_pct}%)
+- Peor pick: ${worstPick?.ticker} (${worstPick?.actual_change_pct}%)
+
+DETALLE DE CADA PREDICCIÓN:
+${predsDetail}
+${prevContext}
+
+Respondé SOLO con JSON válido:
+{
+  "resumen_mes": "2-3 oraciones resumiendo cómo te fue este mes",
+  "aciertos_analisis": "Qué hiciste bien y por qué acertaste en esos casos",
+  "errores_analisis": "En qué fallaste y por qué. Sé específico: ¿fue el timing? ¿la tesis? ¿ignoraste una señal?",
+  "patrones_detectados": [
+    "Patrón 1 (ej: 'Mis picks de tech con RSI > 60 siempre pierden')"
+  ],
+  "reglas_nuevas": [
+    "Regla 1 que te autoimpones (ej: 'No recomendar semis cuando earnings están cerca')"
+  ],
+  "ajustes_estrategia": "Qué vas a hacer diferente el mes que viene",
+  "confianza_estrategia": 70,
+  "nota_para_mi_yo_futuro": "Un mensaje para vos mismo el mes que viene"
+}`;
+
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1200,
+      system:
+        "Sos un asesor financiero haciendo autocrítica honesta de tus predicciones. Sé brutalmente honesto. Si fallaste, decilo claro. Buscá patrones en tus errores. Respondé SOLO JSON.",
+      messages: [{ role: "user", content: pmPrompt }],
+    });
+
+    const text = response.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    const clean = text.replace(/```json|```/g, "").trim();
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    if (!jsonMatch)
+      return res.status(500).json({ error: "No se pudo parsear la respuesta de Claude" });
+
+    const pmResult = JSON.parse(jsonMatch[0]);
+
+    // 5. Guardar en la BD
+    const monthLabel = new Date().toLocaleString("es-AR", {
+      month: "long",
+      year: "numeric",
+    });
+    await savePostMortem({
+      monthLabel,
+      totalPredictions: total,
+      correctPredictions: correct,
+      accuracyPct: accuracy,
+      totalReturnPct: Math.round(avgReturn * 100) / 100,
+      spyReturnPct: null,
+      beatSpy: false,
+      bestPick: bestPick?.ticker,
+      bestPickReturn: bestPick?.actual_change_pct,
+      worstPick: worstPick?.ticker,
+      worstPickReturn: worstPick?.actual_change_pct,
+      lessonsLearned:
+        (pmResult.aciertos_analisis || "") + " | " + (pmResult.errores_analisis || ""),
+      selfImposedRules: JSON.stringify(pmResult.reglas_nuevas || []),
+      patternsDetected: JSON.stringify(pmResult.patrones_detectados || []),
+      confidenceInStrategy: pmResult.confianza_estrategia,
+      rawAiResponse: JSON.stringify(pmResult),
+    });
+
+    res.json({
+      stats: { total, correct, accuracy, avgReturn: Math.round(avgReturn * 100) / 100 },
+      postmortem: pmResult,
+      monthLabel,
+    });
+  } catch (err) {
+    console.error("Post-mortem error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Post-mortem: history ----
+app.get("/api/postmortem/history", authMiddleware, async (req, res) => {
+  try {
+    const postmortems = await getPostMortems(12);
+    res.json(
+      postmortems.map((pm) => ({
+        ...pm,
+        self_imposed_rules: pm.self_imposed_rules ? JSON.parse(pm.self_imposed_rules) : [],
+        patterns_detected: pm.patterns_detected ? JSON.parse(pm.patterns_detected) : [],
+        raw_ai_response: pm.raw_ai_response ? JSON.parse(pm.raw_ai_response) : null,
+      }))
+    );
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

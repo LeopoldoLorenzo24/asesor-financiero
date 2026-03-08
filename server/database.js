@@ -104,21 +104,6 @@ export async function initDb() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    CREATE TABLE IF NOT EXISTS bot_performance (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      period_start TEXT NOT NULL,
-      period_end TEXT NOT NULL,
-      total_predictions INTEGER NOT NULL DEFAULT 0,
-      correct_predictions INTEGER NOT NULL DEFAULT 0,
-      accuracy_pct REAL,
-      avg_return_predicted REAL,
-      avg_return_actual REAL,
-      best_pick TEXT,
-      worst_pick TEXT,
-      lessons_learned TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
     CREATE TABLE IF NOT EXISTS capital_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       date TEXT NOT NULL DEFAULT (date('now')),
@@ -144,6 +129,30 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_predictions_ticker ON predictions(ticker);
     CREATE INDEX IF NOT EXISTS idx_predictions_date ON predictions(prediction_date);
     CREATE INDEX IF NOT EXISTS idx_predictions_evaluated ON predictions(evaluated);
+
+    CREATE TABLE IF NOT EXISTS monthly_postmortems (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      month_label TEXT NOT NULL,
+      analysis_date TEXT NOT NULL DEFAULT (datetime('now')),
+      total_predictions INTEGER NOT NULL DEFAULT 0,
+      correct_predictions INTEGER NOT NULL DEFAULT 0,
+      accuracy_pct REAL,
+      total_return_pct REAL,
+      spy_return_pct REAL,
+      beat_spy INTEGER NOT NULL DEFAULT 0,
+      best_pick TEXT,
+      best_pick_return REAL,
+      worst_pick TEXT,
+      worst_pick_return REAL,
+      lessons_learned TEXT,
+      self_imposed_rules TEXT,
+      patterns_detected TEXT,
+      confidence_in_strategy INTEGER,
+      raw_ai_response TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_postmortems_date ON monthly_postmortems(analysis_date);
   `);
 }
 
@@ -509,6 +518,43 @@ export async function buildAIContext() {
   }
 
   return context;
+}
+
+// ============================================================
+// POST-MORTEM OPERATIONS
+// ============================================================
+
+export async function savePostMortem(data) {
+  return await db.execute({
+    sql: `INSERT INTO monthly_postmortems (
+      month_label, total_predictions, correct_predictions, accuracy_pct,
+      total_return_pct, spy_return_pct, beat_spy,
+      best_pick, best_pick_return, worst_pick, worst_pick_return,
+      lessons_learned, self_imposed_rules, patterns_detected,
+      confidence_in_strategy, raw_ai_response
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      data.monthLabel, data.totalPredictions, data.correctPredictions, data.accuracyPct,
+      data.totalReturnPct, data.spyReturnPct ?? null, data.beatSpy ? 1 : 0,
+      data.bestPick ?? null, data.bestPickReturn ?? null, data.worstPick ?? null, data.worstPickReturn ?? null,
+      data.lessonsLearned ?? null, data.selfImposedRules ?? null, data.patternsDetected ?? null,
+      data.confidenceInStrategy ?? null, data.rawAiResponse ?? null,
+    ],
+  });
+}
+
+export async function getPostMortems(limit = 12) {
+  return (await db.execute({
+    sql: "SELECT * FROM monthly_postmortems ORDER BY analysis_date DESC LIMIT ?",
+    args: [limit],
+  })).rows;
+}
+
+export async function getLatestLessons() {
+  return (await db.execute({
+    sql: "SELECT lessons_learned, self_imposed_rules, patterns_detected, confidence_in_strategy, month_label FROM monthly_postmortems ORDER BY analysis_date DESC LIMIT 3",
+    args: [],
+  })).rows;
 }
 
 export default db;

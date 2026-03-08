@@ -66,10 +66,10 @@ export const api = {
   getHistory: (ticker, months = 6) => request(`/history/${ticker}?months=${months}`),
   getSectors: () => request("/sectors"),
 
-  aiAnalyze: (portfolio = [], capital = 0, profile = "moderate") =>
+  aiAnalyze: (capital = 0, profile = "moderate") =>
     request("/ai/analyze", {
       method: "POST",
-      body: JSON.stringify({ portfolio, capital, profile }),
+      body: JSON.stringify({ capital, profile }),
     }),
 
   aiAnalyzeSingle: (ticker) => request(`/ai/analyze/${ticker}`),
@@ -103,6 +103,10 @@ export const api = {
   getBenchmarks: () => request("/benchmarks"),
   getBacktest: (months = 6, deposit = 1000000, profile = "moderate", picks = 4) =>
     request(`/backtest?months=${months}&deposit=${deposit}&profile=${profile}&picks=${picks}`),
+
+  generatePostMortem: () => request("/postmortem/generate", { method: "POST" }),
+  getPostMortems: () => request("/postmortem/history"),
+  seedHistoricalLessons: () => request("/seed-historical-lessons", { method: "POST" }),
 };
 
 export default api;

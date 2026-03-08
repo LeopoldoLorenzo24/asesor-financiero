@@ -4,9 +4,13 @@
 // ============================================================
 
 import Anthropic from "@anthropic-ai/sdk";
-import { logPrediction, logAnalysisSession, buildAIContext } from "./database.js";
+import NodeCache from "node-cache";
+import { logPrediction, logAnalysisSession, buildAIContext, getLatestLessons } from "./database.js";
 import { buildMonthlyCycleContext } from "./investmentCycle.js";
 import { runBacktest } from "./backtest.js";
+import { getMarketKnowledge } from "./marketKnowledge.js";
+
+const backtestCache = new NodeCache({ stdTTL: 21600 }); // 6 horas
 
 let client = null;
 function getClient() {
@@ -62,7 +66,7 @@ function getProfileConfig(profileId = "moderate") {
 }
 
 // --- Generate full AI analysis ---
-export async function generateAnalysis({ topPicks, portfolio, capital, ccl, diversification, warnings, ranking, profileId = "moderate" }) {
+export async function generateAnalysis({ topPicks, capital, ccl, diversification, warnings, ranking, profileId = "moderate" }) {
   const profile = getProfileConfig(profileId);
 
   // Construir contexto mensual completo (incluye valor de portfolio y performance reciente)
@@ -72,8 +76,39 @@ export async function generateAnalysis({ topPicks, portfolio, capital, ccl, dive
   // Contexto adicional de auto-evaluación (historial de predicciones evaluadas)
   const selfEvalContext = await buildAIContext();
 
+  // Lecciones de post-mortems anteriores — el conocimiento acumulado del bot
+  const lessons = await getLatestLessons();
+  let lessonsSection = "";
+  if (lessons.length > 0) {
+    lessonsSection = `
+LECCIONES DE TUS POST-MORTEMS ANTERIORES (LEELAS Y RESPETÁ TUS PROPIAS REGLAS):
+${lessons
+  .map((l) => {
+    const rules = l.self_imposed_rules ? JSON.parse(l.self_imposed_rules) : [];
+    const patterns = l.patterns_detected ? JSON.parse(l.patterns_detected) : [];
+    return `[${l.month_label}] (Confianza en estrategia: ${l.confidence_in_strategy ?? "—"}%)
+Lecciones: ${l.lessons_learned || "—"}
+Patrones: ${patterns.length > 0 ? patterns.join("; ") : "—"}
+Reglas autoimpuestas: ${rules.length > 0 ? rules.join("; ") : "—"}`;
+  })
+  .join("\n\n")}
+
+IMPORTANTE: Las reglas que te autoimpusiste son OBLIGATORIAS. Si dijiste "no recomendar X cuando Y", NO lo hagas. Si lo hacés, explicá explícitamente por qué cambiaste de opinión.
+`;
+  }
+
+  // Base de conocimiento estática de historia del mercado
+  const knowledge = getMarketKnowledge();
+
   // ── Mini-backtest interno multi-horizonte: cómo le viene yendo al bot vs SPY/QQQ ──
   let backtestSummary = null;
+  const backtestCacheKey = `minibt_${profileId}`;
+  const cachedBacktest = backtestCache.get(backtestCacheKey);
+
+  if (cachedBacktest) {
+    console.log("📦 Using cached mini-backtest result");
+    backtestSummary = cachedBacktest;
+  } else {
   try {
     const monthsSinceStart = cycleData?.monthNumber || 6;
     const horizons = [];
@@ -137,6 +172,12 @@ export async function generateAnalysis({ topPicks, portfolio, capital, ccl, dive
   } catch (e) {
     console.error("Mini-backtest error inside advisor:", e.message);
   }
+
+  if (backtestSummary) {
+    backtestCache.set(backtestCacheKey, backtestSummary);
+    console.log("💾 Mini-backtest cached for 6 hours");
+  }
+  } // end cache-miss block
 
   const tickerDetails = topPicks
     .slice(0, 10)
@@ -230,6 +271,8 @@ ${profile.rules}
 
 ${monthlyContext}
 
+${knowledge}
+${lessonsSection}
 AUTO-EVALUACIÓN DEL ASESOR (performance histórica y predicciones evaluadas):
 ${selfEvalContext}
 
@@ -338,7 +381,13 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
         "monto_total_ars": 50000,
         "horizonte": "Corto|Mediano|Largo plazo",
         "target_pct": 20,
-        "stop_loss_pct": -10
+        "stop_loss_pct": -10,
+        "cuando_ver_rendimiento": "Descripción concreta de cuándo el inversor debería empezar a ver retornos positivos. Ejemplo: 'En las primeras 2-3 semanas si el catalizador X ocurre, resultados más sólidos a partir del mes 2 con el reporte de earnings'.",
+        "proyeccion_retornos": {
+          "1_mes": "+3-5%",
+          "3_meses": "+10-15%",
+          "6_meses": "+20-28%"
+        }
       }
     ]
   },
@@ -545,7 +594,7 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
 }
 
 // --- Comprehensive analysis for a single CEDEAR ---
-export async function analyzeSingle({ ticker, name, sector, scores, technical, fundamentals, quote, ccl }) {
+export async function analyzeSingle({ ticker, name, sector, scores, technical, fundamentals, quote, ccl, portfolioContext = "" }) {
   const ind = technical?.indicators || {};
   const perf = ind.performance || {};
   const bb = ind.bollingerBands;
@@ -606,6 +655,7 @@ FUNDAMENTALES:
 - Target analistas: $${fundamentals?.targetMeanPrice?.toFixed(2) || "N/A"} (${fundamentals?.recommendationKey || "N/A"}, ${fundamentals?.numberOfAnalystOpinions || 0} analistas)
 
 Buscá noticias recientes sobre ${ticker} y su sector (${sector}). Analizá TODO en profundidad.
+${portfolioContext}
 
 Respondé SOLO con JSON válido (sin markdown, sin backticks):
 {

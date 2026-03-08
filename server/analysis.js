@@ -23,25 +23,61 @@ export function calcEMA(prices, period) {
 
 export function calcRSI(prices, period = 14) {
   if (prices.length < period + 1) return 50;
-  let gains = 0;
-  let losses = 0;
-  for (let i = prices.length - period; i < prices.length; i++) {
+
+  // Step 1: seed with simple average of first `period` changes
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
     const diff = prices[i].close - prices[i - 1].close;
-    if (diff > 0) gains += diff;
-    else losses -= diff;
+    if (diff > 0) avgGain += diff;
+    else avgLoss -= diff;
   }
-  if (losses === 0) return 100;
-  const rs = gains / losses;
+  avgGain /= period;
+  avgLoss /= period;
+
+  // Step 2: Wilder's smoothing for the remaining periods
+  for (let i = period + 1; i < prices.length; i++) {
+    const diff = prices[i].close - prices[i - 1].close;
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
   return Math.round((100 - 100 / (1 + rs)) * 10) / 10;
 }
 
 export function calcMACD(prices) {
   if (prices.length < 26) return { macd: 0, signal: 0, histogram: 0 };
-  const ema12 = calcEMA(prices, 12);
-  const ema26 = calcEMA(prices, 26);
-  const macdLine = ema12 - ema26;
-  // Approximate signal line
-  const signal = macdLine * 0.75;
+
+  const k12 = 2 / 13;
+  const k26 = 2 / 27;
+  const k9 = 2 / 10;
+
+  let ema12 = prices.slice(0, 12).reduce((s, p) => s + p.close, 0) / 12;
+  let ema26 = prices.slice(0, 26).reduce((s, p) => s + p.close, 0) / 26;
+
+  // Build MACD line for every day from index 26 onward
+  const macdValues = [];
+  for (let i = 0; i < prices.length; i++) {
+    if (i >= 12) ema12 = prices[i].close * k12 + ema12 * (1 - k12);
+    if (i >= 26) {
+      ema26 = prices[i].close * k26 + ema26 * (1 - k26);
+      macdValues.push(ema12 - ema26);
+    }
+  }
+
+  if (macdValues.length === 0) return { macd: 0, signal: 0, histogram: 0 };
+
+  // Signal line = EMA-9 of the MACD line
+  let signal = macdValues.slice(0, 9).reduce((s, v) => s + v, 0) / Math.min(9, macdValues.length);
+  for (let i = 9; i < macdValues.length; i++) {
+    signal = macdValues[i] * k9 + signal * (1 - k9);
+  }
+
+  const macdLine = macdValues[macdValues.length - 1];
   return {
     macd: Math.round(macdLine * 100) / 100,
     signal: Math.round(signal * 100) / 100,
@@ -77,14 +113,27 @@ export function calcATR(prices, period = 14) {
   return Math.round((atrSum / period) * 100) / 100;
 }
 
-export function calcStochastic(prices, period = 14) {
-  if (prices.length < period) return { k: 50, d: 50 };
-  const slice = prices.slice(-period);
-  const high = Math.max(...slice.map((p) => p.high));
-  const low = Math.min(...slice.map((p) => p.low));
-  const close = prices[prices.length - 1].close;
-  const k = high === low ? 50 : ((close - low) / (high - low)) * 100;
-  return { k: Math.round(k * 10) / 10, d: Math.round(k * 0.8 * 10) / 10 };
+export function calcStochastic(prices, kPeriod = 14, dPeriod = 3) {
+  if (prices.length < kPeriod + dPeriod) return { k: 50, d: 50 };
+
+  // Calculate %K for each of the last dPeriod days
+  const kValues = [];
+  for (let offset = 0; offset < dPeriod; offset++) {
+    const end = prices.length - offset;
+    const start = end - kPeriod;
+    const slice = prices.slice(start, end);
+    const high = Math.max(...slice.map((p) => p.high));
+    const low = Math.min(...slice.map((p) => p.low));
+    const close = prices[end - 1].close;
+    kValues.push(high === low ? 50 : ((close - low) / (high - low)) * 100);
+  }
+
+  const latestK = kValues[0];
+  const d = kValues.reduce((sum, v) => sum + v, 0) / kValues.length;
+  return {
+    k: Math.round(latestK * 10) / 10,
+    d: Math.round(d * 10) / 10,
+  };
 }
 
 export function calcVolumeProfile(prices, lookback = 20) {

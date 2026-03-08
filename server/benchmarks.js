@@ -54,13 +54,14 @@ export async function calculateBenchmarks(ranking = []) {
     }
   } catch (e) { console.error("QQQ benchmark error:", e.message); }
 
-  // Estimate plazo fijo (75% TNA = ~6.25% monthly)
-  const monthlyPFRate = 0.0625;
-  const plazoFijoReturn = (Math.pow(1 + monthlyPFRate, monthsBack) - 1) * 100;
+  // Estimate plazo fijo from env (TNA, defaults to 75%)
+  const plazoFijoTNA = parseFloat(process.env.PLAZO_FIJO_TNA || "0.75");
+  const plazoFijoMonthly = Math.pow(1 + plazoFijoTNA, 1 / 12) - 1;
+  const plazoFijoReturn = (Math.pow(1 + plazoFijoMonthly, monthsBack) - 1) * 100;
 
-  // Estimate Argentine inflation (~3.5% monthly)
-  const monthlyInflation = 0.035;
-  const inflationReturn = (Math.pow(1 + monthlyInflation, monthsBack) - 1) * 100;
+  // Estimate Argentine inflation from env (~3.5% monthly default)
+  const inflacionMonthly = parseFloat(process.env.INFLACION_MENSUAL || "0.035");
+  const inflationReturn = (Math.pow(1 + inflacionMonthly, monthsBack) - 1) * 100;
 
   // Verdict
   let verdict = "";

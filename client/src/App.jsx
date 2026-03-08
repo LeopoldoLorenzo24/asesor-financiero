@@ -243,6 +243,11 @@ export default function App() {
   const [chartMonths, setChartMonths] = useState(6);
   const [detailHistory, setDetailHistory] = useState(null);
   const [expandedPrediction, setExpandedPrediction] = useState(null);
+  const [postmortem, setPostmortem] = useState(null);
+  const [pmLoading, setPmLoading] = useState(false);
+  const [pmHistory, setPmHistory] = useState([]);
+  const [seedLoading, setSeedLoading] = useState(false);
+  const [seedResult, setSeedResult] = useState(null);
   const [filterSector, setFilterSector] = useState("Todos");
   const [sortBy, setSortBy] = useState("composite");
   const [showCapitalInput, setShowCapitalInput] = useState(false);
@@ -250,6 +255,8 @@ export default function App() {
   // New: benchmarks & backtest
   const [benchmarks, setBenchmarks] = useState(null);
   const [benchLoading, setBenchLoading] = useState(false);
+  const [capitalHistory, setCapitalHistory] = useState([]);
+  const [cooldownInfo, setCooldownInfo] = useState(null);
   const [backtest, setBacktest] = useState(null);
   const [backtestLoading, setBacktestLoading] = useState(false);
   const [btMonths, setBtMonths] = useState(6);
@@ -267,15 +274,19 @@ export default function App() {
   const loadPerformance = useCallback(async () => { try { setPerformance(await api.getPerformance(60)); } catch (e) { console.error(e); } }, []);
   const loadSessions = useCallback(async () => { try { setAnalysisSessions(await api.getAnalysisSessions(10)); } catch (e) { console.error(e); } }, []);
   const loadBenchmarks = useCallback(async () => { setBenchLoading(true); try { setBenchmarks(await api.getBenchmarks()); } catch (e) { console.error(e); } finally { setBenchLoading(false); } }, []);
+  const loadCapitalHistory = useCallback(async () => { try { setCapitalHistory(await api.getCapitalHistory(90)); } catch (e) { console.error(e); } }, []);
   const runBacktestSim = useCallback(async () => { setBacktestLoading(true); try { setBacktest(await api.getBacktest(btMonths, btDeposit, btProfile, btPicks)); } catch (e) { console.error(e); } finally { setBacktestLoading(false); } }, [btMonths, btDeposit, btProfile, btPicks]);
+  const handlePostMortem = useCallback(async () => { setPmLoading(true); setPostmortem(null); try { const data = await api.generatePostMortem(); setPostmortem(data); const hist = await api.getPostMortems(); setPmHistory(hist); } catch (err) { setPostmortem({ error: err.message }); } finally { setPmLoading(false); } }, []);
+  const loadPmHistory = useCallback(async () => { try { setPmHistory(await api.getPostMortems()); } catch (e) { console.error(e); } }, []);
+  const handleSeedHistorical = useCallback(async () => { setSeedLoading(true); setSeedResult(null); try { const data = await api.seedHistoricalLessons(); setSeedResult(data); const hist = await api.getPostMortems(); setPmHistory(hist); } catch (err) { setSeedResult({ error: err.message }); } finally { setSeedLoading(false); } }, []);
 
   useEffect(() => { if (loggedIn) { loadRanking(); loadPortfolioDB(); loadCapital(); } }, [profile, loggedIn]);
-  useEffect(() => { if (!loggedIn) return; if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); } if (view === "predicciones") { loadPredictions(); loadPerformance(); } if (view === "historial") loadSessions(); if (view === "benchmarks") loadBenchmarks(); }, [view, loggedIn]);
-  useEffect(() => { if (loggedIn && view === "dashboard" && portfolioDB.summary.length > 0 && !benchmarks) loadBenchmarks(); }, [view, portfolioDB, loggedIn]);
+  useEffect(() => { if (!loggedIn) return; if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); } if (view === "predicciones") { loadPredictions(); loadPerformance(); loadPmHistory(); } if (view === "historial") loadSessions(); if (view === "benchmarks") loadBenchmarks(); }, [view, loggedIn]);
+  useEffect(() => { if (loggedIn && view === "dashboard" && portfolioDB.summary.length > 0 && !benchmarks) { loadBenchmarks(); loadCapitalHistory(); } }, [view, portfolioDB, loggedIn]);
 
   const loadDetail = useCallback(async (ticker) => { setSelectedTicker(ticker); setDetailLoading(true); setAiSingle(null); setDetailHistory(null); setChartMonths(6); try { setDetail(await api.getCedear(ticker, profile)); } catch (e) { console.error(e); } finally { setDetailLoading(false); } }, [profile]);
   const loadDetailHistory = useCallback(async (ticker, months) => { try { const data = await api.getHistory(ticker, months); setDetailHistory(data.prices || []); } catch (e) { console.error(e); } }, []);
-  const runAI = useCallback(async (investCapital) => { setAiLoading(true); setShowCapitalInput(false); try { const d = await api.aiAnalyze(portfolioDB.summary.map(p => ({ ticker: p.ticker, shares: p.total_shares, avgPrice: p.weighted_avg_price })), investCapital, profile); setAiAnalysis(d.analysis); } catch (e) { setAiAnalysis({ error: e.message }); } finally { setAiLoading(false); } }, [portfolioDB, profile]);
+  const runAI = useCallback(async (investCapital) => { setAiLoading(true); setShowCapitalInput(false); setCooldownInfo(null); try { const d = await api.aiAnalyze(investCapital, profile); setAiAnalysis(d.analysis); } catch (e) { const msg = e.message || ""; if (msg.includes("Esper") || msg.includes("minuto")) { setCooldownInfo({ message: msg }); } else { setAiAnalysis({ error: msg }); } } finally { setAiLoading(false); } }, [profile]);
   const runAISingle = useCallback(async (ticker) => { setAiSingleLoading(true); try { setAiSingle((await api.aiAnalyzeSingle(ticker)).aiAnalysis); } catch (e) { setAiSingle({ error: e.message }); } finally { setAiSingleLoading(false); } }, []);
 
   const handleBuy = async () => { try { setOpMsg(null); await api.buyPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Compra registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowBuyModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
@@ -412,6 +423,22 @@ export default function App() {
                       <div style={{ fontWeight: 800, fontSize: 15 }}>{rec.ticker} <span style={{ color: T.textDim, fontWeight: 400, fontSize: 12 }}>{rec.nombre} · {rec.sector}</span></div>
                       {rec.por_que_le_gana_a_spy && <p style={{ color: T.cyan, fontSize: 12, margin: "6px 0 0", fontWeight: 600 }}>vs {a.decision_mensual.core_etf || "SPY"}: {rec.por_que_le_gana_a_spy}</p>}
                       <p style={{ color: T.textMuted, fontSize: 12, margin: "4px 0 0" }}>{rec.razon}</p>
+                      {rec.cuando_ver_rendimiento && (
+                        <p style={{ color: T.yellow, fontSize: 11, margin: "6px 0 0", display: "flex", gap: 5, alignItems: "flex-start" }}>
+                          <span style={{ fontWeight: 700, whiteSpace: "nowrap" }}>⏱ Cuándo ver rendimientos:</span>
+                          <span style={{ fontWeight: 400 }}>{rec.cuando_ver_rendimiento}</span>
+                        </p>
+                      )}
+                      {rec.proyeccion_retornos && (
+                        <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                          {Object.entries(rec.proyeccion_retornos).map(([plazo, retorno]) => (
+                            <div key={plazo} style={{ background: "rgba(16,185,129,0.07)", border: "1px solid rgba(16,185,129,0.18)", borderRadius: 8, padding: "4px 10px", textAlign: "center" }}>
+                              <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 700 }}>{plazo.replace("_", " ")}</div>
+                              <div style={{ fontSize: 13, fontWeight: 800, color: String(retorno).startsWith("-") ? T.red : T.green, fontFamily: T.fontMono }}>{retorno}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div style={{ textAlign: "right", fontSize: 11, color: T.textDim, minWidth: 130 }}>
                       <div><strong style={{ color: T.green }}>${rec.monto_total_ars?.toLocaleString()}</strong> ARS</div>
@@ -519,7 +546,16 @@ export default function App() {
               </div>
             </div>
           )}
-          <div style={{ fontSize: 10, color: T.textDark, marginBottom: 14, position: "relative" }}>Podés correr el análisis las veces que quieras con diferentes montos</div>
+          <div style={{ fontSize: 10, color: T.textDark, marginBottom: 14, position: "relative" }}>El análisis completo tiene un cooldown de 1 hora para evitar gasto innecesario de tokens.</div>
+          {cooldownInfo && !aiAnalysis && (
+            <div style={{ background: `${T.blue}08`, borderRadius: 14, padding: 20, border: `1px solid ${T.blue}25`, display: "flex", gap: 14, alignItems: "flex-start", marginBottom: 14 }}>
+              <span style={{ fontSize: 24 }}>⏱</span>
+              <div>
+                <div style={{ fontWeight: 700, color: T.blue, marginBottom: 6 }}>Análisis en cooldown</div>
+                <div style={{ fontSize: 13, color: T.textMuted }}>{cooldownInfo.message}</div>
+              </div>
+            </div>
+          )}
           {renderAIResponse(aiAnalysis)}
         </div>
 
@@ -554,6 +590,24 @@ export default function App() {
                 </div>
               );
             })}
+          </div>
+        )}
+        {/* PATRIMONIO HISTORY CHART */}
+        {capitalHistory.length > 2 && (
+          <div style={{ ...S.card, marginTop: 24 }}>
+            <div style={{ ...S.label, color: T.cyan, marginBottom: 14 }}>EVOLUCIÓN DEL PATRIMONIO</div>
+            <ResponsiveContainer width="100%" height={200}>
+              <AreaChart data={[...capitalHistory].reverse().map(c => ({
+                date: c.date,
+                total: Math.round(c.total_value_ars / 1000),
+              }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                <XAxis dataKey="date" tick={{ fontSize: 9, fill: T.textDark }} tickLine={false} axisLine={false} />
+                <YAxis tick={{ fontSize: 9, fill: T.textDark }} tickLine={false} axisLine={false} tickFormatter={v => `$${v}K`} />
+                <Tooltip contentStyle={{ background: T.bgCardSolid, border: `1px solid ${T.borderLight}`, borderRadius: 10, fontSize: 12 }} formatter={v => [`$${(v * 1000).toLocaleString()} ARS`, "Patrimonio"]} />
+                <Area type="monotone" dataKey="total" stroke={T.cyan} fill={`${T.cyan}12`} strokeWidth={2} dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
         )}
       </div>
@@ -964,9 +1018,13 @@ export default function App() {
             </div>
           ))}
         </div>
-        <div style={{ marginTop: 20, display: "flex", gap: 12, alignItems: "center" }}>
+        <div style={{ marginTop: 20, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <button onClick={handleEvaluateAll} disabled={evalLoading || pending.length === 0} style={{ ...S.btn("blue"), opacity: evalLoading || pending.length === 0 ? 0.5 : 1 }}>{evalLoading ? "Evaluando..." : `Evaluar ${pending.length} Pendientes`}</button>
+          <button onClick={handlePostMortem} disabled={pmLoading} style={{ ...S.btn("purple"), opacity: pmLoading ? 0.5 : 1 }}>{pmLoading ? "⏳ Generando post-mortem..." : "📊 Post-Mortem Mensual"}</button>
+          <button onClick={handleSeedHistorical} disabled={seedLoading || pmHistory.some(pm => pm.month_label?.includes("Histórico"))} style={{ ...S.btn("green"), opacity: seedLoading || pmHistory.some(pm => pm.month_label?.includes("Histórico")) ? 0.5 : 1, fontSize: 11 }} title="Ejecutar UNA sola vez. Genera experiencia histórica de 12 meses de backtest.">{seedLoading ? "⏳ Cargando experiencia..." : pmHistory.some(pm => pm.month_label?.includes("Histórico")) ? "✔ Experiencia cargada" : "📚 Cargar Experiencia Histórica"}</button>
           {evalResult && !evalResult.error && <span style={{ fontSize: 12, color: T.green }}>Se evaluaron {evalResult.totalEvaluated} predicciones</span>}
+          {seedResult && !seedResult.error && <span style={{ fontSize: 12, color: T.green }}>✔ {seedResult.stats?.totalPicks} picks analizados, {seedResult.stats?.winners} ganadores</span>}
+          {seedResult?.error && <span style={{ fontSize: 12, color: T.red }}>Error: {seedResult.error}</span>}
         </div>
         {performance?.byAction?.length > 0 && (
           <div style={{ ...S.card, marginTop: 24 }}>
@@ -1107,6 +1165,137 @@ export default function App() {
             <div style={{ fontSize: 40, marginBottom: 14, opacity: 0.3 }}>◎</div>
             <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>Sin predicciones aún</div>
             <div style={{ color: T.textDim, fontSize: 13 }}>Generá un análisis IA desde el Dashboard.</div>
+          </div>
+        )}
+
+        {/* POST-MORTEM RESULT */}
+        {postmortem && (
+          <div style={{ ...S.card, marginTop: 28, border: `1px solid ${T.purple}30`, background: `${T.purple}06` }}>
+            {postmortem.error ? (
+              <StatusMsg type="error">Error: {postmortem.error}</StatusMsg>
+            ) : postmortem.message ? (
+              <div style={{ color: T.yellow, fontSize: 13 }}>⚠️ {postmortem.message}</div>
+            ) : (
+              <>
+                {/* Header */}
+                <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
+                  <span style={{ fontSize: 28 }}>📊</span>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 16, color: T.purple }}>Post-Mortem: {postmortem.monthLabel}</div>
+                    <div style={{ fontSize: 12, color: T.textDim, marginTop: 3 }}>
+                      {postmortem.stats?.correct}/{postmortem.stats?.total} aciertos &middot; {postmortem.stats?.accuracy}% accuracy &middot; retorno prom. {postmortem.stats?.avgReturn >= 0 ? "+" : ""}{postmortem.stats?.avgReturn}%
+                    </div>
+                  </div>
+                  {/* Strategy confidence bar */}
+                  <div style={{ marginLeft: "auto", textAlign: "right", minWidth: 120 }}>
+                    <div style={{ fontSize: 10, color: T.textDim, marginBottom: 4 }}>Confianza en estrategia</div>
+                    <div style={{ background: T.border, borderRadius: 6, height: 8, width: 120 }}>
+                      <div style={{ background: postmortem.postmortem?.confianza_estrategia >= 65 ? T.green : postmortem.postmortem?.confianza_estrategia >= 45 ? T.yellow : T.red, borderRadius: 6, height: 8, width: `${postmortem.postmortem?.confianza_estrategia || 0}%`, transition: "width 1s ease" }} />
+                    </div>
+                    <div style={{ fontSize: 11, color: T.cyan, fontWeight: 700, marginTop: 3 }}>{postmortem.postmortem?.confianza_estrategia ?? "—"}%</div>
+                  </div>
+                </div>
+
+                {/* Resumen */}
+                {postmortem.postmortem?.resumen_mes && (
+                  <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 12, padding: 16, marginBottom: 14, borderLeft: `3px solid ${T.purple}` }}>
+                    <div style={{ ...S.label, color: T.purple, marginBottom: 8 }}>Resumen del Mes</div>
+                    <p style={{ margin: 0, color: T.textMuted, fontSize: 13 }}>{postmortem.postmortem.resumen_mes}</p>
+                  </div>
+                )}
+
+                {/* Aciertos & Errores */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+                  <div style={{ background: `${T.green}08`, borderRadius: 12, padding: 16, border: `1px solid ${T.green}20`, borderLeft: `3px solid ${T.green}` }}>
+                    <div style={{ ...S.label, color: T.green, marginBottom: 8 }}>✓ Qué acerté</div>
+                    <p style={{ margin: 0, color: T.textMuted, fontSize: 12 }}>{postmortem.postmortem?.aciertos_analisis}</p>
+                  </div>
+                  <div style={{ background: `${T.red}08`, borderRadius: 12, padding: 16, border: `1px solid ${T.red}20`, borderLeft: `3px solid ${T.red}` }}>
+                    <div style={{ ...S.label, color: T.red, marginBottom: 8 }}>✗ Dónde fallé</div>
+                    <p style={{ margin: 0, color: T.textMuted, fontSize: 12 }}>{postmortem.postmortem?.errores_analisis}</p>
+                  </div>
+                </div>
+
+                {/* Patrones */}
+                {postmortem.postmortem?.patrones_detectados?.length > 0 && (
+                  <div style={{ ...S.card, marginBottom: 14, padding: 16 }}>
+                    <div style={{ ...S.label, marginBottom: 10 }}>🔍 Patrones Detectados</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {postmortem.postmortem.patrones_detectados.map((p, i) => (
+                        <span key={i} style={{ ...S.badge(T.yellow), fontSize: 11, padding: "5px 10px", lineHeight: 1.4, maxWidth: 280, whiteSpace: "normal" }}>{p}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Reglas */}
+                {postmortem.postmortem?.reglas_nuevas?.length > 0 && (
+                  <div style={{ ...S.card, marginBottom: 14, padding: 16, border: `1px solid ${T.cyan}20` }}>
+                    <div style={{ ...S.label, color: T.cyan, marginBottom: 10 }}>☑️ Reglas Autoimpuestas</div>
+                    {postmortem.postmortem.reglas_nuevas.map((r, i) => (
+                      <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "5px 0", borderBottom: i < postmortem.postmortem.reglas_nuevas.length - 1 ? `1px solid ${T.border}` : "none" }}>
+                        <span style={{ color: T.cyan, fontWeight: 700, fontSize: 12 }}>{i + 1}.</span>
+                        <span style={{ fontSize: 12, color: T.textMuted }}>{r}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Ajustes + Nota */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  {postmortem.postmortem?.ajustes_estrategia && (
+                    <div style={{ background: `${T.blue}08`, borderRadius: 12, padding: 16, border: `1px solid ${T.blue}20` }}>
+                      <div style={{ ...S.label, color: T.blue, marginBottom: 8 }}>🔄 Ajustes para el Próximo Mes</div>
+                      <p style={{ margin: 0, color: T.textMuted, fontSize: 12 }}>{postmortem.postmortem.ajustes_estrategia}</p>
+                    </div>
+                  )}
+                  {postmortem.postmortem?.nota_para_mi_yo_futuro && (
+                    <div style={{ background: `${T.purple}08`, borderRadius: 12, padding: 16, border: `1px solid ${T.purple}20` }}>
+                      <div style={{ ...S.label, color: T.purple, marginBottom: 8 }}>📝 Nota para mi Yo Futuro</div>
+                      <p style={{ margin: 0, color: T.textMuted, fontSize: 12, fontStyle: "italic" }}>"{postmortem.postmortem.nota_para_mi_yo_futuro}"</p>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* POST-MORTEM HISTORY */}
+        {pmHistory.length > 0 && (
+          <div style={{ marginTop: 32 }}>
+            <div style={{ ...S.label, color: T.textMuted, marginBottom: 14 }}>Historial de Post-Mortems</div>
+            <div style={{ ...S.grid(220) }}>
+              {pmHistory.map((pm, i) => {
+                const raw = pm.raw_ai_response;
+                return (
+                  <div key={i} style={{ ...S.card, padding: 18, border: `1px solid ${T.purple}20` }}>
+                    <div style={{ fontWeight: 700, color: T.purple, fontSize: 13, marginBottom: 6 }}>{pm.month_label}</div>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                      <span style={S.badge(pm.accuracy_pct >= 60 ? T.green : pm.accuracy_pct >= 40 ? T.yellow : T.red)}>{pm.accuracy_pct ?? "—"}% acc.</span>
+                      <span style={S.badge(T.cyan)}>{pm.correct_predictions}/{pm.total_predictions}</span>
+                      {pm.total_return_pct != null && <span style={S.badge(pm.total_return_pct >= 0 ? T.green : T.red)}>{pm.total_return_pct >= 0 ? "+" : ""}{pm.total_return_pct}%</span>}
+                    </div>
+                    {/* Confidence bar */}
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ fontSize: 10, color: T.textDim, marginBottom: 3 }}>Confianza: {pm.confidence_in_strategy ?? "—"}%</div>
+                      <div style={{ background: T.border, borderRadius: 4, height: 4 }}>
+                        <div style={{ background: (pm.confidence_in_strategy || 0) >= 65 ? T.green : (pm.confidence_in_strategy || 0) >= 45 ? T.yellow : T.red, borderRadius: 4, height: 4, width: `${pm.confidence_in_strategy || 0}%` }} />
+                      </div>
+                    </div>
+                    {pm.best_pick && <div style={{ fontSize: 11, color: T.green }}>↑ {pm.best_pick} {pm.best_pick_return != null ? `(+${pm.best_pick_return}%)` : ""}</div>}
+                    {pm.worst_pick && <div style={{ fontSize: 11, color: T.red }}>↓ {pm.worst_pick} {pm.worst_pick_return != null ? `(${pm.worst_pick_return}%)` : ""}</div>}
+                    {pm.patterns_detected?.length > 0 && (
+                      <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {pm.patterns_detected.slice(0, 2).map((p, j) => (
+                          <span key={j} style={{ ...S.badge(T.yellow), fontSize: 9, padding: "2px 6px" }}>{p.slice(0, 40)}{p.length > 40 ? "…" : ""}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>

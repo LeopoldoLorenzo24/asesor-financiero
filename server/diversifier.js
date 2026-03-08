@@ -192,16 +192,29 @@ export function diversifiedSelection(rankedResults, portfolioPositions = [], pro
 }
 
 // --- Portfolio exposure calculator ---
-export async function portfolioExposure() {
+export async function portfolioExposure(quotesMap = null, bymaPrices = null, cclRate = null) {
   const positions = await getPortfolioSummary();
-  const result = { sectors: {}, categories: {}, total: 0, positions: positions.length };
+  const result = { sectors: {}, categories: {}, total: 0, positions: positions.length, hasEstimates: false };
 
   let totalValue = 0;
   for (const pos of positions) {
     const cedear = CEDEARS.find((c) => c.ticker === pos.ticker);
     const sector = cedear?.sector || "Unknown";
     const cat = categorize(sector);
-    const value = (pos.total_shares || 0) * (pos.weighted_avg_price || 0);
+
+    // Priority: real BYMA price > USD-derived price > avg purchase price
+    let value;
+    const bymaPrice = bymaPrices?.[pos.ticker]?.priceARS;
+    const usdPrice = quotesMap?.[pos.ticker]?.price;
+
+    if (bymaPrice) {
+      value = (pos.total_shares || 0) * bymaPrice;
+    } else if (usdPrice && cclRate && cedear?.ratio) {
+      value = (pos.total_shares || 0) * Math.round((usdPrice * cclRate) / cedear.ratio);
+    } else {
+      value = (pos.total_shares || 0) * (pos.weighted_avg_price || 0);
+      result.hasEstimates = true;
+    }
 
     result.sectors[sector] = (result.sectors[sector] || 0) + value;
     result.categories[cat] = (result.categories[cat] || 0) + value;
@@ -210,7 +223,6 @@ export async function portfolioExposure() {
 
   result.total = totalValue;
 
-  // Convert to percentages
   if (totalValue > 0) {
     for (const key of Object.keys(result.sectors)) {
       result.sectors[key] = {

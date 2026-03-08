@@ -98,7 +98,7 @@ export async function fetchHistory(ticker, months = 6) {
         volume: q.volume,
       }));
 
-    cache.set(cacheKey, prices);
+    cache.set(cacheKey, prices, 86400); // 24h — historical prices don't change
     return prices;
   } catch (err) {
     console.error(`Error fetching history for ${ticker}:`, err.message);
@@ -214,9 +214,12 @@ export async function fetchBymaPrices(tickers) {
   const results = await Promise.allSettled(
     baTickers.map((t) => yahooFinance.quoteCombine(t))
   );
+
   const priceMap = {};
+  const failedIndexes = [];
+
   results.forEach((r, i) => {
-    if (r.status === "fulfilled" && r.value) {
+    if (r.status === "fulfilled" && r.value && r.value.regularMarketPrice) {
       priceMap[tickers[i]] = {
         priceARS: r.value.regularMarketPrice,
         change: r.value.regularMarketChange,
@@ -224,8 +227,32 @@ export async function fetchBymaPrices(tickers) {
         volume: r.value.regularMarketVolume,
         previousClose: r.value.regularMarketPreviousClose,
       };
+    } else {
+      failedIndexes.push(i);
     }
   });
+
+  // Retry failed tickers once after a short pause
+  if (failedIndexes.length > 0 && failedIndexes.length < tickers.length) {
+    console.log(`🔄 Retrying ${failedIndexes.length} failed BYMA tickers...`);
+    await new Promise((r) => setTimeout(r, 1000));
+    const retryResults = await Promise.allSettled(
+      failedIndexes.map((i) => yahooFinance.quoteCombine(`${tickers[i]}.BA`))
+    );
+    retryResults.forEach((r, j) => {
+      const origIdx = failedIndexes[j];
+      if (r.status === "fulfilled" && r.value && r.value.regularMarketPrice) {
+        priceMap[tickers[origIdx]] = {
+          priceARS: r.value.regularMarketPrice,
+          change: r.value.regularMarketChange,
+          changePercent: r.value.regularMarketChangePercent,
+          volume: r.value.regularMarketVolume,
+          previousClose: r.value.regularMarketPreviousClose,
+        };
+      }
+    });
+  }
+
   cache.set(cacheKey, priceMap);
   return priceMap;
 }
