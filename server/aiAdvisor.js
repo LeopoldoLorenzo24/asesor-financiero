@@ -6,6 +6,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { logPrediction, logAnalysisSession } from "./database.js";
 import { buildMonthlyCycleContext } from "./investmentCycle.js";
+import { runBacktest } from "./backtest.js";
 
 let client = null;
 function getClient() {
@@ -63,6 +64,47 @@ function getProfileConfig(profileId = "moderate") {
 // --- Generate full AI analysis ---
 export async function generateAnalysis({ topPicks, portfolio, capital, ccl, diversification, warnings, ranking, profileId = "moderate" }) {
   const profile = getProfileConfig(profileId);
+
+  // ── Mini-backtest interno: cómo le viene yendo al bot vs SPY/QQQ ──
+  let backtestSummary = null;
+  try {
+    const bt = await runBacktest({
+      months: 6,
+      monthlyDeposit: 1000000,
+      profile: profileId,
+      picksPerMonth: 4,
+    });
+
+    if (!bt.error) {
+      const winners = (bt.riskManagement?.picksVsSpy || []).filter((p) => p.beatsSpy);
+      const topTickers = new Set((topPicks || []).map((p) => p.cedear?.ticker));
+      const winnersInTopPicks = winners.filter((w) => topTickers.has(w.ticker));
+
+      backtestSummary = {
+        months: bt.config?.months,
+        monthlyDeposit: bt.config?.monthlyDeposit,
+        returnPct: bt.resultado?.returnPct,
+        spyReturnPct: bt.resultado?.spyReturnPct,
+        beatsSPY: bt.resultado?.beatsSPY,
+        satelliteReturnPct: bt.satellite?.returnPct,
+        satelliteAlpha: bt.satellite?.alpha,
+        satelliteGeneraAlfa: bt.satellite?.generaAlfa,
+        veredicto: bt.veredicto,
+        picksGanadores: winnersInTopPicks
+          .slice(0, 15)
+          .map((w) => ({
+            ticker: w.ticker,
+            sector: w.sector,
+            returnPct: w.returnPct,
+            vsSpy: w.vsSpy,
+          })),
+        totalPicksGanadores: winners.length,
+      };
+    }
+  } catch (e) {
+    console.error("Mini-backtest error inside advisor:", e.message);
+  }
+
   // Construir contexto mensual completo
   const cycleData = await buildMonthlyCycleContext({ capital, ccl, ranking: ranking || topPicks });
   const monthlyContext = cycleData.context;
@@ -84,6 +126,28 @@ export async function generateAnalysis({ topPicks, portfolio, capital, ccl, dive
     .join("\n\n");
 
   const coreETF = profileId === "aggressive" ? "QQQ" : "SPY";
+
+  const backtestSection = backtestSummary ? `
+RESULTADOS DEL BACKTEST RECIENTE (estrategia del bot vs ${coreETF}):
+- Período simulado: ${backtestSummary.months || 6} meses
+- Retorno total estrategia bot: ${backtestSummary.returnPct != null ? backtestSummary.returnPct + "%" : "N/A"}
+- Retorno de ${coreETF} en el mismo período: ${backtestSummary.spyReturnPct != null ? backtestSummary.spyReturnPct + "%" : "N/A"}
+- Retorno del SATELLITE (picks activos): ${backtestSummary.satelliteReturnPct != null ? backtestSummary.satelliteReturnPct + "%" : "N/A"} (alfa vs ${coreETF}: ${backtestSummary.satelliteAlpha != null ? backtestSummary.satelliteAlpha + "pp" : "N/A"})
+- Veredicto sintético del backtest: ${backtestSummary.veredicto || "N/A"}
+- Cantidad de CEDEARs que le ganaron a ${coreETF} dentro de la estrategia: ${backtestSummary.totalPicksGanadores}
+
+INSTRUCCIÓN CLAVE BASADA EN EL BACKTEST:
+- Usá estos números como realidad dura: si el backtest muestra que la estrategia de picks del bot NO le gana a ${coreETF}, tu default debe ser recomendar ${coreETF} (hasta 100% del nuevo capital) y evitar armar un satellite grande.
+- Sólo si ves que el satellite y varios picks le ganan claramente a ${coreETF}, podés justificar un satellite más agresivo.
+
+CEDEARs que históricamente le ganaron a ${coreETF} en el backtest y que también están en el ranking actual:
+${backtestSummary.picksGanadores && backtestSummary.picksGanadores.length
+  ? backtestSummary.picksGanadores
+      .map((p) => \`- \${p.ticker} (\${p.sector}) → retorno vs \${coreETF}: \${p.vsSpy != null ? (p.vsSpy >= 0 ? "+" : "") + p.vsSpy + "pp" : "N/A"}\`)
+      .join("\\n")
+  : "Ninguno de los picks actuales aparece como ganador claro vs " + coreETF + " en el backtest; sé extremadamente selectivo con el satellite."}
+` : "";
+
   const prompt = `Sos el asesor financiero personal de un inversor argentino que opera CEDEARs.
 Él te consulta para revisar su cartera y decidir qué hacer.
 
@@ -117,6 +181,8 @@ REGLAS DEL PERFIL:
 ${profile.rules}
 
 ${monthlyContext}
+
+${backtestSection}
 
 RANKING DE CEDEARs (top ${topPicks.length} pre-filtrados por nuestro motor de diversificación):
 ${tickerDetails}
