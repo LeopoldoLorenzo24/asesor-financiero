@@ -418,12 +418,25 @@ export default function App() {
           </div>
         )}
         {a.resumen_operaciones && (
-          <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 14, padding: 18, marginBottom: 14, border: `1px solid ${T.green}15`, display: "flex", gap: 24, flexWrap: "wrap" }}>
-            {a.resumen_operaciones.total_a_vender_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.red, fontWeight: 600, letterSpacing: "1px" }}>LIBERAR (VENTAS)</div><div style={{ fontSize: 20, fontWeight: 800, color: T.red, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.total_a_vender_ars?.toLocaleString()}</div></div>}
-            <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.cyan, fontWeight: 600, letterSpacing: "1px" }}>CAPITAL DISPONIBLE</div><div style={{ fontSize: 20, fontWeight: 800, color: T.cyan, ...S.mono, marginTop: 4 }}>${(a.resumen_operaciones.capital_disponible_post_ventas || a.resumen_operaciones.capital_total_para_invertir || 0)?.toLocaleString()}</div></div>
-            {a.resumen_operaciones.a_core_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.blue, fontWeight: 600, letterSpacing: "1px" }}>→ CORE ({a.decision_mensual?.core_etf || "SPY"})</div><div style={{ fontSize: 20, fontWeight: 800, color: T.blue, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.a_core_ars?.toLocaleString()}</div></div>}
-            {a.resumen_operaciones.a_satellite_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.purple, fontWeight: 600, letterSpacing: "1px" }}>→ SATELLITE</div><div style={{ fontSize: 20, fontWeight: 800, color: T.purple, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.a_satellite_ars?.toLocaleString()}</div></div>}
-            {!a.resumen_operaciones.a_core_ars && a.resumen_operaciones.total_a_comprar_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.green, fontWeight: 600, letterSpacing: "1px" }}>A INVERTIR</div><div style={{ fontSize: 20, fontWeight: 800, color: T.green, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.total_a_comprar_ars?.toLocaleString()}</div></div>}
+          <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 14, padding: 18, marginBottom: 14, border: `1px solid ${T.green}15` }}>
+            <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
+              {a.resumen_operaciones.capital_disponible_actual > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.cyan, fontWeight: 600, letterSpacing: "1px" }}>EFECTIVO INICIAL</div><div style={{ fontSize: 20, fontWeight: 800, color: T.cyan, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.capital_disponible_actual?.toLocaleString()}</div></div>}
+              {a.resumen_operaciones.total_a_vender_ars > 0 && <>
+                <div style={{ fontSize: 18, color: T.textDark, fontWeight: 700 }}>+</div>
+                <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.red, fontWeight: 600, letterSpacing: "1px" }}>LIBERAR (VENTAS)</div><div style={{ fontSize: 20, fontWeight: 800, color: T.red, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.total_a_vender_ars?.toLocaleString()}</div></div>
+                <div style={{ fontSize: 18, color: T.textDark, fontWeight: 700 }}>=</div>
+              </>}
+              <div style={{ textAlign: "center", background: `${T.green}10`, borderRadius: 10, padding: "10px 16px", border: `1px solid ${T.green}20` }}><div style={{ fontSize: 10, color: T.green, fontWeight: 600, letterSpacing: "1px" }}>TOTAL A DESPLEGAR</div><div style={{ fontSize: 22, fontWeight: 800, color: T.green, ...S.mono, marginTop: 4 }}>${(a.resumen_operaciones.capital_disponible_post_ventas || a.resumen_operaciones.capital_total_para_invertir || 0)?.toLocaleString()}</div></div>
+              {(a.resumen_operaciones.a_core_ars > 0 || a.resumen_operaciones.a_satellite_ars > 0) && <div style={{ fontSize: 18, color: T.textDark, fontWeight: 700 }}>→</div>}
+              {a.resumen_operaciones.a_core_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.blue, fontWeight: 600, letterSpacing: "1px" }}>CORE ({a.decision_mensual?.core_etf || "SPY"})</div><div style={{ fontSize: 20, fontWeight: 800, color: T.blue, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.a_core_ars?.toLocaleString()}</div></div>}
+              {a.resumen_operaciones.a_satellite_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.purple, fontWeight: 600, letterSpacing: "1px" }}>SATELLITE (PICKS)</div><div style={{ fontSize: 20, fontWeight: 800, color: T.purple, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.a_satellite_ars?.toLocaleString()}</div></div>}
+              {!a.resumen_operaciones.a_core_ars && a.resumen_operaciones.total_a_comprar_ars > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 10, color: T.green, fontWeight: 600, letterSpacing: "1px" }}>A INVERTIR</div><div style={{ fontSize: 20, fontWeight: 800, color: T.green, ...S.mono, marginTop: 4 }}>${a.resumen_operaciones.total_a_comprar_ars?.toLocaleString()}</div></div>}
+            </div>
+            {a.resumen_operaciones.total_a_vender_ars > 0 && a.resumen_operaciones.capital_disponible_actual > 0 && (
+              <div style={{ fontSize: 11, color: T.textDim, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${T.border}` }}>
+                Total = ${a.resumen_operaciones.capital_disponible_actual?.toLocaleString()} efectivo + ${a.resumen_operaciones.total_a_vender_ars?.toLocaleString()} de ventas
+              </div>
+            )}
           </div>
         )}
         {/* Core/Satellite Decision */}

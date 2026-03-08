@@ -399,6 +399,13 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
     "a_core_ars": 28000,
     "a_satellite_ars": 7170
   },
+  REGLA CRÍTICA para resumen_operaciones:
+  - capital_disponible_actual = el efectivo que declaró el inversor (el que ingresó)
+  - total_a_vender_ars = suma de todas las ventas/reducciones que recomendás
+  - capital_disponible_post_ventas = capital_disponible_actual + total_a_vender_ars (siempre sumar ambos)
+  - a_core_ars = capital_disponible_post_ventas × (core_pct / 100)
+  - a_satellite_ars = capital_disponible_post_ventas × (satellite_pct / 100)
+  Estos 4 números deben ser matemáticamente consistentes entre sí y con decision_mensual.distribucion.
   
   "cartera_objetivo": {
     "descripcion": "Así debería quedar tu cartera después de ejecutar todas las operaciones",
