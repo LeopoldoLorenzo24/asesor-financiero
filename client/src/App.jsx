@@ -240,6 +240,9 @@ export default function App() {
   const [concluding, setConcluding] = useState(null);
   const [conclusionData, setConclusionData] = useState(null);
   const [showConclusionModal, setShowConclusionModal] = useState(false);
+  const [chartMonths, setChartMonths] = useState(6);
+  const [detailHistory, setDetailHistory] = useState(null);
+  const [expandedPrediction, setExpandedPrediction] = useState(null);
   const [filterSector, setFilterSector] = useState("Todos");
   const [sortBy, setSortBy] = useState("composite");
   const [showCapitalInput, setShowCapitalInput] = useState(false);
@@ -270,7 +273,8 @@ export default function App() {
   useEffect(() => { if (!loggedIn) return; if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); } if (view === "predicciones") { loadPredictions(); loadPerformance(); } if (view === "historial") loadSessions(); if (view === "benchmarks") loadBenchmarks(); }, [view, loggedIn]);
   useEffect(() => { if (loggedIn && view === "dashboard" && portfolioDB.summary.length > 0 && !benchmarks) loadBenchmarks(); }, [view, portfolioDB, loggedIn]);
 
-  const loadDetail = useCallback(async (ticker) => { setSelectedTicker(ticker); setDetailLoading(true); setAiSingle(null); try { setDetail(await api.getCedear(ticker, profile)); } catch (e) { console.error(e); } finally { setDetailLoading(false); } }, [profile]);
+  const loadDetail = useCallback(async (ticker) => { setSelectedTicker(ticker); setDetailLoading(true); setAiSingle(null); setDetailHistory(null); setChartMonths(6); try { setDetail(await api.getCedear(ticker, profile)); } catch (e) { console.error(e); } finally { setDetailLoading(false); } }, [profile]);
+  const loadDetailHistory = useCallback(async (ticker, months) => { try { const data = await api.getHistory(ticker, months); setDetailHistory(data.prices || []); } catch (e) { console.error(e); } }, []);
   const runAI = useCallback(async (investCapital) => { setAiLoading(true); setShowCapitalInput(false); try { const d = await api.aiAnalyze(portfolioDB.summary.map(p => ({ ticker: p.ticker, shares: p.total_shares, avgPrice: p.weighted_avg_price })), investCapital, profile); setAiAnalysis(d.analysis); } catch (e) { setAiAnalysis({ error: e.message }); } finally { setAiLoading(false); } }, [portfolioDB, profile]);
   const runAISingle = useCallback(async (ticker) => { setAiSingleLoading(true); try { setAiSingle((await api.aiAnalyzeSingle(ticker)).aiAnalysis); } catch (e) { setAiSingle({ error: e.message }); } finally { setAiSingleLoading(false); } }, []);
 
@@ -692,21 +696,37 @@ export default function App() {
           ))}
         </div>
 
-        {chartData.length > 0 && (
-          <div style={{ ...S.card, marginBottom: 20 }}>
-            <div style={S.label}>Precio 90 días (USD)</div>
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={chartData}>
-                <defs><linearGradient id="pg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={T.green} stopOpacity={0.2} /><stop offset="100%" stopColor={T.green} stopOpacity={0} /></linearGradient></defs>
-                <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fill: T.textDark }} tickLine={false} axisLine={false} />
-                <YAxis tick={{ fontSize: 10, fill: T.textDark }} tickLine={false} axisLine={false} domain={["dataMin", "dataMax"]} />
-                <Tooltip contentStyle={{ background: T.bgCardSolid, border: `1px solid ${T.borderLight}`, borderRadius: 10, fontSize: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.4)" }} />
-                <Area type="monotone" dataKey="precio" stroke={T.green} fill="url(#pg)" strokeWidth={2} dot={false} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        )}
+        {(() => {
+          const histSource = detailHistory || history || [];
+          const displayData = histSource.map(p => ({ date: p.date.slice(5), precio: p.close }));
+          const chartRanges = [{ id: 3, l: "3M" }, { id: 6, l: "6M" }, { id: 9, l: "9M" }, { id: 12, l: "1A" }];
+          return displayData.length > 0 && (
+            <div style={{ ...S.card, marginBottom: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+                <div style={S.label}>Precio Histórico (USD)</div>
+                <div style={{ display: "flex", gap: 3, background: "rgba(15,23,42,0.5)", borderRadius: 10, padding: 3, border: `1px solid ${T.border}` }}>
+                  {chartRanges.map(r => (
+                    <button key={r.id} onClick={() => { setChartMonths(r.id); loadDetailHistory(`${c.ticker}.BA`, r.id); }} style={{
+                      padding: "6px 14px", borderRadius: 8, border: "none", cursor: "pointer", fontFamily: T.fontMono, fontSize: 11, fontWeight: 700, transition: "all 0.2s",
+                      background: chartMonths === r.id ? T.green : "transparent",
+                      color: chartMonths === r.id ? T.bg : T.textDim,
+                    }}>{r.l}</button>
+                  ))}
+                </div>
+              </div>
+              <ResponsiveContainer width="100%" height={280}>
+                <AreaChart data={displayData}>
+                  <defs><linearGradient id="pg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={T.green} stopOpacity={0.2} /><stop offset="100%" stopColor={T.green} stopOpacity={0} /></linearGradient></defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: T.textDark }} tickLine={false} axisLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: T.textDark }} tickLine={false} axisLine={false} domain={["dataMin", "dataMax"]} />
+                  <Tooltip contentStyle={{ background: T.bgCardSolid, border: `1px solid ${T.borderLight}`, borderRadius: 10, fontSize: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.4)" }} />
+                  <Area type="monotone" dataKey="precio" stroke={T.green} fill="url(#pg)" strokeWidth={2} dot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          );
+        })()}
 
         {tech?.signals?.length > 0 && (
           <div style={{ ...S.card, marginBottom: 20 }}>
@@ -719,20 +739,65 @@ export default function App() {
 
         <div style={{ ...S.card, marginBottom: 20, border: `1px solid ${T.green}15` }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div style={S.label}>Análisis IA</div>
-            <button onClick={() => runAISingle(c.ticker)} disabled={aiSingleLoading} style={{ ...S.btn(), fontSize: 12, padding: "9px 18px", opacity: aiSingleLoading ? 0.5 : 1 }}>{aiSingleLoading ? "Analizando..." : "Analizar con IA"}</button>
+            <div style={S.label}>Análisis IA Completo</div>
+            <button onClick={() => runAISingle(c.ticker)} disabled={aiSingleLoading} style={{ ...S.btn(), fontSize: 12, padding: "9px 18px", opacity: aiSingleLoading ? 0.5 : 1 }}>{aiSingleLoading ? <span style={{ animation: "pulse 1s infinite" }}>⟳ Analizando con IA...</span> : "Analizar con IA"}</button>
           </div>
           {aiSingle && !aiSingle.error ? (
             <div style={{ fontSize: 13 }}>
-              <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+              {/* Header with verdict, confidence, prices */}
+              <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
                 <span style={S.badge(signalColors[aiSingle.veredicto] || T.yellow)}>{aiSingle.veredicto}</span>
                 <span style={{ fontSize: 12, color: T.textDim }}>Confianza: <strong>{aiSingle.confianza}%</strong></span>
-                {aiSingle.precio_objetivo_usd && <span style={{ fontSize: 12, color: T.cyan }}>Target: US${aiSingle.precio_objetivo_usd}</span>}
+                {aiSingle.precio_objetivo_usd && <span style={{ fontSize: 12, color: T.cyan, fontWeight: 700 }}>Target: US${aiSingle.precio_objetivo_usd}</span>}
+                {aiSingle.soporte_usd && <span style={{ fontSize: 11, color: T.green }}>Soporte: US${aiSingle.soporte_usd}</span>}
+                {aiSingle.resistencia_usd && <span style={{ fontSize: 11, color: T.red }}>Resistencia: US${aiSingle.resistencia_usd}</span>}
+                {aiSingle.horizonte && <span style={S.badge(T.blue)}>{aiSingle.horizonte}</span>}
               </div>
-              <p style={{ color: T.textMuted, margin: "0 0 12px", lineHeight: 1.7 }}>{aiSingle.analisis}</p>
-              {aiSingle.noticias_relevantes && <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 12, padding: 16, border: `1px solid ${T.border}`, borderLeft: `3px solid ${T.cyan}` }}><div style={{ fontSize: 10, color: T.cyan, fontWeight: 700, letterSpacing: "1.5px", marginBottom: 8 }}>NOTICIAS</div><p style={{ color: T.textMuted, fontSize: 12, margin: 0, lineHeight: 1.6 }}>{aiSingle.noticias_relevantes}</p></div>}
+
+              {/* Main analysis */}
+              <p style={{ color: T.textMuted, margin: "0 0 16px", lineHeight: 1.8, fontSize: 13 }}>{aiSingle.analisis}</p>
+
+              {/* Detailed recommendation */}
+              {aiSingle.recomendacion_detallada && (
+                <div style={{ background: `${T.green}08`, borderRadius: 12, padding: 16, marginBottom: 14, border: `1px solid ${T.green}20`, borderLeft: `3px solid ${T.green}` }}>
+                  <div style={{ fontSize: 10, color: T.green, fontWeight: 700, letterSpacing: "1.5px", marginBottom: 8 }}>RECOMENDACIÓN DETALLADA</div>
+                  <p style={{ color: T.textMuted, fontSize: 12, margin: 0, lineHeight: 1.7 }}>{aiSingle.recomendacion_detallada}</p>
+                </div>
+              )}
+
+              {/* Catalysts & Risks side by side */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+                {aiSingle.catalizadores?.length > 0 && (
+                  <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 12, padding: 14, border: `1px solid ${T.green}20`, borderLeft: `3px solid ${T.green}` }}>
+                    <div style={{ fontSize: 10, color: T.green, fontWeight: 700, letterSpacing: "1.5px", marginBottom: 8 }}>CATALIZADORES</div>
+                    {aiSingle.catalizadores.map((cat, i) => <div key={i} style={{ fontSize: 12, color: T.textMuted, padding: "4px 0 4px 12px", borderLeft: `2px solid ${T.green}30`, marginBottom: 4, lineHeight: 1.5 }}>▲ {cat}</div>)}
+                  </div>
+                )}
+                {aiSingle.riesgos?.length > 0 && (
+                  <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 12, padding: 14, border: `1px solid ${T.red}20`, borderLeft: `3px solid ${T.red}` }}>
+                    <div style={{ fontSize: 10, color: T.red, fontWeight: 700, letterSpacing: "1.5px", marginBottom: 8 }}>RIESGOS</div>
+                    {aiSingle.riesgos.map((r, i) => <div key={i} style={{ fontSize: 12, color: T.textMuted, padding: "4px 0 4px 12px", borderLeft: `2px solid ${T.red}30`, marginBottom: 4, lineHeight: 1.5 }}>⚠ {r}</div>)}
+                  </div>
+                )}
+              </div>
+
+              {/* Sector comparison */}
+              {aiSingle.comparacion_sector && (
+                <div style={{ background: `${T.purple}08`, borderRadius: 12, padding: 14, marginBottom: 14, border: `1px solid ${T.purple}20`, borderLeft: `3px solid ${T.purple}` }}>
+                  <div style={{ fontSize: 10, color: T.purple, fontWeight: 700, letterSpacing: "1.5px", marginBottom: 8 }}>COMPARACIÓN CON SECTOR</div>
+                  <p style={{ color: T.textMuted, fontSize: 12, margin: 0, lineHeight: 1.6 }}>{aiSingle.comparacion_sector}</p>
+                </div>
+              )}
+
+              {/* News */}
+              {aiSingle.noticias_relevantes && (
+                <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 12, padding: 16, border: `1px solid ${T.border}`, borderLeft: `3px solid ${T.cyan}` }}>
+                  <div style={{ fontSize: 10, color: T.cyan, fontWeight: 700, letterSpacing: "1.5px", marginBottom: 8 }}>NOTICIAS RELEVANTES</div>
+                  <p style={{ color: T.textMuted, fontSize: 12, margin: 0, lineHeight: 1.7 }}>{aiSingle.noticias_relevantes}</p>
+                </div>
+              )}
             </div>
-          ) : aiSingle?.error ? <div style={{ color: T.red, fontSize: 12 }}>{aiSingle.error}</div> : <div style={{ color: T.textDim, fontSize: 12, lineHeight: 1.6 }}>Presioná para análisis con noticias en vivo.</div>}
+          ) : aiSingle?.error ? <div style={{ color: T.red, fontSize: 12 }}>{aiSingle.error}</div> : <div style={{ color: T.textDim, fontSize: 12, lineHeight: 1.6 }}>Presioná para un análisis completo con IA: indicadores técnicos, fundamentales, noticias en vivo, riesgos, catalizadores y recomendación detallada.</div>}
         </div>
 
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -872,6 +937,17 @@ export default function App() {
   /* ─── PREDICCIONES ─── */
   const renderPredicciones = () => {
     const pending = predictions.filter(p => !p.evaluated);
+
+    // Group predictions by date (session)
+    const sessions = {};
+    for (const p of predictions) {
+      const dateKey = p.prediction_date?.slice(0, 10) || "unknown";
+      if (!sessions[dateKey]) sessions[dateKey] = { date: dateKey, predictions: [], tickers: [] };
+      sessions[dateKey].predictions.push(p);
+      sessions[dateKey].tickers.push(p.ticker);
+    }
+    const sessionList = Object.values(sessions).sort((a, b) => b.date.localeCompare(a.date));
+
     return (
       <div style={{ animation: "fadeUp 0.4s ease" }}>
         <div className="ca-stat-grid" style={S.grid()}>
@@ -906,46 +982,125 @@ export default function App() {
             </div>
           </div>
         )}
-        {predictions.length > 0 ? (
+
+        {/* Session-grouped prediction cards */}
+        {sessionList.length > 0 ? (
           <div style={{ marginTop: 28 }}>
-            <div style={S.label}>Historial ({predictions.length})</div>
-            <div className="ca-table-wrap" style={{ ...S.card, padding: 0, overflow: "auto", marginTop: 12, borderRadius: 16 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr>
-                  <th style={S.th}>Fecha</th>
-                  <th style={S.th}>CEDEAR</th>
-                  <th style={S.th}>Acción</th>
-                  <th className="ca-hide-mobile" style={S.th}>Conf.</th>
-                  <th className="ca-hide-mobile" style={S.th}>Score</th>
-                  <th className="ca-hide-mobile" style={S.th}>Precio USD</th>
-                  <th className="ca-hide-mobile" style={S.th}>Target</th>
-                  <th style={S.th}>Resultado</th>
-                  <th style={S.th}>Cambio Real</th>
-                  <th style={S.th}>Conclusión</th>
-                </tr></thead>
-                <tbody>{predictions.map((p, i) => (
-                  <tr key={i} style={{ background: p.evaluated ? (p.prediction_correct === 1 ? `${T.green}04` : p.prediction_correct === 0 ? `${T.red}04` : "transparent") : "transparent" }}>
-                    <td style={{ ...S.td, ...S.mono, fontSize: 10 }}>{p.prediction_date?.slice(0, 10)}</td>
-                    <td style={{ ...S.td, fontWeight: 800, ...S.mono }}>{p.ticker}</td>
-                    <td style={S.td}><span style={S.badge(signalColors[p.action] || T.yellow)}>{p.action}</span></td>
-                    <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono }}>{p.confidence || "—"}%</td>
-                    <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono }}>{p.score_composite || "—"}</td>
-                    <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono, fontSize: 11 }}>{p.price_usd_at_prediction ? `$${p.price_usd_at_prediction.toFixed(2)}` : "—"}</td>
-                    <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono, color: T.green }}>{p.target_pct ? `+${p.target_pct}%` : "—"}</td>
-                    <td style={{ ...S.td, textAlign: "center" }}>{p.evaluated ? (p.prediction_correct === 1 ? <span style={S.badge(T.green)}>ACERTÓ ✓</span> : p.prediction_correct === 0 ? <span style={S.badge(T.red)}>FALLÓ ✗</span> : <span style={S.badge(T.textDim)}>N/A</span>) : <span style={{ fontSize: 10, color: T.yellow }}>⏳ Pendiente</span>}</td>
-                    <td style={{ ...S.td, textAlign: "center", ...S.mono, fontWeight: 700, color: p.actual_change_pct != null ? (p.actual_change_pct >= 0 ? T.green : T.red) : T.textDark }}>{p.actual_change_pct != null ? `${p.actual_change_pct >= 0 ? "+" : ""}${p.actual_change_pct}%` : "—"}</td>
-                    <td style={{ ...S.td, textAlign: "center" }}>
-                      <button
-                        onClick={e => { e.stopPropagation(); handleConclude(p.id); }}
-                        disabled={concluding === p.id}
-                        style={{ ...S.btn("blue"), padding: "5px 12px", fontSize: 10, opacity: concluding === p.id ? 0.5 : 1 }}>
-                        {concluding === p.id ? "⟳" : "Conclusión"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
+            <div style={S.label}>Predicciones por Sesión ({sessionList.length} sesiones, {predictions.length} predicciones)</div>
+            {sessionList.map((session) => {
+              const isExpanded = expandedPrediction === session.date;
+              const evaluatedCount = session.predictions.filter(p => p.evaluated).length;
+              const correctCount = session.predictions.filter(p => p.prediction_correct === 1).length;
+              const failedCount = session.predictions.filter(p => p.prediction_correct === 0).length;
+              const pendingCount = session.predictions.filter(p => !p.evaluated).length;
+              const avgChange = session.predictions.filter(p => p.actual_change_pct != null).reduce((s, p, _, arr) => s + p.actual_change_pct / arr.length, 0);
+
+              return (
+                <div key={session.date} style={{ ...S.card, marginTop: 12, padding: 0, overflow: "hidden", border: `1px solid ${isExpanded ? T.green + "30" : T.border}`, transition: "all 0.3s ease" }}>
+                  {/* Session Header — clickable to expand */}
+                  <div
+                    onClick={() => setExpandedPrediction(isExpanded ? null : session.date)}
+                    style={{ display: "flex", alignItems: "center", gap: 16, padding: "18px 22px", cursor: "pointer", flexWrap: "wrap", background: isExpanded ? `${T.green}06` : "transparent", transition: "background 0.2s" }}
+                    onMouseEnter={e => { if (!isExpanded) e.currentTarget.style.background = "rgba(148,163,184,0.03)"; }}
+                    onMouseLeave={e => { if (!isExpanded) e.currentTarget.style.background = "transparent"; }}
+                  >
+                    {/* Date */}
+                    <div style={{ minWidth: 100 }}>
+                      <div style={{ ...S.mono, fontSize: 14, color: T.cyan, fontWeight: 700 }}>{session.date}</div>
+                      <div style={{ fontSize: 10, color: T.textDim, marginTop: 2 }}>{session.predictions.length} CEDEARs</div>
+                    </div>
+
+                    {/* Tickers Preview */}
+                    <div style={{ flex: 1, display: "flex", gap: 6, flexWrap: "wrap", minWidth: 160 }}>
+                      {session.predictions.map((p, j) => (
+                        <span key={j} style={S.badge(signalColors[p.action] || T.yellow)}>
+                          {p.action === "COMPRAR" ? "▲" : p.action === "VENDER" ? "▼" : "◆"} {p.ticker}
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Results summary */}
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 200 }}>
+                      {evaluatedCount > 0 && (
+                        <>
+                          {correctCount > 0 && <span style={{ ...S.mono, fontSize: 12, color: T.green, fontWeight: 700 }}>{correctCount} ✓</span>}
+                          {failedCount > 0 && <span style={{ ...S.mono, fontSize: 12, color: T.red, fontWeight: 700 }}>{failedCount} ✗</span>}
+                          {session.predictions.some(p => p.actual_change_pct != null) && (
+                            <span style={{ ...S.mono, fontSize: 12, color: avgChange >= 0 ? T.green : T.red, fontWeight: 700 }}>
+                              {avgChange >= 0 ? "+" : ""}{avgChange.toFixed(1)}% prom.
+                            </span>
+                          )}
+                        </>
+                      )}
+                      {pendingCount > 0 && <span style={{ fontSize: 10, color: T.yellow }}>⏳ {pendingCount} pendientes</span>}
+                    </div>
+
+                    {/* Conclusion button — triggers AI to evaluate ALL predictions in this session */}
+                    <button
+                      onClick={e => { e.stopPropagation(); handleConclude(session.predictions[0].id); }}
+                      disabled={concluding === session.predictions[0].id}
+                      style={{ ...S.btn("purple"), padding: "8px 18px", fontSize: 11, opacity: concluding === session.predictions[0].id ? 0.5 : 1 }}
+                    >
+                      {concluding === session.predictions[0].id ? <span style={{ animation: "pulse 1s infinite" }}>⟳ Analizando...</span> : "Ver Conclusión"}
+                    </button>
+
+                    {/* Expand indicator */}
+                    <span style={{ fontSize: 16, color: T.textDim, transition: "transform 0.3s", transform: isExpanded ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
+                  </div>
+
+                  {/* Expanded detail — shows each CEDEAR prediction */}
+                  {isExpanded && (
+                    <div style={{ padding: "0 22px 18px", borderTop: `1px solid ${T.border}`, animation: "fadeUp 0.3s ease" }}>
+                      {session.predictions.map((p, i) => {
+                        const changeColor = p.actual_change_pct != null ? (p.actual_change_pct >= 0 ? T.green : T.red) : T.textDark;
+                        return (
+                          <div key={i} style={{ display: "flex", gap: 16, padding: "14px 0", borderBottom: i < session.predictions.length - 1 ? `1px solid ${T.border}` : "none", alignItems: "center", flexWrap: "wrap" }}>
+                            {/* Ticker & Action */}
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 140 }}>
+                              <span style={S.badge(signalColors[p.action] || T.yellow)}>{p.action}</span>
+                              <div>
+                                <div style={{ fontWeight: 800, ...S.mono, fontSize: 14 }}>{p.ticker}</div>
+                                <div style={{ fontSize: 10, color: T.textDim }}>Conf: {p.confidence || "—"}% · Score: {p.score_composite || "—"}</div>
+                              </div>
+                            </div>
+
+                            {/* Prices */}
+                            <div style={{ minWidth: 120, fontSize: 11 }}>
+                              <div style={{ color: T.textDim }}>Entrada: <span style={S.mono}>${p.price_usd_at_prediction?.toFixed(2) || "—"}</span></div>
+                              {p.target_pct && <div style={{ color: T.green }}>Target: <span style={S.mono}>+{p.target_pct}%</span></div>}
+                              {p.stop_loss_pct && <div style={{ color: T.red }}>Stop: <span style={S.mono}>{p.stop_loss_pct}%</span></div>}
+                            </div>
+
+                            {/* Reasoning */}
+                            <div style={{ flex: 1, minWidth: 200 }}>
+                              <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5, fontStyle: "italic" }}>
+                                "{(p.reasoning || "").slice(0, 120)}{(p.reasoning || "").length > 120 ? "..." : ""}"
+                              </div>
+                            </div>
+
+                            {/* Result */}
+                            <div style={{ textAlign: "center", minWidth: 100 }}>
+                              {p.evaluated ? (
+                                <div>
+                                  <span style={S.badge(p.prediction_correct === 1 ? T.green : p.prediction_correct === 0 ? T.red : T.textDim)}>
+                                    {p.prediction_correct === 1 ? "ACERTÓ ✓" : p.prediction_correct === 0 ? "FALLÓ ✗" : "N/A"}
+                                  </span>
+                                  <div style={{ ...S.mono, fontSize: 14, fontWeight: 700, color: changeColor, marginTop: 6 }}>
+                                    {p.actual_change_pct != null ? `${p.actual_change_pct >= 0 ? "+" : ""}${p.actual_change_pct}%` : "—"}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span style={{ fontSize: 11, color: T.yellow }}>⏳ Pendiente</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         ) : (
           <div style={{ ...S.card, textAlign: "center", padding: 56, marginTop: 24 }}>
@@ -1398,11 +1553,67 @@ export default function App() {
               </div>
             )}
 
-            <div style={{ ...S.card, marginTop: 16, background: `${T.cyan}06`, borderLeft: `3px solid ${T.cyan}` }}>
-              <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7 }}>
-                <strong style={{ color: T.cyan }}>¿Cómo funciona?</strong> Estrategia Core/Satellite: cada mes, {bt.config?.corePct || 50}% del depósito va a {bt.core?.etf || "SPY"} (indexación pasiva) y {100 - (bt.config?.corePct || 50)}% a {bt.config?.picksPerMonth} picks activos diversificados (perfil: {bt.config?.profile}). Al final se compara el rendimiento combinado vs invertir 100% en SPY.
+            {/* Strategy Explanation */}
+            {bt.estrategia && (
+              <div style={{ ...S.card, marginTop: 16, background: `${T.cyan}06`, borderLeft: `3px solid ${T.cyan}` }}>
+                <div style={{ ...S.label, color: T.cyan, marginBottom: 12 }}>ESTRATEGIA APLICADA</div>
+                <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7, marginBottom: 12 }}>{bt.estrategia.que_hace}</div>
+
+                {/* Risk management results */}
+                {bt.riskManagement && (
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
+                    <div style={{ background: T.bg, borderRadius: 10, padding: "10px 16px", border: `1px solid ${T.red}20` }}>
+                      <div style={{ fontSize: 9, color: T.red, fontWeight: 700, letterSpacing: "1px" }}>STOP-LOSSES</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, ...S.mono, color: T.red, marginTop: 4 }}>{bt.riskManagement.stopLosses}</div>
+                      <div style={{ fontSize: 10, color: T.textDim }}>ejecutados</div>
+                    </div>
+                    <div style={{ background: T.bg, borderRadius: 10, padding: "10px 16px", border: `1px solid ${T.green}20` }}>
+                      <div style={{ fontSize: 9, color: T.green, fontWeight: 700, letterSpacing: "1px" }}>CAPITAL PROTEGIDO</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, ...S.mono, color: T.green, marginTop: 4 }}>${bt.riskManagement.capitalProtegido?.toLocaleString()}</div>
+                      <div style={{ fontSize: 10, color: T.textDim }}>ahorrado vs mantener</div>
+                    </div>
+                    <div style={{ background: T.bg, borderRadius: 10, padding: "10px 16px", border: `1px solid ${T.purple}20` }}>
+                      <div style={{ fontSize: 9, color: T.purple, fontWeight: 700, letterSpacing: "1px" }}>PICKS vs SPY</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, ...S.mono, color: T.purple, marginTop: 4 }}>{bt.estrategia.resultados_riesgo?.picksBeatSpy || "?"}</div>
+                      <div style={{ fontSize: 10, color: T.textDim }}>le ganaron</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Filters applied */}
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, color: T.blue, fontWeight: 700, letterSpacing: "1px", marginBottom: 6 }}>FILTROS APLICADOS</div>
+                  {bt.estrategia.filtros_aplicados?.map((f, i) => (
+                    <div key={i} style={{ fontSize: 11, color: T.textDim, padding: "3px 0 3px 12px", borderLeft: `2px solid ${T.blue}25`, marginBottom: 3, lineHeight: 1.4 }}>◆ {f}</div>
+                  ))}
+                </div>
+
+                {/* Risk management rules */}
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, color: T.orange, fontWeight: 700, letterSpacing: "1px", marginBottom: 6 }}>GESTIÓN DE RIESGO</div>
+                  {bt.estrategia.gestion_riesgo?.map((g, i) => (
+                    <div key={i} style={{ fontSize: 11, color: T.textDim, padding: "3px 0 3px 12px", borderLeft: `2px solid ${T.orange}25`, marginBottom: 3, lineHeight: 1.4 }}>⚠ {g}</div>
+                  ))}
+                </div>
+
+                {/* Why these picks */}
+                {bt.estrategia.por_que_estos_picks?.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 10, color: T.green, fontWeight: 700, letterSpacing: "1px", marginBottom: 6 }}>POR QUÉ ESTOS PICKS (Top 5)</div>
+                    {bt.estrategia.por_que_estos_picks.map((p, i) => (
+                      <div key={i} style={{ fontSize: 11, color: T.textMuted, padding: "4px 0 4px 12px", borderLeft: `2px solid ${p.includes("LE GANÓ") ? T.green : T.red}30`, marginBottom: 4, lineHeight: 1.5 }}>{p}</div>
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
+            )}
+            {!bt.estrategia && (
+              <div style={{ ...S.card, marginTop: 16, background: `${T.cyan}06`, borderLeft: `3px solid ${T.cyan}` }}>
+                <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7 }}>
+                  <strong style={{ color: T.cyan }}>¿Cómo funciona?</strong> Estrategia Core/Satellite: cada mes, {bt.config?.corePct || 50}% del depósito va a {bt.core?.etf || "SPY"} (indexación pasiva) y {100 - (bt.config?.corePct || 50)}% a {bt.config?.picksPerMonth} picks activos diversificados (perfil: {bt.config?.profile}). Al final se compara el rendimiento combinado vs invertir 100% en SPY.
+                </div>
+              </div>
+            )}
           </>
         )}
         {!backtestLoading && !bt && (

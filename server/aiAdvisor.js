@@ -427,37 +427,92 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
   }
 }
 
-// --- Quick analysis for a single CEDEAR ---
+// --- Comprehensive analysis for a single CEDEAR ---
 export async function analyzeSingle({ ticker, name, sector, scores, technical, fundamentals, quote, ccl }) {
-  const prompt = `Analizá brevemente el CEDEAR ${ticker} (${name}, sector ${sector}) para un inversor moderado-agresivo argentino.
+  const ind = technical?.indicators || {};
+  const perf = ind.performance || {};
+  const bb = ind.bollingerBands;
+  const sr = ind.supportResistance;
+  const stoch = ind.stochastic;
+  const vol = ind.volume;
 
-Datos actuales:
+  const prompt = `Hacé un análisis COMPLETO y DETALLADO del CEDEAR ${ticker} (${name}, sector ${sector}) para un inversor argentino.
+
+═══ DATOS COMPLETOS DEL ACTIVO ═══
+
+PRECIO Y COTIZACIÓN:
 - Precio USD: $${quote?.price?.toFixed(2) || "N/A"}
 - Precio ARS aprox: $${quote?.price ? Math.round((quote.price * ccl.venta) / scores.ratio) : "N/A"}
-- Score: ${scores.composite}/100 (Técnico: ${scores.techScore}, Fundamental: ${scores.fundScore})
-- RSI: ${technical?.indicators?.rsi || "N/A"}
-- P/E: ${fundamentals?.pe?.toFixed(1) || "N/A"}
-- EPS Growth: ${fundamentals?.epsGrowth?.toFixed(1) || "N/A"}%
-- Cambio 1M: ${technical?.indicators?.performance?.month1?.toFixed(1) || "N/A"}%
-- Señal del sistema: ${scores.signal}
+- Variación diaria: ${quote?.changePercent?.toFixed(2) || "N/A"}%
+- Rango del día: $${quote?.dayLow?.toFixed(2) || "N/A"} — $${quote?.dayHigh?.toFixed(2) || "N/A"}
+- 52-week high: $${quote?.fiftyTwoWeekHigh?.toFixed(2) || "N/A"}
+- 52-week low: $${quote?.fiftyTwoWeekLow?.toFixed(2) || "N/A"}
+- Market Cap: ${quote?.marketCap ? `$${(quote.marketCap / 1e9).toFixed(1)}B` : "N/A"}
+- Beta: ${quote?.beta?.toFixed(2) || "N/A"}
 
-Buscá noticias recientes sobre ${ticker} y respondé SOLO con JSON:
+SCORING DEL SISTEMA:
+- Score compuesto: ${scores.composite}/100
+- Score técnico: ${scores.techScore}/100
+- Score fundamental: ${scores.fundScore}/100
+- Score sentimiento: ${scores.sentScore}/100
+- Señal: ${scores.signal}
+- Horizonte sugerido: ${scores.horizon}
+
+INDICADORES TÉCNICOS:
+- RSI (14): ${ind.rsi || "N/A"}
+- MACD: ${ind.macd?.macd || "N/A"} | Signal: ${ind.macd?.signal || "N/A"} | Histogram: ${ind.macd?.histogram || "N/A"}
+- SMA 20: $${ind.sma20?.toFixed(2) || "N/A"} ${ind.sma20 && quote?.price ? (quote.price > ind.sma20 ? "(precio ARRIBA)" : "(precio ABAJO)") : ""}
+- SMA 50: $${ind.sma50?.toFixed(2) || "N/A"} ${ind.sma50 && quote?.price ? (quote.price > ind.sma50 ? "(precio ARRIBA)" : "(precio ABAJO)") : ""}
+- SMA 200: $${ind.sma200?.toFixed(2) || "N/A"} ${ind.sma200 && quote?.price ? (quote.price > ind.sma200 ? "(precio ARRIBA)" : "(precio ABAJO)") : ""}
+- Bollinger Bands: Upper $${bb?.upper || "N/A"} | Middle $${bb?.middle || "N/A"} | Lower $${bb?.lower || "N/A"} | Bandwidth: ${bb?.bandwidth || "N/A"}%
+- Estocástico: K=${stoch?.k || "N/A"} D=${stoch?.d || "N/A"}
+- ATR (14): $${ind.atr || "N/A"}
+- Soporte: $${sr?.support || "N/A"} | Resistencia: $${sr?.resistance || "N/A"}
+- Volumen promedio: ${vol?.avgVolume?.toLocaleString() || "N/A"} | Tendencia volumen: ${vol?.volumeTrend || "N/A"}%
+
+PERFORMANCE:
+- 1 día: ${perf.day1 != null ? `${perf.day1}%` : "N/A"}
+- 1 semana: ${perf.week1 != null ? `${perf.week1}%` : "N/A"}
+- 1 mes: ${perf.month1 != null ? `${perf.month1}%` : "N/A"}
+- 3 meses: ${perf.month3 != null ? `${perf.month3}%` : "N/A"}
+- 6 meses: ${perf.month6 != null ? `${perf.month6}%` : "N/A"}
+
+FUNDAMENTALES:
+- P/E: ${fundamentals?.pe?.toFixed(1) || "N/A"} | Forward P/E: ${fundamentals?.forwardPE?.toFixed(1) || "N/A"}
+- PEG: ${fundamentals?.pegRatio?.toFixed(2) || "N/A"}
+- EPS Growth: ${fundamentals?.epsGrowth?.toFixed(1) || "N/A"}%
+- Revenue Growth: ${fundamentals?.revenueGrowth?.toFixed(1) || "N/A"}%
+- Profit Margin: ${fundamentals?.profitMargin?.toFixed(1) || "N/A"}%
+- ROE: ${fundamentals?.returnOnEquity?.toFixed(1) || "N/A"}%
+- Debt/Equity: ${fundamentals?.debtToEquity?.toFixed(0) || "N/A"}%
+- Div Yield: ${quote?.dividendYield?.toFixed(2) || 0}%
+- Target analistas: $${fundamentals?.targetMeanPrice?.toFixed(2) || "N/A"} (${fundamentals?.recommendationKey || "N/A"}, ${fundamentals?.numberOfAnalystOpinions || 0} analistas)
+
+Buscá noticias recientes sobre ${ticker} y su sector (${sector}). Analizá TODO en profundidad.
+
+Respondé SOLO con JSON válido (sin markdown, sin backticks):
 {
   "veredicto": "COMPRAR|MANTENER|VENDER",
   "confianza": 75,
-  "analisis": "2-3 oraciones con tu análisis",
-  "noticias_relevantes": "Resumen de noticias recientes que afectan",
+  "analisis": "Análisis detallado de 4-6 oraciones cubriendo técnico, fundamental y sentimiento",
+  "noticias_relevantes": "Resumen detallado de noticias recientes que afectan al ticker y su sector",
+  "catalizadores": ["Catalizador positivo 1", "Catalizador positivo 2"],
+  "riesgos": ["Riesgo 1", "Riesgo 2"],
   "precio_objetivo_usd": 150.00,
-  "horizonte": "Corto|Mediano|Largo plazo"
+  "soporte_usd": 130.00,
+  "resistencia_usd": 160.00,
+  "horizonte": "Corto|Mediano|Largo plazo",
+  "comparacion_sector": "Cómo se compara este ticker con otros del mismo sector",
+  "recomendacion_detallada": "Qué haría exactamente: cuándo comprar, a qué precio, con qué stop-loss y target"
 }`;
 
   try {
     const response = await getClient().messages.create({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
+      max_tokens: 2000,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       system:
-        "Sos un analista financiero experto. Usá web search para noticias del ticker. Respondé SOLO JSON válido.",
+        "Sos un analista financiero experto en CEDEARs para inversores argentinos. Usá web search para buscar noticias recientes del ticker y su sector. Dá un análisis completo y detallado. Respondé SOLO JSON válido, sin markdown ni backticks.",
       messages: [{ role: "user", content: prompt }],
     });
 
