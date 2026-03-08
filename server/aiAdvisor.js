@@ -4,7 +4,7 @@
 // ============================================================
 
 import Anthropic from "@anthropic-ai/sdk";
-import { logPrediction, logAnalysisSession } from "./database.js";
+import { logPrediction, logAnalysisSession, buildAIContext } from "./database.js";
 import { buildMonthlyCycleContext } from "./investmentCycle.js";
 import { runBacktest } from "./backtest.js";
 
@@ -65,17 +65,43 @@ function getProfileConfig(profileId = "moderate") {
 export async function generateAnalysis({ topPicks, portfolio, capital, ccl, diversification, warnings, ranking, profileId = "moderate" }) {
   const profile = getProfileConfig(profileId);
 
-  // ── Mini-backtest interno: cómo le viene yendo al bot vs SPY/QQQ ──
+  // Construir contexto mensual completo (incluye valor de portfolio y performance reciente)
+  const cycleData = await buildMonthlyCycleContext({ capital, ccl, ranking: ranking || topPicks });
+  const monthlyContext = cycleData.context;
+
+  // Contexto adicional de auto-evaluación (historial de predicciones evaluadas)
+  const selfEvalContext = await buildAIContext();
+
+  // ── Mini-backtest interno multi-horizonte: cómo le viene yendo al bot vs SPY/QQQ ──
   let backtestSummary = null;
   try {
-    const bt = await runBacktest({
-      months: 6,
-      monthlyDeposit: 1000000,
-      profile: profileId,
-      picksPerMonth: 4,
-    });
+    const monthsSinceStart = cycleData?.monthNumber || 6;
+    const horizons = [];
+    if (monthsSinceStart >= 3) horizons.push(3);
+    if (monthsSinceStart >= 6) horizons.push(6);
+    if (monthsSinceStart >= 12) horizons.push(12);
+    if (horizons.length === 0) horizons.push(Math.min(6, Math.max(3, monthsSinceStart)));
 
-    if (!bt.error) {
+    const backtests = await Promise.allSettled(
+      horizons.map((m) =>
+        runBacktest({
+          months: m,
+          monthlyDeposit: 1000000,
+          profile: profileId,
+          picksPerMonth: 4,
+        })
+      )
+    );
+
+    const successful = backtests
+      .map((r, idx) => (r.status === "fulfilled" && !r.value.error ? { months: horizons[idx], data: r.value } : null))
+      .filter(Boolean);
+
+    if (successful.length > 0) {
+      // Tomamos como principal el horizonte más largo disponible
+      const main = successful.reduce((a, b) => (a.months >= b.months ? a : b));
+      const bt = main.data;
+
       const winners = (bt.riskManagement?.picksVsSpy || []).filter((p) => p.beatsSpy);
       const topTickers = new Set((topPicks || []).map((p) => p.cedear?.ticker));
       const winnersInTopPicks = winners.filter((w) => topTickers.has(w.ticker));
@@ -99,15 +125,18 @@ export async function generateAnalysis({ topPicks, portfolio, capital, ccl, dive
             vsSpy: w.vsSpy,
           })),
         totalPicksGanadores: winners.length,
+        horizons: successful.map(({ months, data }) => ({
+          months,
+          returnPct: data.resultado?.returnPct,
+          spyReturnPct: data.resultado?.spyReturnPct,
+          satelliteReturnPct: data.satellite?.returnPct,
+          alphaVsSpy: data.resultado?.alpha,
+        })),
       };
     }
   } catch (e) {
     console.error("Mini-backtest error inside advisor:", e.message);
   }
-
-  // Construir contexto mensual completo
-  const cycleData = await buildMonthlyCycleContext({ capital, ccl, ranking: ranking || topPicks });
-  const monthlyContext = cycleData.context;
 
   const tickerDetails = topPicks
     .slice(0, 10)
@@ -129,16 +158,26 @@ export async function generateAnalysis({ topPicks, portfolio, capital, ccl, dive
 
   const backtestSection = backtestSummary ? `
 RESULTADOS DEL BACKTEST RECIENTE (estrategia del bot vs ${coreETF}):
-- Período simulado: ${backtestSummary.months || 6} meses
-- Retorno total estrategia bot: ${backtestSummary.returnPct != null ? backtestSummary.returnPct + "%" : "N/A"}
+- Horizonte principal: ${backtestSummary.months || 6} meses
+- Retorno total estrategia bot (core + satellite): ${backtestSummary.returnPct != null ? backtestSummary.returnPct + "%" : "N/A"}
 - Retorno de ${coreETF} en el mismo período: ${backtestSummary.spyReturnPct != null ? backtestSummary.spyReturnPct + "%" : "N/A"}
 - Retorno del SATELLITE (picks activos): ${backtestSummary.satelliteReturnPct != null ? backtestSummary.satelliteReturnPct + "%" : "N/A"} (alfa vs ${coreETF}: ${backtestSummary.satelliteAlpha != null ? backtestSummary.satelliteAlpha + "pp" : "N/A"})
 - Veredicto sintético del backtest: ${backtestSummary.veredicto || "N/A"}
+${backtestSummary.horizons && backtestSummary.horizons.length > 1
+  ? "\nResumen por horizontes:" +
+    backtestSummary.horizons
+      .map(
+        (h) =>
+          `\n- ${h.months}m: estrategia ${h.returnPct != null ? h.returnPct + "%" : "N/A"} vs ${coreETF} ${h.spyReturnPct != null ? h.spyReturnPct + "%" : "N/A"} (alfa ${h.alphaVsSpy != null ? h.alphaVsSpy + "pp" : "N/A"})`
+      )
+      .join("")
+  : ""}
 - Cantidad de CEDEARs que le ganaron a ${coreETF} dentro de la estrategia: ${backtestSummary.totalPicksGanadores}
 
 INSTRUCCIÓN CLAVE BASADA EN EL BACKTEST:
-- Usá estos números como realidad dura: si el backtest muestra que la estrategia de picks del bot NO le gana a ${coreETF}, tu default debe ser recomendar ${coreETF} (hasta 100% del nuevo capital) y evitar armar un satellite grande.
-- Sólo si ves que el satellite y varios picks le ganan claramente a ${coreETF}, podés justificar un satellite más agresivo.
+- Usá estos números como realidad dura: si el backtest muestra que la estrategia de picks del bot NO le gana a ${coreETF}, debés REDUCIR el peso del satellite (por ejemplo 10-25% del capital nuevo) y concentrarte en pocos picks de altísima convicción.
+- Siempre debe haber una base sólida en ${coreETF} como core, pero podés sumar algunos CEDEARs cuando tengan buen respaldo tanto en backtest como en tus predicciones históricas.
+- Si el satellite muestra alfa POSITIVO y consistente en varios horizontes, podés justificar un satellite más grande dentro de los límites del perfil.
 
 CEDEARs que históricamente le ganaron a ${coreETF} en el backtest y que también están en el ranking actual:
 ${backtestSummary.picksGanadores && backtestSummary.picksGanadores.length
@@ -190,6 +229,9 @@ REGLAS DEL PERFIL:
 ${profile.rules}
 
 ${monthlyContext}
+
+AUTO-EVALUACIÓN DEL ASESOR (performance histórica y predicciones evaluadas):
+${selfEvalContext}
 
 ${backtestSection}
 
