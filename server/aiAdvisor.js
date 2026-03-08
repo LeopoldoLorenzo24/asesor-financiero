@@ -143,8 +143,17 @@ INSTRUCCIÓN CLAVE BASADA EN EL BACKTEST:
 CEDEARs que históricamente le ganaron a ${coreETF} en el backtest y que también están en el ranking actual:
 ${backtestSummary.picksGanadores && backtestSummary.picksGanadores.length
   ? backtestSummary.picksGanadores
-      .map((p) => \`- \${p.ticker} (\${p.sector}) → retorno vs \${coreETF}: \${p.vsSpy != null ? (p.vsSpy >= 0 ? "+" : "") + p.vsSpy + "pp" : "N/A"}\`)
-      .join("\\n")
+      .map((p) =>
+        "- " +
+        p.ticker +
+        " (" +
+        p.sector +
+        ") -> retorno vs " +
+        coreETF +
+        ": " +
+        (p.vsSpy != null ? (p.vsSpy >= 0 ? "+" : "") + p.vsSpy + "pp" : "N/A")
+      )
+      .join("\n")
   : "Ninguno de los picks actuales aparece como ganador claro vs " + coreETF + " en el backtest; sé extremadamente selectivo con el satellite."}
 ` : "";
 
@@ -471,10 +480,10 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
 
       console.log(`📊 Predictions saved: ${savedCount} (picks: ${picksActivos.length}, actions: ${(result.acciones_cartera_actual || []).filter(a => a.accion === "REDUCIR" || a.accion === "VENDER").length})`);
 
-      // Log the full analysis session
+      // Log the full analysis session, incluyendo valor real del portfolio
       await logAnalysisSession({
         capitalArs: capital,
-        portfolioValueArs: 0, // Will be calculated from portfolio
+        portfolioValueArs: cycleData?.portfolioValueARS || 0,
         cclRate: ccl.venta,
         marketSummary: result.resumen_mercado,
         strategyMonthly: result.decision_mensual?.resumen || result.distribucion_capital?.estrategia,
