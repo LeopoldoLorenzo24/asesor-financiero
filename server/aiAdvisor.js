@@ -64,7 +64,7 @@ function getProfileConfig(profileId = "moderate") {
 export async function generateAnalysis({ topPicks, portfolio, capital, ccl, diversification, warnings, ranking, profileId = "moderate" }) {
   const profile = getProfileConfig(profileId);
   // Construir contexto mensual completo
-  const cycleData = buildMonthlyCycleContext({ capital, ccl, ranking: ranking || topPicks });
+  const cycleData = await buildMonthlyCycleContext({ capital, ccl, ranking: ranking || topPicks });
   const monthlyContext = cycleData.context;
 
   const tickerDetails = topPicks

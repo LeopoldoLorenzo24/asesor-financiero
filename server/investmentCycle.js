@@ -17,11 +17,11 @@ const MONTHLY_DEPOSIT = 1000000; // $1M ARS por mes
  * Genera el contexto completo del ciclo mensual para el prompt de la IA.
  * Esta función arma TODO lo que el bot necesita saber antes de recomendar.
  */
-export function buildMonthlyCycleContext({ capital, ccl, ranking }) {
-  const portfolio = getPortfolioSummary();
-  const lastSessions = getAnalysisSessions(3);
-  const recentTransactions = getTransactions(null, 20);
-  const recentPredictions = getPredictions(null, false, 30);
+export async function buildMonthlyCycleContext({ capital, ccl, ranking }) {
+  const portfolio = await getPortfolioSummary();
+  const lastSessions = await getAnalysisSessions(3);
+  const recentTransactions = await getTransactions(null, 20);
+  const recentPredictions = await getPredictions(null, false, 30);
 
   // Determinar número de mes
   const firstTx = recentTransactions[recentTransactions.length - 1];

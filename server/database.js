@@ -268,6 +268,10 @@ export async function getPredictions(ticker = null, onlyUnevaluated = false, lim
   return (await db.execute({ sql: query, args: params })).rows;
 }
 
+export async function getPredictionById(id) {
+  return (await db.execute({ sql: "SELECT * FROM predictions WHERE id = ?", args: [id] })).rows[0] || null;
+}
+
 export async function evaluatePrediction(id, currentPriceUsd, notes = "") {
   const prediction = (await db.execute({
     sql: "SELECT * FROM predictions WHERE id = ?",

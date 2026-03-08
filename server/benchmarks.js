@@ -3,7 +3,7 @@ import { getTransactions, getPortfolioSummary } from "./database.js";
 import CEDEARS from "./cedears.js";
 
 export async function calculateBenchmarks(ranking = []) {
-  const transactions = getTransactions(null, 500);
+  const transactions = await getTransactions(null, 500);
   if (transactions.length === 0) {
     return { error: "No hay operaciones registradas para comparar." };
   }
@@ -21,7 +21,7 @@ export async function calculateBenchmarks(ranking = []) {
   for (const tx of buys) totalInvestedARS += tx.total_ars;
   for (const tx of sells) totalInvestedARS -= tx.total_ars;
 
-  const summary = getPortfolioSummary();
+  const summary = await getPortfolioSummary();
   let currentValueARS = 0;
   for (const pos of summary) {
     const r = ranking.find(x => x.cedear?.ticker === pos.ticker);

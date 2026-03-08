@@ -237,6 +237,9 @@ export default function App() {
   const [opMsg, setOpMsg] = useState(null);
   const [evalLoading, setEvalLoading] = useState(false);
   const [evalResult, setEvalResult] = useState(null);
+  const [concluding, setConcluding] = useState(null);
+  const [conclusionData, setConclusionData] = useState(null);
+  const [showConclusionModal, setShowConclusionModal] = useState(false);
   const [filterSector, setFilterSector] = useState("Todos");
   const [sortBy, setSortBy] = useState("composite");
   const [showCapitalInput, setShowCapitalInput] = useState(false);
@@ -274,6 +277,7 @@ export default function App() {
   const handleBuy = async () => { try { setOpMsg(null); await api.buyPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Compra registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowBuyModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
   const handleSell = async () => { try { setOpMsg(null); await api.sellPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Venta registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowSellModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
   const handleEvaluateAll = async () => { setEvalLoading(true); setEvalResult(null); try { const r = await api.evaluateAll(); setEvalResult(r); loadPredictions(); loadPerformance(); } catch (e) { setEvalResult({ error: e.message }); } finally { setEvalLoading(false); } };
+  const handleConclude = async (predictionId) => { setConcluding(predictionId); setConclusionData(null); setShowConclusionModal(true); try { const data = await api.concludePrediction(predictionId); setConclusionData(data); } catch (err) { setConclusionData({ error: err.message }); } finally { setConcluding(null); } };
 
   if (!loggedIn) return <LoginScreen onAuth={() => setLoggedIn(true)} />;
 
@@ -917,6 +921,7 @@ export default function App() {
                   <th className="ca-hide-mobile" style={S.th}>Target</th>
                   <th style={S.th}>Resultado</th>
                   <th style={S.th}>Cambio Real</th>
+                  <th style={S.th}>Conclusión</th>
                 </tr></thead>
                 <tbody>{predictions.map((p, i) => (
                   <tr key={i} style={{ background: p.evaluated ? (p.prediction_correct === 1 ? `${T.green}04` : p.prediction_correct === 0 ? `${T.red}04` : "transparent") : "transparent" }}>
@@ -929,6 +934,14 @@ export default function App() {
                     <td className="ca-hide-mobile" style={{ ...S.td, textAlign: "center", ...S.mono, color: T.green }}>{p.target_pct ? `+${p.target_pct}%` : "—"}</td>
                     <td style={{ ...S.td, textAlign: "center" }}>{p.evaluated ? (p.prediction_correct === 1 ? <span style={S.badge(T.green)}>ACERTÓ ✓</span> : p.prediction_correct === 0 ? <span style={S.badge(T.red)}>FALLÓ ✗</span> : <span style={S.badge(T.textDim)}>N/A</span>) : <span style={{ fontSize: 10, color: T.yellow }}>⏳ Pendiente</span>}</td>
                     <td style={{ ...S.td, textAlign: "center", ...S.mono, fontWeight: 700, color: p.actual_change_pct != null ? (p.actual_change_pct >= 0 ? T.green : T.red) : T.textDark }}>{p.actual_change_pct != null ? `${p.actual_change_pct >= 0 ? "+" : ""}${p.actual_change_pct}%` : "—"}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>
+                      <button
+                        onClick={e => { e.stopPropagation(); handleConclude(p.id); }}
+                        disabled={concluding === p.id}
+                        style={{ ...S.btn("blue"), padding: "5px 12px", fontSize: 10, opacity: concluding === p.id ? 0.5 : 1 }}>
+                        {concluding === p.id ? "⟳" : "Conclusión"}
+                      </button>
+                    </td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -1423,6 +1436,84 @@ export default function App() {
     </Modal>
   );
 
+  const renderConclusionModal = () => (
+    <Modal
+      show={showConclusionModal}
+      onClose={() => setShowConclusionModal(false)}
+      title={conclusionData?.prediction ? `Conclusión — ${conclusionData.prediction.ticker}` : "Analizando..."}
+    >
+      {!conclusionData ? (
+        <div style={{ textAlign: "center", padding: 32 }}>
+          <div style={{ fontSize: 14, color: T.textDim }}>&#8635; Claude está analizando qué pasó con esta predicción...</div>
+          <div style={{ fontSize: 11, color: T.textDark, marginTop: 8 }}>Buscando noticias y comparando con la realidad</div>
+        </div>
+      ) : conclusionData.error ? (
+        <div style={{ color: T.red, fontSize: 13 }}>Error: {conclusionData.error}</div>
+      ) : (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+            <div style={{ background: T.bg, borderRadius: 10, padding: 14, border: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 10, color: T.purple, fontWeight: 700, letterSpacing: "1px" }}>PREDICCIÓN</div>
+              <div style={{ marginTop: 8 }}>
+                <span style={S.badge(conclusionData.prediction.action === "COMPRAR" ? T.green : conclusionData.prediction.action === "VENDER" ? T.red : T.yellow)}>
+                  {conclusionData.prediction.action}
+                </span>
+                <span style={{ fontSize: 11, color: T.textDim, marginLeft: 8 }}>Conf: {conclusionData.prediction.confidence}%</span>
+              </div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8, lineHeight: 1.5, fontStyle: "italic" }}>
+                "{conclusionData.prediction.reasoning}"
+              </div>
+              <div style={{ fontSize: 10, color: T.textDim, marginTop: 6, ...S.mono }}>
+                ${conclusionData.prediction.priceAtPrediction?.toFixed(2)} USD — {conclusionData.prediction.date?.slice(0, 10)}
+              </div>
+            </div>
+            <div style={{ background: T.bg, borderRadius: 10, padding: 14, border: `1px solid ${conclusionData.actual?.changePct >= 0 ? T.green : T.red}40` }}>
+              <div style={{ fontSize: 10, color: T.blue, fontWeight: 700, letterSpacing: "1px" }}>REALIDAD ({conclusionData.actual?.daysSince}d después)</div>
+              <div style={{ fontSize: 28, fontWeight: 900, ...S.mono, marginTop: 8, color: conclusionData.actual?.changePct >= 0 ? T.green : T.red }}>
+                {conclusionData.actual?.changePct >= 0 ? "+" : ""}{conclusionData.actual?.changePct}%
+              </div>
+              <div style={{ fontSize: 11, color: T.textDim, marginTop: 4, ...S.mono }}>
+                ${conclusionData.prediction.priceAtPrediction?.toFixed(2)} → ${conclusionData.actual?.currentPrice?.toFixed(2)} USD
+              </div>
+            </div>
+          </div>
+          {conclusionData.conclusion && (
+            <div>
+              <div style={{ padding: 14, borderRadius: 10, marginBottom: 12, background: conclusionData.conclusion.le_pegue ? `${T.green}10` : `${T.red}10`, border: `1px solid ${conclusionData.conclusion.le_pegue ? T.green : T.red}30` }}>
+                <span style={S.badge(conclusionData.conclusion.le_pegue ? T.green : T.red)}>
+                  {conclusionData.conclusion.le_pegue ? "LE PEGUÉ ✓" : "ME EQUIVOQUÉ ✗"}
+                </span>
+                <div style={{ fontSize: 12, color: T.textMuted, marginTop: 10, lineHeight: 1.7 }}>
+                  {conclusionData.conclusion.resumen}
+                </div>
+              </div>
+              <div style={{ background: T.bg, borderRadius: 10, padding: 14, marginBottom: 12, border: `1px solid ${T.border}` }}>
+                <div style={{ fontSize: 10, color: T.blue, fontWeight: 700, letterSpacing: "1px", marginBottom: 6 }}>QUÉ PASÓ</div>
+                <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>{conclusionData.conclusion.que_paso}</div>
+              </div>
+              <div style={{ background: T.bg, borderRadius: 10, padding: 14, marginBottom: 12, border: `1px solid ${T.purple}20` }}>
+                <div style={{ fontSize: 10, color: T.purple, fontWeight: 700, letterSpacing: "1px", marginBottom: 6 }}>QUÉ APRENDO</div>
+                <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>{conclusionData.conclusion.que_aprendo}</div>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 14, background: T.bg, borderRadius: 10, border: `1px solid ${T.border}` }}>
+                <div>
+                  <div style={{ fontSize: 10, color: T.textDim, fontWeight: 700, letterSpacing: "1px", marginBottom: 6 }}>¿QUÉ HARÍA HOY?</div>
+                  <span style={S.badge(conclusionData.conclusion.accion_sugerida_ahora === "AUMENTAR" ? T.green : conclusionData.conclusion.accion_sugerida_ahora === "VENDER" ? T.red : T.yellow)}>
+                    {conclusionData.conclusion.accion_sugerida_ahora}
+                  </span>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 10, color: T.textDim }}>Confianza actual</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, ...S.mono, color: T.text }}>{conclusionData.conclusion.confianza_actual}%</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+
   /* ═══════════════════════ RENDER ═══════════════════════ */
   return (
     <div style={{ minHeight: "100vh", background: T.bg, position: "relative", overflow: "hidden" }}>
@@ -1442,7 +1533,7 @@ export default function App() {
         {view === "predicciones" && renderPredicciones()}
         {view === "historial" && renderHistorial()}
       </main>
-      {renderOpModal("buy")}{renderOpModal("sell")}
+      {renderOpModal("buy")}{renderOpModal("sell")}{renderConclusionModal()}
       <footer className="ca-footer" style={{ textAlign: "center", padding: "32px 24px", fontSize: 10, color: T.textDark, lineHeight: 2, borderTop: `1px solid ${T.border}`, marginTop: 40, background: "rgba(3,7,17,0.4)" }}>
         ⚠ DISCLAIMER: Herramienta informativa. No es asesoramiento financiero. Consultá un asesor matriculado (CNV).
       </footer>

@@ -35,7 +35,7 @@ import { runBacktest } from "./backtest.js";
 import {
   initDb,
   getPortfolio, getPortfolioSummary, addPosition, sellPosition,
-  getTransactions, getPredictions, evaluatePredictionsForTicker,
+  getTransactions, getPredictions, getPredictionById, evaluatePredictionsForTicker,
   calculateBotPerformance, getCapitalHistory, logCapital,
   getAnalysisSessions,
 } from "./database.js";
@@ -490,6 +490,99 @@ app.post("/api/predictions/evaluate-all", async (req, res) => {
     }
     res.json({ tickersProcessed: tickers.length, totalEvaluated: allResults.length, results: allResults });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/predictions/:id/conclude", async (req, res) => {
+  try {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(400).json({ error: "ANTHROPIC_API_KEY no configurada" });
+    }
+    const predictionId = parseInt(req.params.id);
+    if (isNaN(predictionId)) return res.status(400).json({ error: "ID inválido" });
+
+    const prediction = await getPredictionById(predictionId);
+    if (!prediction) return res.status(404).json({ error: "Predicción no encontrada" });
+
+    const quote = await fetchQuote(prediction.ticker);
+    if (!quote) return res.status(500).json({ error: `No se pudo obtener precio de ${prediction.ticker}` });
+
+    const currentPriceUsd = quote.price;
+    const predictionPriceUsd = prediction.price_usd_at_prediction;
+    const changePct = predictionPriceUsd > 0
+      ? Math.round(((currentPriceUsd - predictionPriceUsd) / predictionPriceUsd) * 10000) / 100
+      : null;
+    const daysSince = Math.floor((Date.now() - new Date(prediction.prediction_date).getTime()) / 86400000);
+
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const prompt = `Sos un asesor financiero que está revisando una predicción que hiciste.
+
+PREDICCIÓN ORIGINAL:
+- Fecha: ${prediction.prediction_date?.slice(0, 10)}
+- Ticker: ${prediction.ticker}
+- Acción recomendada: ${prediction.action}
+- Confianza: ${prediction.confidence}%
+- Tu razón: "${prediction.reasoning}"
+- Precio USD al momento: $${predictionPriceUsd?.toFixed(2) || "N/A"}
+- RSI al momento: ${prediction.rsi_at_prediction || "N/A"}
+- Score al momento: ${prediction.score_composite || "N/A"}/100
+- Horizonte: ${prediction.horizon || "N/A"}
+- Target: ${prediction.target_pct ? `+${prediction.target_pct}%` : "N/A"}
+- Stop loss: ${prediction.stop_loss_pct ? `${prediction.stop_loss_pct}%` : "N/A"}
+- Contexto de noticias: "${prediction.news_context || "N/A"}"
+
+QUÉ PASÓ EN LA REALIDAD (${daysSince} días después):
+- Precio actual USD: $${currentPriceUsd.toFixed(2)}
+- Cambio desde la predicción: ${changePct !== null ? `${changePct >= 0 ? "+" : ""}${changePct}%` : "N/A"}
+- ${changePct !== null && prediction.target_pct ? (changePct >= prediction.target_pct ? "ALCANZÓ el target" : "NO alcanzó el target aún") : ""}
+- ${changePct !== null && prediction.stop_loss_pct ? (changePct <= prediction.stop_loss_pct ? "TOCÓ el stop loss" : "No tocó stop loss") : ""}
+
+Buscá noticias recientes de ${prediction.ticker} para entender qué pasó.
+
+Respondé SOLO con JSON válido (sin markdown, sin backticks):
+{
+  "le_pegue": true/false,
+  "resumen": "2-3 oraciones analizando si tu predicción fue correcta y por qué",
+  "que_paso": "Qué pasó con la empresa/sector desde tu predicción (noticias, earnings, macro)",
+  "que_aprendo": "1-2 oraciones sobre qué aprendés de esto para futuras predicciones",
+  "accion_sugerida_ahora": "MANTENER|VENDER|AUMENTAR — qué harías HOY con esta posición",
+  "confianza_actual": 70
+}`;
+
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 800,
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+      system: "Sos un asesor financiero revisando tus predicciones pasadas. Sé honesto: si te equivocaste, decilo. Buscá noticias del ticker. Respondé SOLO JSON.",
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const textParts = response.content.filter(b => b.type === "text").map(b => b.text);
+    const clean = textParts.join("").replace(/```json|```/g, "").trim();
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    let conclusion = null;
+    if (jsonMatch) {
+      try { conclusion = JSON.parse(jsonMatch[0]); } catch (e) { console.error("JSON parse error:", e.message); }
+    }
+
+    res.json({
+      prediction: {
+        id: prediction.id,
+        ticker: prediction.ticker,
+        action: prediction.action,
+        confidence: prediction.confidence,
+        reasoning: prediction.reasoning,
+        date: prediction.prediction_date,
+        priceAtPrediction: predictionPriceUsd,
+      },
+      actual: { currentPrice: currentPriceUsd, changePct, daysSince },
+      conclusion,
+    });
+  } catch (err) {
+    console.error("Conclusion error:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---- Bot Performance ----

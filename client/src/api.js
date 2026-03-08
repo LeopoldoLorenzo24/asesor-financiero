@@ -89,6 +89,8 @@ export const api = {
     request("/predictions/evaluate", { method: "POST", body: JSON.stringify({ ticker }) }),
   evaluateAll: () =>
     request("/predictions/evaluate-all", { method: "POST" }),
+  concludePrediction: (id) =>
+    request(`/predictions/${id}/conclude`, { method: "POST" }),
 
   getPerformance: (days = 30) => request(`/performance?days=${days}`),
   getAnalysisSessions: (limit = 20) => request(`/analysis-sessions?limit=${limit}`),
