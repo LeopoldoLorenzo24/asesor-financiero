@@ -69,17 +69,45 @@ export async function buildMonthlyCycleContext({ capital, ccl, ranking }) {
 
   // Qué hizo el bot el mes pasado y qué pasó
   let lastMonthReview = "No hay sesión anterior (primer o segundo mes).";
+  let cartEraYaAlineada = false;
   if (lastSessions.length > 0) {
     const last = lastSessions[0];
     const lastRecs = last.full_response?.nuevas_compras || last.full_response?.recomendaciones || [];
     const lastActions = last.full_response?.acciones_cartera_actual || [];
 
+    // Detectar si el usuario ejecutó las recomendaciones anteriores
+    const currentTickers = new Set(positionsWithData.map((p) => p.ticker));
+    const vendasPendientes = lastActions.filter(
+      (a) => (a.accion === "VENDER" || a.accion === "VENDER TODO") && currentTickers.has(a.ticker)
+    );
+    const comprasPendientes = lastRecs.filter((r) => !currentTickers.has(r.ticker));
+    const reduccionesPendientes = lastActions.filter((a) => {
+      if (a.accion !== "REDUCIR") return false;
+      const pos = positionsWithData.find((p) => p.ticker === a.ticker);
+      if (!pos || !a.cantidad_ajustar) return false;
+      // Si la cantidad actual es mayor a lo esperado después de reducir, todavía no lo hizo
+      return pos.shares > (a.cantidad_actual - Math.abs(a.cantidad_ajustar)) * 1.05;
+    });
+
+    const pendientesCount = vendasPendientes.length + comprasPendientes.length + reduccionesPendientes.length;
+    cartEraYaAlineada = pendientesCount === 0 && lastActions.length > 0;
+
+    let alineacionStatus = "";
+    if (cartEraYaAlineada) {
+      alineacionStatus = `\n✅ CARTERA ALINEADA: El inversor ejecutó todas las operaciones recomendadas el ${last.session_date?.slice(0, 10)}. No hay pendientes detectados.`;
+    } else if (pendientesCount > 0) {
+      alineacionStatus = `\n⚠ OPERACIONES POSIBLEMENTE PENDIENTES:`;
+      if (vendasPendientes.length > 0) alineacionStatus += `\n- Ventas no ejecutadas: ${vendasPendientes.map((a) => a.ticker).join(", ")}`;
+      if (reduccionesPendientes.length > 0) alineacionStatus += `\n- Reducciones pendientes: ${reduccionesPendientes.map((a) => a.ticker).join(", ")}`;
+      if (comprasPendientes.length > 0) alineacionStatus += `\n- Compras recomendadas no en cartera: ${comprasPendientes.map((r) => r.ticker).join(", ")}`;
+    }
+
     lastMonthReview = `SESIÓN ANTERIOR (${last.session_date?.slice(0, 10)}):
 Resumen: ${last.market_summary || "N/A"}
 Recomendaciones que dio: ${lastRecs.map((r) => `${r.accion || "COMPRAR"} ${r.ticker}`).join(", ") || "Ninguna"}
-Acciones sobre cartera: ${lastActions.map((a) => `${a.accion} ${a.ticker}`).join(", ") || "Ninguna"}
+Acciones sobre cartera: ${lastActions.map((a) => `${a.accion} ${a.ticker}${a.cantidad_ajustar ? ` (ajuste: ${a.cantidad_ajustar})` : ""}`).join(", ") || "Ninguna"}
 Capital en ese momento: $${last.capital_ars?.toLocaleString() || "N/A"} ARS
-CCL en ese momento: $${last.ccl_rate || "N/A"}`;
+CCL en ese momento: $${last.ccl_rate || "N/A"}${alineacionStatus}`;
   }
 
   // Predicciones evaluables (las del mes pasado que ya se pueden verificar)
@@ -128,5 +156,6 @@ PERFORMANCE DEL BOT:
     sectorPcts,
     monthNumber: monthsSinceStart,
     currentMonth,
+    cartEraYaAlineada,
   };
 }

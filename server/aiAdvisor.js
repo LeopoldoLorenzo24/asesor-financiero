@@ -72,6 +72,7 @@ export async function generateAnalysis({ topPicks, capital, ccl, diversification
   // Construir contexto mensual completo (incluye valor de portfolio y performance reciente)
   const cycleData = await buildMonthlyCycleContext({ capital, ccl, ranking: ranking || topPicks });
   const monthlyContext = cycleData.context;
+  const cartEraYaAlineada = cycleData.cartEraYaAlineada;
 
   // Contexto adicional de auto-evaluación (historial de predicciones evaluadas)
   const selfEvalContext = await buildAIContext();
@@ -327,6 +328,18 @@ PASO 6 - HONESTIDAD:
 Evaluá honestamente si tus picks activos realmente valen la pena vs indexar.
 Si la respuesta honesta es "no tengo idea", decilo y recomendá ${coreETF}.
 
+PASO 7 - ¿CARTERA YA ALINEADA? (MUY IMPORTANTE)
+${cartEraYaAlineada
+  ? `El sistema detectó que el inversor ejecutó TODAS las operaciones que recomendaste en la sesión anterior.
+Su cartera ya está alineada con tu estrategia.
+REGLA: Si el mercado no cambió de forma significativa (no hay shocks macro, noticias graves, ni desvíos importantes), respondé con "sin_cambios_necesarios: true" y un mensaje claro validando que está bien.
+NO INVENTES operaciones para parecer útil. Cambiar algo solo por cambiar es peor que no hacer nada.
+En ese caso, usá el analysis para MONITOREAR: confirmá que las tesis siguen vigentes, alertá si algo cambió.
+Ejemplo de "mensaje_sin_cambios": "Ejecutaste todo lo que te recomendé. La cartera está como la planeamos: X% SPY como base + [picks]. Las tesis siguen vigentes, no hay motivo para mover nada esta semana. El próximo review formal en [fecha]."
+Si hubo cambios significativos de mercado que justifiquen ajustes IGUALMENTE explicalo claramente.`
+  : `Revisá si el inversor ejecutó o no las operaciones anteriores (aparecen en el contexto de la sesión pasada con el indicador ⚠ si quedaron pendientes).
+Si hay operaciones pendientes sin ejecutar, mencionalo y evaluá si siguen siendo válidas o si el contexto cambió.`}
+
 El perfil es ${profile.label}. ${profile.rules}
 MIRÁ TU HISTORIAL DE PREDICCIONES: Si acertaste, repetí. Si fallaste, explicá por qué y ajustá.
 
@@ -418,6 +431,9 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
     "Riesgo 1",
     "Riesgo 2"  
   ],
+  
+  "sin_cambios_necesarios": false,
+  "mensaje_sin_cambios": null,
   
   "honestidad": "Evaluación brutalmente honesta: ¿los picks activos de este mes realmente le van a ganar a ${coreETF}? ¿O estoy recomendando picks por recomendar? Si no tengo convicción real, lo digo acá.",
   "proximo_review": "Cuándo reanalizar"

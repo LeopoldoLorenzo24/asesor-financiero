@@ -388,6 +388,23 @@ export default function App() {
     if (a.error) return <StatusMsg type="error">Error: {a.error}</StatusMsg>;
     return (
       <div style={{ fontSize: 13, lineHeight: 1.8, animation: "fadeUp 0.4s ease" }}>
+        {a.sin_cambios_necesarios && (
+          <div style={{ background: `${T.green}10`, borderRadius: 16, padding: 24, marginBottom: 16, border: `2px solid ${T.green}40` }}>
+            <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 16 }}>
+              <span style={{ fontSize: 36, flexShrink: 0 }}>✅</span>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 16, color: T.green, marginBottom: 8 }}>Cartera alineada — no necesitás hacer nada</div>
+                <div style={{ color: T.textMuted, fontSize: 13, lineHeight: 1.7 }}>{a.mensaje_sin_cambios || "Tu cartera está en orden. Las tesis anteriores siguen vigentes y no hay operaciones necesarias por ahora."}</div>
+              </div>
+            </div>
+            <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 12, padding: "12px 16px", display: "flex", gap: 12, alignItems: "center", borderLeft: `3px solid ${T.yellow}` }}>
+              <span style={{ fontSize: 18 }}>📅</span>
+              <div style={{ fontSize: 12, color: T.textMuted }}>
+                <strong style={{ color: T.yellow }}>¿Cuándo volver a correr el análisis?</strong> Solo si: el mercado tuvo un shock importante (VIX sube fuerte, noticia macro grave) o cuando llegue la fecha de review que indicó el asesor. <strong style={{ color: T.text }}>No lo corras por correrlo — cada análisis consume tokens y puede generarte ansiedad innecesaria.</strong>
+              </div>
+            </div>
+          </div>
+        )}
         {a.autoevaluacion && <div style={{ background: `${T.purple}08`, borderRadius: 14, padding: 18, marginBottom: 14, border: `1px solid ${T.purple}20`, borderLeft: `3px solid ${T.purple}` }}><div style={{ ...S.label, color: T.purple }}>Autoevaluación del Bot</div><p style={{ margin: 0, color: T.textMuted, fontSize: 12 }}>{a.autoevaluacion}</p></div>}
         <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 14, padding: 20, marginBottom: 14, border: `1px solid ${T.border}`, borderLeft: `3px solid ${T.green}` }}><div style={{ ...S.label, color: T.green }}>Resumen de Mercado</div><p style={{ margin: 0, color: T.textMuted }}>{a.resumen_mercado}</p></div>
         {a.diagnostico_cartera && (
