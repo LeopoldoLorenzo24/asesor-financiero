@@ -406,72 +406,89 @@ app.get("/api/portfolio/exposure", async (req, res) => {
 });
 
 // ---- Seed historical lessons from backtest ----
+async function autoSeedHistoricalLessons() {
+  const existing = await getPostMortems(50);
+  if (existing.some((pm) => pm.month_label?.includes("Histórico"))) {
+    console.log("[seed] Experiencia histórica ya existe, saltando.");
+    return null;
+  }
+  console.log("[seed] Generando experiencia histórica automáticamente...");
+  const bt = await runBacktest({ months: 12, monthlyDeposit: 1000000, profile: "moderate", picksPerMonth: 4 });
+  if (!bt || bt.error) throw new Error(bt?.error || "Backtest falló");
+
+  const holdings = bt.satellite?.holdings || [];
+  const winners = holdings.filter((h) => h.returnPct > 0);
+  const losers = holdings.filter((h) => h.returnPct <= 0);
+
+  const sectorMap = {};
+  for (const h of holdings) {
+    if (!sectorMap[h.sector]) sectorMap[h.sector] = [];
+    sectorMap[h.sector].push(h.returnPct);
+  }
+  const sectorLessons = Object.entries(sectorMap)
+    .map(([sector, returns]) => ({
+      sector,
+      avgReturn: Math.round((returns.reduce((a, b) => a + b, 0) / returns.length) * 100) / 100,
+      count: returns.length,
+    }))
+    .sort((a, b) => b.avgReturn - a.avgReturn);
+
+  const bestSector = sectorLessons[0];
+  const worstSector = sectorLessons[sectorLessons.length - 1];
+  const accuracy = holdings.length > 0 ? Math.round((winners.length / holdings.length) * 100) : 0;
+  const generaAlfa = bt.satellite?.generaAlfa || false;
+
+  await savePostMortem({
+    monthLabel: "Histórico (12M backtest automático)",
+    totalPredictions: holdings.length,
+    correctPredictions: winners.length,
+    accuracyPct: accuracy,
+    totalReturnPct: bt.satellite?.returnPct || 0,
+    spyReturnPct: bt.resultado?.spyReturnPct || 0,
+    beatSpy: generaAlfa,
+    bestPick: bt.satellite?.mejorPick?.ticker || null,
+    bestPickReturn: bt.satellite?.mejorPick?.returnPct || null,
+    worstPick: bt.satellite?.peorPick?.ticker || null,
+    worstPickReturn: bt.satellite?.peorPick?.returnPct || null,
+    lessonsLearned:
+      `Análisis automático de 12 meses de backtest. ` +
+      `Mejor sector: ${bestSector?.sector || "N/A"} (promedio ${bestSector?.avgReturn}%). ` +
+      `Peor sector: ${worstSector?.sector || "N/A"} (promedio ${worstSector?.avgReturn}%). ` +
+      (generaAlfa
+        ? "El satellite generó alfa vs SPY, el stock picking agrega valor."
+        : "El satellite NO superó a SPY, priorizar core alto en SPY/QQQ."),
+    selfImposedRules: JSON.stringify([
+      `Priorizar ${bestSector?.sector || "sectores defensivos"} que históricamente rindió mejor (${bestSector?.avgReturn}% prom.)`,
+      `Ser cauteloso con ${worstSector?.sector || "sectores volátiles"} que históricamente rindió peor (${worstSector?.avgReturn}% prom.)`,
+      generaAlfa
+        ? "El stock picking agrega valor en este perfil, mantener satellite activo"
+        : "El stock picking NO superó a SPY, mantener core alto (60%+) y satellite mínimo",
+      `Accuracy histórica: ${winners.length}/${holdings.length} picks positivos (${accuracy}%)`,
+    ]),
+    patternsDetected: JSON.stringify(
+      sectorLessons.map((s) => `${s.sector}: promedio ${s.avgReturn >= 0 ? "+" : ""}${s.avgReturn}% en ${s.count} picks`)
+    ),
+    confidenceInStrategy: generaAlfa ? 65 : 45,
+    rawAiResponse: JSON.stringify({ type: "automated_backtest_analysis", satelliteReturn: bt.satellite?.returnPct, spyReturn: bt.resultado?.spyReturnPct }),
+  });
+
+  console.log(`[seed] Experiencia histórica guardada: ${winners.length}/${holdings.length} picks positivos.`);
+  return { totalPicks: holdings.length, winners: winners.length, losers: losers.length, accuracy, satelliteAlfa: generaAlfa, sectorAnalysis: sectorLessons };
+}
+
 app.post("/api/seed-historical-lessons", authMiddleware, async (req, res) => {
   try {
-    const bt = await runBacktest({ months: 12, monthlyDeposit: 1000000, profile: "moderate", picksPerMonth: 4 });
-    if (!bt || bt.error) return res.status(500).json({ error: "Backtest falló", detail: bt?.error });
-
-    const holdings = bt.satellite?.holdings || [];
-    const winners = holdings.filter((h) => h.returnPct > 0);
-    const losers = holdings.filter((h) => h.returnPct <= 0);
-
-    // Sector performance analysis
-    const sectorMap = {};
-    for (const h of holdings) {
-      if (!sectorMap[h.sector]) sectorMap[h.sector] = [];
-      sectorMap[h.sector].push(h.returnPct);
+    // Force re-seed even if already exists (manual trigger)
+    const existing = await getPostMortems(50);
+    const alreadyExists = existing.some((pm) => pm.month_label?.includes("Histórico"));
+    if (alreadyExists) {
+      return res.json({ message: "Experiencia histórica ya estaba cargada.", alreadySeeded: true });
     }
-    const sectorLessons = Object.entries(sectorMap)
-      .map(([sector, returns]) => ({
-        sector,
-        avgReturn: Math.round((returns.reduce((a, b) => a + b, 0) / returns.length) * 100) / 100,
-        count: returns.length,
-      }))
-      .sort((a, b) => b.avgReturn - a.avgReturn);
-
-    const bestSector = sectorLessons[0];
-    const worstSector = sectorLessons[sectorLessons.length - 1];
-    const accuracy = holdings.length > 0 ? Math.round((winners.length / holdings.length) * 100) : 0;
-    const generaAlfa = bt.satellite?.generaAlfa || false;
-
-    await savePostMortem({
-      monthLabel: "Histórico (12M backtest automático)",
-      totalPredictions: holdings.length,
-      correctPredictions: winners.length,
-      accuracyPct: accuracy,
-      totalReturnPct: bt.satellite?.returnPct || 0,
-      spyReturnPct: bt.resultado?.spyReturnPct || 0,
-      beatSpy: generaAlfa,
-      bestPick: bt.satellite?.mejorPick?.ticker || null,
-      bestPickReturn: bt.satellite?.mejorPick?.returnPct || null,
-      worstPick: bt.satellite?.peorPick?.ticker || null,
-      worstPickReturn: bt.satellite?.peorPick?.returnPct || null,
-      lessonsLearned:
-        `Análisis automático de 12 meses de backtest. ` +
-        `Mejor sector: ${bestSector?.sector || "N/A"} (promedio ${bestSector?.avgReturn}%). ` +
-        `Peor sector: ${worstSector?.sector || "N/A"} (promedio ${worstSector?.avgReturn}%). ` +
-        (generaAlfa
-          ? "El satellite generó alfa vs SPY, el stock picking agrega valor."
-          : "El satellite NO superó a SPY, priorizar core alto en SPY/QQQ."),
-      selfImposedRules: JSON.stringify([
-        `Priorizar ${bestSector?.sector || "sectores defensivos"} que históricamente rindió mejor (${bestSector?.avgReturn}% prom.)`,
-        `Ser cauteloso con ${worstSector?.sector || "sectores volátiles"} que históricamente rindió peor (${worstSector?.avgReturn}% prom.)`,
-        generaAlfa
-          ? "El stock picking agrega valor en este perfil, mantener satellite activo"
-          : "El stock picking NO superó a SPY, mantener core alto (60%+) y satellite mínimo",
-        `Accuracy histórica: ${winners.length}/${holdings.length} picks positivos (${accuracy}%)`,
-      ]),
-      patternsDetected: JSON.stringify(
-        sectorLessons.map((s) => `${s.sector}: promedio ${s.avgReturn >= 0 ? "+" : ""}${s.avgReturn}% en ${s.count} picks`)
-      ),
-      confidenceInStrategy: generaAlfa ? 65 : 45,
-      rawAiResponse: JSON.stringify({ type: "automated_backtest_analysis", satelliteReturn: bt.satellite?.returnPct, spyReturn: bt.resultado?.spyReturnPct }),
-    });
-
+    const stats = await autoSeedHistoricalLessons();
     res.json({
       message: "Lecciones históricas generadas exitosamente",
-      stats: { totalPicks: holdings.length, winners: winners.length, losers: losers.length, accuracy, satelliteAlfa: generaAlfa },
-      sectorAnalysis: sectorLessons,
+      stats,
+      sectorAnalysis: stats?.sectorAnalysis,
     });
   } catch (err) {
     console.error("Seed historical lessons error:", err);
@@ -485,6 +502,9 @@ app.post("/api/postmortem/generate", authMiddleware, async (req, res) => {
     if (!process.env.ANTHROPIC_API_KEY) {
       return res.status(400).json({ error: "ANTHROPIC_API_KEY no configurada" });
     }
+
+    // 1. Evaluar todas las predicciones pendientes
+    const pending = await getPredictions(null, true);
     const tickersToEval = [...new Set(pending.map((p) => p.ticker))];
     for (const t of tickersToEval) {
       try {
@@ -673,6 +693,7 @@ async function seedIfEmpty() {
 async function startServer() {
   await initDb();
   await seedIfEmpty();
+  autoSeedHistoricalLessons().catch((err) => console.warn("[seed] No se pudo generar experiencia histórica:", err.message));
   app.listen(PORT, () => {
     console.log(`
 ╔══════════════════════════════════════════════╗

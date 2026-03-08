@@ -128,6 +128,41 @@ function Modal({ show, onClose, title, children }) {
   );
 }
 
+function ConfirmModal({ state, onClose }) {
+  if (!state) return null;
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, backdropFilter: "blur(10px)" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: T.bgCardSolid, border: `1px solid ${T.borderLight}`, borderRadius: 20, padding: 32, width: "92%", maxWidth: 460, boxShadow: "0 24px 64px rgba(0,0,0,0.6)" }}>
+        <div style={{ fontSize: 22, marginBottom: 12 }}>{state.icon || "⚡"}</div>
+        <h3 style={{ margin: "0 0 10px", fontSize: 17, fontWeight: 800, color: T.text }}>{state.title}</h3>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: T.textMuted, lineHeight: 1.7 }}>{state.description}</p>
+        {state.tokenWarning && (
+          <div style={{ background: `${T.yellow}10`, border: `1px solid ${T.yellow}30`, borderRadius: 12, padding: "10px 14px", marginBottom: 20, display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <span style={{ fontSize: 16, flexShrink: 0 }}>🪙</span>
+            <div style={{ fontSize: 12, color: T.yellow, lineHeight: 1.6 }}><strong>Consume tokens de Claude:</strong> {state.tokenWarning}</div>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={{ ...S.btn("ghost"), padding: "10px 20px" }}>Cancelar</button>
+          <button onClick={() => { state.onConfirm(); onClose(); }} style={{ ...S.btn(state.variant || "primary"), padding: "10px 20px" }}>{state.confirmLabel || "Confirmar"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoBanner({ icon, title, children }) {
+  return (
+    <div style={{ background: `${T.blue}08`, border: `1px solid ${T.blue}15`, borderRadius: 14, padding: "14px 18px", marginBottom: 20, display: "flex", gap: 12, alignItems: "flex-start" }}>
+      <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>{icon || "ℹ️"}</span>
+      <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7 }}>
+        {title && <div style={{ fontWeight: 700, color: T.text, marginBottom: 4, fontSize: 13 }}>{title}</div>}
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function StatusMsg({ type, children }) {
   const c = type === "success" ? T.green : type === "error" ? T.red : T.blue;
   return (<div style={{ ...S.card, borderColor: `${c}30`, background: `${c}06`, padding: 16, marginBottom: 16, borderLeft: `3px solid ${c}` }}><div style={{ color: c, fontSize: 13 }}>{children}</div></div>);
@@ -242,12 +277,12 @@ export default function App() {
   const [showConclusionModal, setShowConclusionModal] = useState(false);
   const [chartMonths, setChartMonths] = useState(6);
   const [detailHistory, setDetailHistory] = useState(null);
-  const [expandedPrediction, setExpandedPrediction] = useState(null);
   const [postmortem, setPostmortem] = useState(null);
   const [pmLoading, setPmLoading] = useState(false);
   const [pmHistory, setPmHistory] = useState([]);
   const [seedLoading, setSeedLoading] = useState(false);
   const [seedResult, setSeedResult] = useState(null);
+  const [confirmState, setConfirmState] = useState(null);
   const [filterSector, setFilterSector] = useState("Todos");
   const [sortBy, setSortBy] = useState("composite");
   const [showCapitalInput, setShowCapitalInput] = useState(false);
@@ -277,6 +312,7 @@ export default function App() {
   const loadCapitalHistory = useCallback(async () => { try { setCapitalHistory(await api.getCapitalHistory(90)); } catch (e) { console.error(e); } }, []);
   const runBacktestSim = useCallback(async () => { setBacktestLoading(true); try { setBacktest(await api.getBacktest(btMonths, btDeposit, btProfile, btPicks)); } catch (e) { console.error(e); } finally { setBacktestLoading(false); } }, [btMonths, btDeposit, btProfile, btPicks]);
   const handlePostMortem = useCallback(async () => { setPmLoading(true); setPostmortem(null); try { const data = await api.generatePostMortem(); setPostmortem(data); const hist = await api.getPostMortems(); setPmHistory(hist); } catch (err) { setPostmortem({ error: err.message }); } finally { setPmLoading(false); } }, []);
+  const confirmPostMortem = () => setConfirmState({ icon: "📊", title: "Generar Post-Mortem Mensual", description: "El bot va a revisar todas las predicciones del último mes, calcular cuántas acertó, qué sectores funcionaron mejor, y extraer lecciones aprendidas. Esas lecciones quedan guardadas y el asesor las usa automáticamente en futuros análisis.", tokenWarning: "Claude va a analizar el historial completo de predicciones para generar las conclusiones. Equivale aproximadamente al costo de 1 análisis de portfolio.", confirmLabel: "Generar Post-Mortem", variant: "purple", onConfirm: handlePostMortem });
   const loadPmHistory = useCallback(async () => { try { setPmHistory(await api.getPostMortems()); } catch (e) { console.error(e); } }, []);
   const handleSeedHistorical = useCallback(async () => { setSeedLoading(true); setSeedResult(null); try { const data = await api.seedHistoricalLessons(); setSeedResult(data); const hist = await api.getPostMortems(); setPmHistory(hist); } catch (err) { setSeedResult({ error: err.message }); } finally { setSeedLoading(false); } }, []);
 
@@ -292,7 +328,9 @@ export default function App() {
   const handleBuy = async () => { try { setOpMsg(null); await api.buyPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Compra registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowBuyModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
   const handleSell = async () => { try { setOpMsg(null); await api.sellPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Venta registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowSellModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
   const handleEvaluateAll = async () => { setEvalLoading(true); setEvalResult(null); try { const r = await api.evaluateAll(); setEvalResult(r); loadPredictions(); loadPerformance(); } catch (e) { setEvalResult({ error: e.message }); } finally { setEvalLoading(false); } };
+  const confirmEvaluateAll = () => setConfirmState({ icon: "⚖️", title: `Evaluar ${predictions.filter(p => !p.evaluated).length} predicciones pendientes`, description: "El sistema va a buscar el precio actual de cada CEDEAR con predicción pendiente y compararlo contra el precio de entrada para determinar si la predicción fue correcta o no. Este proceso es automático y no consume tokens de Claude.", confirmLabel: "Evaluar Ahora", variant: "blue", onConfirm: handleEvaluateAll });
   const handleConclude = async (predictionId) => { setConcluding(predictionId); setConclusionData(null); setShowConclusionModal(true); try { const data = await api.concludePrediction(predictionId); setConclusionData(data); } catch (err) { setConclusionData({ error: err.message }); } finally { setConcluding(null); } };
+  const confirmConclude = (predictionId, ticker) => setConfirmState({ icon: "🔍", title: `Ver Conclusión — ${ticker}`, description: "Claude va a buscar noticias y contexto sobre lo que pasó con este activo, comparar el resultado real contra lo que predijo, y generar una conclusión con aprendizajes para mejorar futuras decisiones.", tokenWarning: "Consume una llamada a Claude para analizar el resultado de esta predicción específica.", confirmLabel: "Ver Conclusión", variant: "purple", onConfirm: () => handleConclude(predictionId) });
 
   if (!loggedIn) return <LoginScreen onAuth={() => setLoggedIn(true)} />;
 
@@ -531,6 +569,7 @@ export default function App() {
             <div style={{ background: "rgba(3,7,17,0.5)", borderRadius: 14, padding: 22, marginBottom: 18, border: `1px solid ${T.green}30` }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 10 }}>¿Cuánto capital tenés disponible para invertir hoy?</div>
               <div style={{ fontSize: 12, color: T.textDim, marginBottom: 14, lineHeight: 1.6 }}>Ingresá el monto en pesos argentinos que tenés libre para nuevas compras. Si no tenés capital nuevo, poné 0 y el asesor solo te va a recomendar rebalanceos.</div>
+              <div style={{ fontSize: 11, color: T.yellow, marginBottom: 14, display: "flex", alignItems: "center", gap: 6 }}>🪙 Este análisis consume tokens de Claude. Tiene un cooldown de 1 hora para evitar gasto innecesario.</div>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
                   <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: T.textDim, fontWeight: 700, fontSize: 16 }}>$</span>
@@ -793,8 +832,11 @@ export default function App() {
 
         <div style={{ ...S.card, marginBottom: 20, border: `1px solid ${T.green}15` }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div style={S.label}>Análisis IA Completo</div>
-            <button onClick={() => runAISingle(c.ticker)} disabled={aiSingleLoading} style={{ ...S.btn(), fontSize: 12, padding: "9px 18px", opacity: aiSingleLoading ? 0.5 : 1 }}>{aiSingleLoading ? <span style={{ animation: "pulse 1s infinite" }}>⟳ Analizando con IA...</span> : "Analizar con IA"}</button>
+            <div>
+              <div style={S.label}>Análisis IA Completo</div>
+              <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>Claude analiza noticias recientes, técnicos y contexto macro para este CEDEAR puntual</div>
+            </div>
+            <button onClick={() => setConfirmState({ icon: "🤖", title: `Analizar ${c.ticker} con IA`, description: `Claude va a buscar noticias recientes sobre ${c.ticker}, analizar los indicadores técnicos actuales y el contexto del sector para darte una recomendación detallada con precio objetivo, soporte y resistencia.`, tokenWarning: "Análisis individual con Claude. Menor costo que el análisis de portfolio completo.", confirmLabel: "Analizar con IA", variant: "primary", onConfirm: () => runAISingle(c.ticker) })} disabled={aiSingleLoading} style={{ ...S.btn(), fontSize: 12, padding: "9px 18px", opacity: aiSingleLoading ? 0.5 : 1 }}>{aiSingleLoading ? <span style={{ animation: "pulse 1s infinite" }}>⟳ Analizando con IA...</span> : "🤖 Analizar con IA"}</button>
           </div>
           {aiSingle && !aiSingle.error ? (
             <div style={{ fontSize: 13 }}>
@@ -992,18 +1034,12 @@ export default function App() {
   const renderPredicciones = () => {
     const pending = predictions.filter(p => !p.evaluated);
 
-    // Group predictions by date (session)
-    const sessions = {};
-    for (const p of predictions) {
-      const dateKey = p.prediction_date?.slice(0, 10) || "unknown";
-      if (!sessions[dateKey]) sessions[dateKey] = { date: dateKey, predictions: [], tickers: [] };
-      sessions[dateKey].predictions.push(p);
-      sessions[dateKey].tickers.push(p.ticker);
-    }
-    const sessionList = Object.values(sessions).sort((a, b) => b.date.localeCompare(a.date));
-
     return (
       <div style={{ animation: "fadeUp 0.4s ease" }}>
+        <InfoBanner icon="🤖" title="¿Cómo funciona este panel?">
+          Cada vez que pedís un análisis IA desde el Dashboard, el bot genera <strong style={{ color: T.text }}>predicciones de compra/venta</strong> para los CEDEARs más interesantes y las guarda acá. Con el tiempo, el sistema <strong style={{ color: T.text }}>evalúa automáticamente</strong> si acertó comparando el precio de hoy contra el precio de entrada.<br />
+          <span style={{ color: T.yellow }}>⚖️ Evaluar pendientes</span> — actualiza el resultado de predicciones abiertas. <span style={{ color: T.purple }}>📊 Post-Mortem</span> — análisis mensual con Claude: qué funcionó, qué falló, reglas a seguir. Ejecutarlo <em>una vez por mes</em> al cierre del período.
+        </InfoBanner>
         <div className="ca-stat-grid" style={S.grid()}>
           {[
             { l: "Precisión", v: performance?.accuracy != null ? `${performance.accuracy}%` : "—", c: performance?.accuracy >= 60 ? T.green : performance?.accuracy >= 40 ? T.yellow : T.red, sub: `${performance?.correct || 0}/${performance?.total || 0} aciertos` },
@@ -1019,12 +1055,14 @@ export default function App() {
           ))}
         </div>
         <div style={{ marginTop: 20, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-          <button onClick={handleEvaluateAll} disabled={evalLoading || pending.length === 0} style={{ ...S.btn("blue"), opacity: evalLoading || pending.length === 0 ? 0.5 : 1 }}>{evalLoading ? "Evaluando..." : `Evaluar ${pending.length} Pendientes`}</button>
-          <button onClick={handlePostMortem} disabled={pmLoading} style={{ ...S.btn("purple"), opacity: pmLoading ? 0.5 : 1 }}>{pmLoading ? "⏳ Generando post-mortem..." : "📊 Post-Mortem Mensual"}</button>
-          <button onClick={handleSeedHistorical} disabled={seedLoading || pmHistory.some(pm => pm.month_label?.includes("Histórico"))} style={{ ...S.btn("green"), opacity: seedLoading || pmHistory.some(pm => pm.month_label?.includes("Histórico")) ? 0.5 : 1, fontSize: 11 }} title="Ejecutar UNA sola vez. Genera experiencia histórica de 12 meses de backtest.">{seedLoading ? "⏳ Cargando experiencia..." : pmHistory.some(pm => pm.month_label?.includes("Histórico")) ? "✔ Experiencia cargada" : "📚 Cargar Experiencia Histórica"}</button>
-          {evalResult && !evalResult.error && <span style={{ fontSize: 12, color: T.green }}>Se evaluaron {evalResult.totalEvaluated} predicciones</span>}
-          {seedResult && !seedResult.error && <span style={{ fontSize: 12, color: T.green }}>✔ {seedResult.stats?.totalPicks} picks analizados, {seedResult.stats?.winners} ganadores</span>}
-          {seedResult?.error && <span style={{ fontSize: 12, color: T.red }}>Error: {seedResult.error}</span>}
+          <button onClick={confirmEvaluateAll} disabled={evalLoading || pending.length === 0} style={{ ...S.btn("blue"), opacity: evalLoading || pending.length === 0 ? 0.5 : 1 }} title="Compara el precio actual de cada predicción pendiente contra el precio de entrada para calcular si acertó o falló. No consume tokens.">{evalLoading ? "Evaluando..." : `Evaluar ${pending.length} Pendientes`}</button>
+          <button onClick={confirmPostMortem} disabled={pmLoading} style={{ ...S.btn("purple"), opacity: pmLoading ? 0.5 : 1 }} title="Genera un análisis mensual con Claude sobre qué funcionó, qué falló y qué reglas aplicar en el futuro. Usar una vez por mes al cierre.">{pmLoading ? "⏳ Generando post-mortem..." : "📊 Post-Mortem Mensual"}</button>
+          {pmHistory.some(pm => pm.month_label?.includes("Histórico")) ? (
+            <span style={{ fontSize: 11, color: T.green, display: "flex", alignItems: "center", gap: 6 }}>✔ Experiencia histórica cargada automáticamente</span>
+          ) : (
+            <button onClick={handleSeedHistorical} disabled={seedLoading} style={{ ...S.btn("green"), opacity: seedLoading ? 0.5 : 1, fontSize: 11 }} title="Se ejecuta automáticamente al iniciar el servidor. Solo usarlo si faltó cargar.">{seedLoading ? "⏳ Cargando..." : "📚 Cargar Experiencia Histórica"}</button>
+          )}
+          {evalResult && !evalResult.error && <span style={{ fontSize: 12, color: T.green }}>✔ {evalResult.totalEvaluated} predicciones evaluadas</span>}
         </div>
         {performance?.byAction?.length > 0 && (
           <div style={{ ...S.card, marginTop: 24 }}>
@@ -1041,119 +1079,75 @@ export default function App() {
           </div>
         )}
 
-        {/* Session-grouped prediction cards */}
-        {sessionList.length > 0 ? (
+        {/* Individual prediction cards — one per prediction, newest first */}
+        {predictions.length > 0 ? (
           <div style={{ marginTop: 28 }}>
-            <div style={S.label}>Predicciones por Sesión ({sessionList.length} sesiones, {predictions.length} predicciones)</div>
-            {sessionList.map((session) => {
-              const isExpanded = expandedPrediction === session.date;
-              const evaluatedCount = session.predictions.filter(p => p.evaluated).length;
-              const correctCount = session.predictions.filter(p => p.prediction_correct === 1).length;
-              const failedCount = session.predictions.filter(p => p.prediction_correct === 0).length;
-              const pendingCount = session.predictions.filter(p => !p.evaluated).length;
-              const avgChange = session.predictions.filter(p => p.actual_change_pct != null).reduce((s, p, _, arr) => s + p.actual_change_pct / arr.length, 0);
-
+            <div style={{ ...S.label, color: T.textMuted, marginBottom: 14 }}>{predictions.length} Predicciones</div>
+            {[...predictions].sort((a, b) => b.prediction_date?.localeCompare(a.prediction_date)).map((p, i) => {
+              const changeColor = p.actual_change_pct != null ? (p.actual_change_pct >= 0 ? T.green : T.red) : T.textDark;
+              const actionColor = signalColors[p.action] || T.yellow;
               return (
-                <div key={session.date} style={{ ...S.card, marginTop: 12, padding: 0, overflow: "hidden", border: `1px solid ${isExpanded ? T.green + "30" : T.border}`, transition: "all 0.3s ease" }}>
-                  {/* Session Header — clickable to expand */}
-                  <div
-                    onClick={() => setExpandedPrediction(isExpanded ? null : session.date)}
-                    style={{ display: "flex", alignItems: "center", gap: 16, padding: "18px 22px", cursor: "pointer", flexWrap: "wrap", background: isExpanded ? `${T.green}06` : "transparent", transition: "background 0.2s" }}
-                    onMouseEnter={e => { if (!isExpanded) e.currentTarget.style.background = "rgba(148,163,184,0.03)"; }}
-                    onMouseLeave={e => { if (!isExpanded) e.currentTarget.style.background = "transparent"; }}
-                  >
-                    {/* Date */}
-                    <div style={{ minWidth: 100 }}>
-                      <div style={{ ...S.mono, fontSize: 14, color: T.cyan, fontWeight: 700 }}>{session.date}</div>
-                      <div style={{ fontSize: 10, color: T.textDim, marginTop: 2 }}>{session.predictions.length} CEDEARs</div>
+                <div key={p.id || i} style={{ ...S.card, marginBottom: 12, borderLeft: `3px solid ${actionColor}`, padding: "18px 22px" }}>
+                  {/* Header row */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: p.reasoning ? 12 : 0 }}>
+                    {/* Action + Ticker */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 160 }}>
+                      <span style={S.badge(actionColor)}>{p.action === "COMPRAR" ? "▲" : p.action === "VENDER" ? "▼" : "◆"} {p.action}</span>
+                      <div>
+                        <div style={{ fontWeight: 800, ...S.mono, fontSize: 16 }}>{p.ticker}</div>
+                        <div style={{ fontSize: 10, color: T.textDim, marginTop: 2 }}>
+                          {p.prediction_date?.slice(0, 16).replace("T", " ")}
+                        </div>
+                      </div>
                     </div>
 
-                    {/* Tickers Preview */}
-                    <div style={{ flex: 1, display: "flex", gap: 6, flexWrap: "wrap", minWidth: 160 }}>
-                      {session.predictions.map((p, j) => (
-                        <span key={j} style={S.badge(signalColors[p.action] || T.yellow)}>
-                          {p.action === "COMPRAR" ? "▲" : p.action === "VENDER" ? "▼" : "◆"} {p.ticker}
-                        </span>
-                      ))}
+                    {/* Scores & confidence */}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                      {p.confidence && <span style={{ ...S.badge(T.cyan), fontSize: 11 }}>Conf. {p.confidence}%</span>}
+                      {p.score_composite && <span style={{ ...S.badge(T.textDim), fontSize: 11 }}>Score {p.score_composite}</span>}
+                      {p.horizon && <span style={{ ...S.badge(T.purple), fontSize: 11 }}>{p.horizon}</span>}
                     </div>
 
-                    {/* Results summary */}
-                    <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 200 }}>
-                      {evaluatedCount > 0 && (
+                    {/* Prices */}
+                    <div style={{ fontSize: 11, color: T.textDim, display: "flex", gap: 14, flexWrap: "wrap" }}>
+                      {p.price_usd_at_prediction && <span>Entrada: <strong style={{ ...S.mono, color: T.textMuted }}>${p.price_usd_at_prediction.toFixed(2)}</strong></span>}
+                      {p.target_pct && <span>Target: <strong style={{ color: T.green }}>+{p.target_pct}%</strong></span>}
+                      {p.stop_loss_pct && <span>Stop: <strong style={{ color: T.red }}>{p.stop_loss_pct}%</strong></span>}
+                    </div>
+
+                    {/* Result — right-aligned */}
+                    <div style={{ marginLeft: "auto", textAlign: "right", minWidth: 100 }}>
+                      {p.evaluated ? (
                         <>
-                          {correctCount > 0 && <span style={{ ...S.mono, fontSize: 12, color: T.green, fontWeight: 700 }}>{correctCount} ✓</span>}
-                          {failedCount > 0 && <span style={{ ...S.mono, fontSize: 12, color: T.red, fontWeight: 700 }}>{failedCount} ✗</span>}
-                          {session.predictions.some(p => p.actual_change_pct != null) && (
-                            <span style={{ ...S.mono, fontSize: 12, color: avgChange >= 0 ? T.green : T.red, fontWeight: 700 }}>
-                              {avgChange >= 0 ? "+" : ""}{avgChange.toFixed(1)}% prom.
-                            </span>
+                          <span style={S.badge(p.prediction_correct === 1 ? T.green : p.prediction_correct === 0 ? T.red : T.textDim)}>
+                            {p.prediction_correct === 1 ? "ACERTÓ ✓" : p.prediction_correct === 0 ? "FALLÓ ✗" : "N/A"}
+                          </span>
+                          {p.actual_change_pct != null && (
+                            <div style={{ ...S.mono, fontSize: 18, fontWeight: 800, color: changeColor, marginTop: 6 }}>
+                              {p.actual_change_pct >= 0 ? "+" : ""}{p.actual_change_pct}%
+                            </div>
                           )}
+                          <button onClick={() => confirmConclude(p.id, p.ticker)} disabled={concluding === p.id} style={{ ...S.btn("purple"), fontSize: 10, padding: "4px 10px", marginTop: 8, opacity: concluding === p.id ? 0.5 : 1 }} title="Claude analiza qué pasó realmente con esta predicción y qué aprender de ella. Consume tokens.">
+                            {concluding === p.id ? "..." : "🔍 Conclusión"}
+                          </button>
                         </>
+                      ) : (
+                        <span style={{ fontSize: 11, color: T.yellow }}>⏳ Pendiente</span>
                       )}
-                      {pendingCount > 0 && <span style={{ fontSize: 10, color: T.yellow }}>⏳ {pendingCount} pendientes</span>}
                     </div>
-
-                    {/* Conclusion button — triggers AI to evaluate ALL predictions in this session */}
-                    <button
-                      onClick={e => { e.stopPropagation(); handleConclude(session.predictions[0].id); }}
-                      disabled={concluding === session.predictions[0].id}
-                      style={{ ...S.btn("purple"), padding: "8px 18px", fontSize: 11, opacity: concluding === session.predictions[0].id ? 0.5 : 1 }}
-                    >
-                      {concluding === session.predictions[0].id ? <span style={{ animation: "pulse 1s infinite" }}>⟳ Analizando...</span> : "Ver Conclusión"}
-                    </button>
-
-                    {/* Expand indicator */}
-                    <span style={{ fontSize: 16, color: T.textDim, transition: "transform 0.3s", transform: isExpanded ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
                   </div>
 
-                  {/* Expanded detail — shows each CEDEAR prediction */}
-                  {isExpanded && (
-                    <div style={{ padding: "0 22px 18px", borderTop: `1px solid ${T.border}`, animation: "fadeUp 0.3s ease" }}>
-                      {session.predictions.map((p, i) => {
-                        const changeColor = p.actual_change_pct != null ? (p.actual_change_pct >= 0 ? T.green : T.red) : T.textDark;
-                        return (
-                          <div key={i} style={{ display: "flex", gap: 16, padding: "14px 0", borderBottom: i < session.predictions.length - 1 ? `1px solid ${T.border}` : "none", alignItems: "center", flexWrap: "wrap" }}>
-                            {/* Ticker & Action */}
-                            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 140 }}>
-                              <span style={S.badge(signalColors[p.action] || T.yellow)}>{p.action}</span>
-                              <div>
-                                <div style={{ fontWeight: 800, ...S.mono, fontSize: 14 }}>{p.ticker}</div>
-                                <div style={{ fontSize: 10, color: T.textDim }}>Conf: {p.confidence || "—"}% · Score: {p.score_composite || "—"}</div>
-                              </div>
-                            </div>
+                  {/* Reasoning */}
+                  {p.reasoning && (
+                    <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6, fontStyle: "italic", borderTop: `1px solid ${T.border}`, paddingTop: 10 }}>
+                      "{p.reasoning}"
+                    </div>
+                  )}
 
-                            {/* Prices */}
-                            <div style={{ minWidth: 120, fontSize: 11 }}>
-                              <div style={{ color: T.textDim }}>Entrada: <span style={S.mono}>${p.price_usd_at_prediction?.toFixed(2) || "—"}</span></div>
-                              {p.target_pct && <div style={{ color: T.green }}>Target: <span style={S.mono}>+{p.target_pct}%</span></div>}
-                              {p.stop_loss_pct && <div style={{ color: T.red }}>Stop: <span style={S.mono}>{p.stop_loss_pct}%</span></div>}
-                            </div>
-
-                            {/* Reasoning */}
-                            <div style={{ flex: 1, minWidth: 200 }}>
-                              <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5, fontStyle: "italic" }}>
-                                "{(p.reasoning || "").slice(0, 120)}{(p.reasoning || "").length > 120 ? "..." : ""}"
-                              </div>
-                            </div>
-
-                            {/* Result */}
-                            <div style={{ textAlign: "center", minWidth: 100 }}>
-                              {p.evaluated ? (
-                                <div>
-                                  <span style={S.badge(p.prediction_correct === 1 ? T.green : p.prediction_correct === 0 ? T.red : T.textDim)}>
-                                    {p.prediction_correct === 1 ? "ACERTÓ ✓" : p.prediction_correct === 0 ? "FALLÓ ✗" : "N/A"}
-                                  </span>
-                                  <div style={{ ...S.mono, fontSize: 14, fontWeight: 700, color: changeColor, marginTop: 6 }}>
-                                    {p.actual_change_pct != null ? `${p.actual_change_pct >= 0 ? "+" : ""}${p.actual_change_pct}%` : "—"}
-                                  </div>
-                                </div>
-                              ) : (
-                                <span style={{ fontSize: 11, color: T.yellow }}>⏳ Pendiente</span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
+                  {/* Evaluation notes */}
+                  {p.evaluation_notes && (
+                    <div style={{ fontSize: 11, color: T.textDim, marginTop: 8, paddingLeft: 12, borderLeft: `2px solid ${T.purple}40` }}>
+                      {p.evaluation_notes}
                     </div>
                   )}
                 </div>
@@ -1467,6 +1461,11 @@ export default function App() {
     const r = bt?.resultado || {};
     return (
       <div style={{ animation: "fadeUp 0.4s ease" }}>
+        <InfoBanner icon="📈" title="¿Qué es el Backtesting?">
+          Simula cómo hubiera rendido tu portfolio si hubieras seguido una estrategia <strong style={{ color: T.text }}>Core/Satellite</strong> durante el período seleccionado.<br />
+          El <strong style={{ color: T.text }}>Core</strong> invierte en SPY (índice S&P500) mes a mes. El <strong style={{ color: T.text }}>Satellite</strong> hace picks activos de CEDEARs basados en el perfil elegido. Al final compara ambos contra invertir 100% en SPY.<br />
+          <span style={{ color: T.textDim }}>No consume tokens de Claude — es una simulación algorítmica con datos históricos reales.</span>
+        </InfoBanner>
         <div style={{ ...S.label, fontSize: 13, color: T.textMuted, marginBottom: 16 }}>BACKTESTING — SIMULACIÓN HISTÓRICA INTERACTIVA</div>
 
         {/* Controls panel */}
@@ -1523,7 +1522,7 @@ export default function App() {
               ))}
             </div>
           </div>
-          <button onClick={runBacktestSim} disabled={backtestLoading} style={{ ...S.btn(), minWidth: 180, opacity: backtestLoading ? 0.5 : 1 }}>
+          <button onClick={() => setConfirmState({ icon: "📈", title: "Correr Simulación de Backtest", description: `Va a simular ${btMonths} meses de inversión con la estrategia Core/Satellite usando perfil ${btProfile}. El proceso puede tardar unos segundos porque busca precios históricos reales. No consume tokens de Claude.`, confirmLabel: "Correr Simulación", onConfirm: runBacktestSim })} disabled={backtestLoading} style={{ ...S.btn(), minWidth: 180, opacity: backtestLoading ? 0.5 : 1 }}>
             {backtestLoading ? "⟳ Simulando..." : "Correr Simulación"}
           </button>
         </div>
@@ -1934,6 +1933,7 @@ export default function App() {
         {view === "historial" && renderHistorial()}
       </main>
       {renderOpModal("buy")}{renderOpModal("sell")}{renderConclusionModal()}
+      <ConfirmModal state={confirmState} onClose={() => setConfirmState(null)} />
       <footer className="ca-footer" style={{ textAlign: "center", padding: "32px 24px", fontSize: 10, color: T.textDark, lineHeight: 2, borderTop: `1px solid ${T.border}`, marginTop: 40, background: "rgba(3,7,17,0.4)" }}>
         ⚠ DISCLAIMER: Herramienta informativa. No es asesoramiento financiero. Consultá un asesor matriculado (CNV).
       </footer>
