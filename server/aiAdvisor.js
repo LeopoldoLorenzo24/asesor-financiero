@@ -392,7 +392,7 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
         "cantidad_cedears": 10,
         "precio_aprox_ars": 5000,
         "monto_total_ars": 50000,
-        "horizonte": "Corto|Mediano|Largo plazo",
+        "horizonte": "Mediano plazo (1-3 meses)|Largo plazo (3-12 meses) — NUNCA pongas 'Corto plazo' si el inversor no va a poder monitorear en las próximas 2-4 semanas. Cada pick debe poder sobrevivir 30 días sin intervención.",
         "target_pct": 20,
         "stop_loss_pct": -10,
         "cuando_ver_rendimiento": "Descripción concreta de cuándo el inversor debería empezar a ver retornos positivos. Ejemplo: 'En las primeras 2-3 semanas si el catalizador X ocurre, resultados más sólidos a partir del mes 2 con el reporte de earnings'.",
@@ -500,7 +500,15 @@ IMPORTANTE: El inversor NO tiene plata nueva para depositar cada mes. Su capital
 Si querés que compre algo, primero tenés que recomendar vender algo para liberar plata.
 Tenés acceso a tu historial de predicciones y su resultado real. Usá esa info para mejorar.
 Buscá noticias recientes con web search ANTES de responder.
-Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
+Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.
+
+REGLA CRÍTICA DEL CICLO MENSUAL:
+El inversor ejecuta las operaciones HOY y no va a tocar la cartera hasta el próximo análisis en ~30 días.
+NO recomendés jugadas de "corto plazo" que dependan de un seguimiento semanal o quincenal.
+Si un pick necesita revisión en 2 semanas, NO lo recomendés — el inversor no va a estar mirando.
+Cualquier pick que recomendés debe poder aguantar 30 días sin intervención, con el stop loss como única protección.
+El campo proximo_review siempre debe ser "próximo mes" salvo que haya un evento extraordinario absolutamente obvio.
+Evitá recomendaciones de "timing perfecto" o "tácticas" que exijan reacción inmediata.`,
       messages: [{ role: "user", content: prompt }],
     });
 
