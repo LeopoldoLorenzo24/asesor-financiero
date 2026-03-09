@@ -33,7 +33,12 @@ export async function buildMonthlyCycleContext({ capital, ccl, ranking }) {
   let portfolioValueARS = 0;
   const positionsWithData = portfolio.map((pos) => {
     const r = ranking?.find((x) => x.cedear?.ticker === pos.ticker);
-    const currentPriceARS = r?.priceARS || pos.weighted_avg_price;
+    const currentPriceARS =
+      r?.priceARS ||
+      (r?.quote?.price && ccl?.venta && r?.cedear?.ratio
+        ? Math.round((r.quote.price * ccl.venta) / r.cedear.ratio)
+        : null) ||
+      pos.weighted_avg_price;
     const currentValue = currentPriceARS * pos.total_shares;
     const investedValue = pos.weighted_avg_price * pos.total_shares;
     const pnl = currentValue - investedValue;
