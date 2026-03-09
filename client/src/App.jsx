@@ -451,6 +451,7 @@ export default function App() {
                     {step.monto_estimado_ars > 0 && (
                       <span style={{ fontSize: 13, fontWeight: 700, color: T.textMuted, ...S.mono }}>
                         ≈ <span style={{ color }}>${step.monto_estimado_ars.toLocaleString()}</span>
+                        <span style={{ fontSize: 10, color: T.textDim, fontWeight: 400, marginLeft: 4 }}>(est.)</span>
                       </span>
                     )}
                     {step.nota && <span style={{ fontSize: 11, color: T.textDim, marginLeft: "auto", textAlign: "right", maxWidth: 260, lineHeight: 1.4 }}>{step.nota}</span>}

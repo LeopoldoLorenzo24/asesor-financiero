@@ -450,6 +450,10 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
   - Los picks satellite van ordenados por conviction (mayor primero).
   - Si sin_cambios_necesarios es true, plan_ejecucion debe ser [] (array vacío).
   - Este es el plan que el inversor va a EJECUTAR EXACTAMENTE. Sé preciso con cantidades y montos.
+  CÁLCULO DE monto_estimado_ars: OBLIGATORIO usar la fórmula correcta para cada tipo:
+  - Para VENDER: monto_estimado_ars = cantidad_cedears × "Precio/CEDEAR" del ticker en el portfolio context. Ejemplo: si GOOGL tiene Precio/CEDEAR $7.600 y vendés 4 CEDEARs → monto_estimado_ars = 30.400
+  - Para COMPRAR: monto_estimado_ars = cantidad_cedears × precio_aprox_ars del ticker en el ranking. Este valor es orientativo.
+  - NUNCA uses el precio USD × CCL directamente sin dividir por el ratio del CEDEAR.
   
   REGLA CRÍTICA para resumen_operaciones:
   - capital_disponible_actual = el efectivo que declaró el inversor (el que ingresó)
