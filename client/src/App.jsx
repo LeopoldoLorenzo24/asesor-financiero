@@ -718,7 +718,7 @@ export default function App() {
                     </div>
                   </div>
                   <ScoreBar value={s.techScore} label="TEC" color={T.blue} h={4} />
-                  <ScoreBar value={s.fundScore} label="FUN" color={T.purple} h={4} />
+                  <ScoreBar value={s.fundScore} label={item.fundamentals?._source === "quote_fallback" ? "FUN~" : "FUN"} color={item.fundamentals?._source === "quote_fallback" ? T.yellow : T.purple} h={4} />
                 </div>
               );
             })}

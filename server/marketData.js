@@ -112,6 +112,29 @@ export async function fetchFinancials(ticker) {
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
+  // Helper: build a fundamentals object from a plain quote (fallback when quoteSummary fails)
+  const fromQuote = (q) => ({
+    ticker,
+    pe: q?.trailingPE || q?.forwardPE || null,
+    forwardPE: q?.forwardPE || null,
+    pegRatio: null,
+    priceToBook: null,
+    priceToSales: null,
+    epsGrowth: null,
+    revenueGrowth: null,
+    profitMargin: null,
+    operatingMargin: null,
+    returnOnEquity: null,
+    debtToEquity: null,
+    currentRatio: null,
+    freeCashflow: null,
+    targetMeanPrice: null,
+    recommendationMean: null,
+    recommendationKey: null,
+    numberOfAnalystOpinions: null,
+    _source: "quote_fallback",
+  });
+
   try {
     const [summary, stats] = await Promise.all([
       yahooFinance.quoteSummary(ticker, {
@@ -128,15 +151,25 @@ export async function fetchFinancials(ticker) {
 
     // Calculate EPS growth from earnings trend
     const currentEps = earningsTrend.find((t) => t.period === "0y");
-    const nextEps = earningsTrend.find((t) => t.period === "+1y");
     let epsGrowth = null;
     if (currentEps?.growth) {
       epsGrowth = Math.round(currentEps.growth * 10000) / 100;
     }
 
+    const pe = keyStats.trailingPE || keyStats.forwardPE || null;
+
+    // If quoteSummary returned nothing useful, fall back to fetching the basic quote
+    if (!pe && !financial.profitMargins && !financial.returnOnEquity && !epsGrowth) {
+      console.log(`⚠ quoteSummary empty for ${ticker} — falling back to quote data`);
+      const q = await fetchQuote(ticker).catch(() => null);
+      const result = fromQuote(q);
+      cache.set(cacheKey, result, 3600);
+      return result;
+    }
+
     const result = {
       ticker,
-      pe: keyStats.trailingPE || keyStats.forwardPE || null,
+      pe,
       forwardPE: keyStats.forwardPE || null,
       pegRatio: keyStats.pegRatio || null,
       priceToBook: keyStats.priceToBook || null,
@@ -159,7 +192,15 @@ export async function fetchFinancials(ticker) {
     return result;
   } catch (err) {
     console.error(`Error fetching financials for ${ticker}:`, err.message);
-    return { ticker };
+    // Last resort: try to get at least PE/yield from the basic quote
+    try {
+      const q = await fetchQuote(ticker).catch(() => null);
+      const result = fromQuote(q);
+      cache.set(cacheKey, result, 3600);
+      return result;
+    } catch {
+      return { ticker };
+    }
   }
 }
 
