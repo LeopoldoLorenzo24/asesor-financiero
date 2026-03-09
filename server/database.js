@@ -242,8 +242,27 @@ export async function getTransactions(ticker = null, limit = 50) {
 }
 
 // ============================================================
-// PORTFOLIO SYNC (reconcile DB against broker snapshot)
+// PORTFOLIO IMPORT — replace entire portfolio with provided snapshot
 // ============================================================
+
+export async function resetPortfolio(positions) {
+  // positions: [{ticker, shares, priceArs}]
+  // Wipes all portfolio entries and inserts the provided snapshot as BUY transactions.
+  const ops = [{ sql: "DELETE FROM portfolio", args: [] }];
+  for (const p of positions) {
+    const t = p.ticker.toUpperCase();
+    ops.push({
+      sql: `INSERT INTO portfolio (ticker, shares, avg_price_ars, notes) VALUES (?, ?, ?, ?)`,
+      args: [t, p.shares, p.priceArs, "importación manual"],
+    });
+    ops.push({
+      sql: `INSERT INTO transactions (ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, notes) VALUES (?, 'BUY', ?, ?, NULL, NULL, ?, ?)`,
+      args: [t, p.shares, p.priceArs, p.shares * p.priceArs, "importación manual"],
+    });
+  }
+  await db.batch(ops, "write");
+  return positions.length;
+}
 
 export async function syncPortfolio(positions) {
   // positions: [{ticker, shares, priceArs, priceUsd?}]

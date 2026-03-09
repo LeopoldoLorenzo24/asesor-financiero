@@ -81,6 +81,8 @@ export const api = {
     request("/portfolio/sell", { method: "POST", body: JSON.stringify({ ticker, shares, priceArs, notes }) }),
   syncPortfolio: (positions) =>
     request("/portfolio/sync", { method: "POST", body: JSON.stringify({ positions }) }),
+  resetPortfolio: (positions) =>
+    request("/portfolio/reset", { method: "POST", body: JSON.stringify({ positions }) }),
 
   getTransactions: (ticker = null, limit = 50) =>
     request(`/transactions?${new URLSearchParams({ ...(ticker && { ticker }), limit })}`),

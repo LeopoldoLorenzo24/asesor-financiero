@@ -34,7 +34,7 @@ import { calculateBenchmarks } from "./benchmarks.js";
 import { runBacktest } from "./backtest.js";
 import {
   initDb,
-  getPortfolio, getPortfolioSummary, addPosition, sellPosition, syncPortfolio,
+  getPortfolio, getPortfolioSummary, addPosition, sellPosition, syncPortfolio, resetPortfolio,
   getTransactions, getPredictions, getPredictionById, evaluatePredictionsForTicker,
   calculateBotPerformance, getCapitalHistory, logCapital,
   getAnalysisSessions, savePostMortem, getPostMortems, getLatestLessons,
@@ -758,6 +758,25 @@ app.post("/api/portfolio/sync", async (req, res) => {
     }
     const created = await syncPortfolio(positions);
     res.json({ success: true, created, count: created.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/portfolio/reset", async (req, res) => {
+  try {
+    const { positions } = req.body;
+    if (!Array.isArray(positions) || positions.length === 0) {
+      return res.status(400).json({ error: "positions debe ser un array no vacío" });
+    }
+    for (const p of positions) {
+      if (!p.ticker || !p.shares || p.priceArs == null) {
+        return res.status(400).json({ error: "Cada posición necesita ticker, shares y priceArs" });
+      }
+      if (parseInt(p.shares) <= 0) {
+        return res.status(400).json({ error: `shares de ${p.ticker} debe ser mayor a 0` });
+      }
+    }
+    const count = await resetPortfolio(positions);
+    res.json({ success: true, count });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

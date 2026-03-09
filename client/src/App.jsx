@@ -269,7 +269,7 @@ export default function App() {
   const [showBuyModal, setShowBuyModal] = useState(false);
   const [showSellModal, setShowSellModal] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
-  const [syncRows, setSyncRows] = useState([]);
+  const [syncText, setSyncText] = useState("");
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);
   const [opForm, setOpForm] = useState({ ticker: "", shares: 10, priceArs: 0, notes: "" });
@@ -348,17 +348,19 @@ export default function App() {
   const handleBuy = async () => { try { setOpMsg(null); await api.buyPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Compra registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowBuyModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
   const handleSell = async () => { try { setOpMsg(null); await api.sellPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Venta registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowSellModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
 
+  const parseSyncText = (text) =>
+    text.trim().split("\n")
+      .map(l => l.trim()).filter(l => l && !l.startsWith("#"))
+      .map(l => { const p = l.split(/[\s,;\t]+/); const ticker = p[0]?.toUpperCase(); const shares = parseInt(p[1]); const priceArs = parseFloat(p[2]) || 0; return ticker && shares > 0 ? { ticker, shares, priceArs } : null; })
+      .filter(Boolean);
+
   const openSyncModal = () => {
-    const rows = portfolioDB.summary.map(p => {
+    const prefill = portfolioDB.summary.map(p => {
       const r = ranking.find(x => x.cedear?.ticker === p.ticker);
-      return {
-        ticker: p.ticker,
-        oldShares: p.total_shares,
-        newShares: p.total_shares,
-        priceArs: r?.priceARS ? Math.round(r.priceARS) : Math.round(p.weighted_avg_price),
-      };
-    });
-    setSyncRows(rows);
+      const price = r?.priceARS ? Math.round(r.priceARS) : Math.round(p.weighted_avg_price);
+      return `${p.ticker} ${p.total_shares} ${price}`;
+    }).join("\n");
+    setSyncText(prefill);
     setSyncMsg(null);
     setShowSyncModal(true);
   };
@@ -367,20 +369,10 @@ export default function App() {
     setSyncLoading(true);
     setSyncMsg(null);
     try {
-      // Rows with newShares=0 are included so the server can close the position
-      // Filter out rows where nothing changed AND shares are not 0
-      const positions = syncRows
-        .filter(r => parseInt(r.newShares) !== r.oldShares || parseInt(r.newShares) === 0)
-        .map(r => ({ ticker: r.ticker, shares: parseInt(r.newShares), priceArs: parseFloat(r.priceArs) }));
-      if (positions.length === 0) { setSyncMsg({ type: "error", text: "No hay cambios para sincronizar." }); setSyncLoading(false); return; }
-      const res = await api.syncPortfolio(positions);
-      const buys = res.created.filter(c => c.type === "BUY");
-      const sells = res.created.filter(c => c.type === "SELL");
-      const summary = [
-        buys.length ? `${buys.length} compra${buys.length > 1 ? "s" : ""}: ${buys.map(c => `+${c.shares} ${c.ticker}`).join(", ")}` : null,
-        sells.length ? `${sells.length} venta${sells.length > 1 ? "s" : ""}: ${sells.map(c => `-${c.shares} ${c.ticker}`).join(", ")}` : null,
-      ].filter(Boolean).join(" | ");
-      setSyncMsg({ type: "success", text: `Sincronizado — ${summary || "sin cambios"}` });
+      const positions = parseSyncText(syncText);
+      if (positions.length === 0) { setSyncMsg({ type: "error", text: "No se pudo parsear ninguna posición." }); setSyncLoading(false); return; }
+      const res = await api.resetPortfolio(positions);
+      setSyncMsg({ type: "success", text: `Cartera importada: ${res.count} posiciones. Recargá la página para ver el historial completo.` });
       loadPortfolioDB();
       loadTransactions();
     } catch (e) { setSyncMsg({ type: "error", text: e.message }); }
@@ -1069,7 +1061,7 @@ export default function App() {
         <div style={{ display: "flex", gap: 12, marginBottom: 24, flexWrap: "wrap" }}>
           <button onClick={() => { setOpForm({ ticker: "", shares: 10, priceArs: 0, notes: "" }); setShowBuyModal(true); }} style={S.btn()}>+ Registrar Compra</button>
           <button onClick={() => { setOpForm({ ticker: "", shares: 10, priceArs: 0, notes: "" }); setShowSellModal(true); }} style={S.btn("danger")}>- Registrar Venta</button>
-          <button onClick={openSyncModal} style={S.btn("blue")}>⟳ Sincronizar Cartera</button>
+          <button onClick={openSyncModal} style={S.btn("blue")}>↓ Importar Cartera</button>
         </div>
         <div className="ca-ops-summary" style={S.grid()}>
           <div style={{ ...S.card, borderLeft: `3px solid ${T.cyan}` }}><div style={S.label}>Capital</div><input type="number" value={capital} onChange={e => setCapital(parseInt(e.target.value) || 0)} style={{ ...S.input, ...S.value, fontSize: 22, padding: "8px 12px" }} /></div>
@@ -1988,67 +1980,41 @@ export default function App() {
   );
 
   const renderSyncModal = () => {
-    const diffs = syncRows.map(r => ({ ...r, diff: parseInt(r.newShares) - r.oldShares }));
-    const hasDiffs = diffs.some(r => r.diff !== 0);
+    const parsed = parseSyncText(syncText);
+    const isValid = parsed.length > 0;
     return (
-      <Modal show={showSyncModal} onClose={() => setShowSyncModal(false)} title="⟳ Sincronizar Cartera con Broker" maxWidth={700}>
-        <div style={{ fontSize: 12, color: T.textDim, marginBottom: 16, lineHeight: 1.6 }}>
-          Ingresá las cantidades actuales de tu broker. El sistema va a generar automáticamente las operaciones de compra/venta para cuadrar la base de datos.
+      <Modal show={showSyncModal} onClose={() => setShowSyncModal(false)} title="Importar Cartera desde Broker" maxWidth={580}>
+        <div style={{ fontSize: 12, color: T.textDim, marginBottom: 14, lineHeight: 1.7 }}>
+          Pegá tus posiciones actuales, una por línea:<br />
+          <span style={{ ...S.mono, color: T.textMuted }}>TICKER&nbsp;&nbsp;cantidad&nbsp;&nbsp;precioARS</span>
         </div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead><tr>
-              <th style={{ ...S.th, textAlign: "left" }}>Ticker</th>
-              <th style={{ ...S.th, textAlign: "center" }}>En DB</th>
-              <th style={{ ...S.th, textAlign: "center" }}>Broker (nuevo)</th>
-              <th style={{ ...S.th, textAlign: "center" }}>Cambio</th>
-              <th style={{ ...S.th, textAlign: "center" }}>Precio ARS</th>
-              <th style={{ ...S.th, textAlign: "center" }}></th>
-            </tr></thead>
-            <tbody>{syncRows.map((row, i) => {
-              const diff = parseInt(row.newShares) - row.oldShares;
-              const diffColor = diff > 0 ? T.green : diff < 0 ? T.red : T.textDark;
-              const diffLabel = diff > 0 ? `▲ +${diff}` : diff < 0 ? `▼ ${diff}` : "=";
-              return (
-                <tr key={row.ticker}>
-                  <td style={{ ...S.td, fontWeight: 800, ...S.mono }}>{row.ticker}</td>
-                  <td style={{ ...S.td, textAlign: "center", color: T.textDim }}>{row.oldShares}</td>
-                  <td style={{ ...S.td, textAlign: "center" }}>
-                    <input type="number" min="0" value={row.newShares}
-                      onChange={e => { const v = e.target.value; setSyncRows(prev => prev.map((r, j) => j === i ? { ...r, newShares: v } : r)); }}
-                      style={{ ...S.input, width: 70, textAlign: "center", padding: "4px 8px", fontSize: 13 }} />
-                  </td>
-                  <td style={{ ...S.td, textAlign: "center", ...S.mono, fontWeight: 700, color: diffColor }}>{diffLabel}</td>
-                  <td style={{ ...S.td, textAlign: "center" }}>
-                    <input type="number" min="0" value={row.priceArs}
-                      onChange={e => { const v = e.target.value; setSyncRows(prev => prev.map((r, j) => j === i ? { ...r, priceArs: v } : r)); }}
-                      style={{ ...S.input, width: 100, textAlign: "right", padding: "4px 8px", fontSize: 12 }} />
-                  </td>
-                  <td style={{ ...S.td, textAlign: "center" }}>
-                    <button onClick={() => setSyncRows(prev => prev.filter((_, j) => j !== i))} style={{ ...S.btn("ghost"), padding: "2px 8px", fontSize: 11, color: T.red }}>✕</button>
-                  </td>
-                </tr>
-              );
-            })}</tbody>
-          </table>
-        </div>
-        <button onClick={() => setSyncRows(prev => [...prev, { ticker: "", oldShares: 0, newShares: 0, priceArs: 0 }])}
-          style={{ ...S.btn("ghost"), marginTop: 12, fontSize: 12 }}>+ Agregar ticker</button>
-        {hasDiffs && (
-          <div style={{ marginTop: 16, padding: 14, background: "rgba(3,7,17,0.4)", borderRadius: 12, border: `1px solid ${T.border}`, fontSize: 12, color: T.textMuted }}>
-            <strong style={{ color: T.text }}>Operaciones a generar:</strong>{" "}
-            {diffs.filter(r => r.diff !== 0).map(r => (
-              <span key={r.ticker} style={{ marginRight: 10, color: r.diff > 0 ? T.green : T.red }}>
-                {r.diff > 0 ? `COMPRAR +${r.diff}` : `VENDER ${r.diff}`} {r.ticker}
-              </span>
-            ))}
+        <textarea
+          value={syncText}
+          onChange={e => setSyncText(e.target.value)}
+          placeholder={"ABBV 5 33480\nAMZN 60 2154\nCOST 5 30900\nGOOGL 8 7625\nMSFT 10 20150\nNVDA 4 11010\nSPY 11 49480\nUNH 15 12720\nV 7 25600\nXOM 11 22480"}
+          rows={11}
+          style={{ ...S.input, width: "100%", fontSize: 13, fontFamily: "monospace", resize: "vertical", lineHeight: 1.8 }}
+        />
+        {isValid && (
+          <div style={{ marginTop: 12, padding: 14, background: "rgba(3,7,17,0.4)", borderRadius: 12, border: `1px solid ${T.border}` }}>
+            <div style={{ fontSize: 11, color: T.textDim, marginBottom: 10, fontWeight: 700 }}>PREVIEW — {parsed.length} posiciones:</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {parsed.map(p => (
+                <span key={p.ticker} style={{ ...S.mono, fontSize: 12, padding: "3px 10px", borderRadius: 6, background: `${T.green}15`, border: `1px solid ${T.green}30`, color: T.green }}>
+                  {p.ticker} ×{p.shares}{p.priceArs > 0 ? ` @ $${p.priceArs.toLocaleString()}` : ""}
+                </span>
+              ))}
+            </div>
           </div>
         )}
-        {syncMsg && <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: syncMsg.type === "success" ? `${T.green}15` : `${T.red}15`, border: `1px solid ${syncMsg.type === "success" ? T.green : T.red}40`, fontSize: 12, color: syncMsg.type === "success" ? T.green : T.red }}>{syncMsg.text}</div>}
+        <div style={{ marginTop: 14, padding: 12, background: `${T.red}10`, borderRadius: 10, border: `1px solid ${T.red}30`, fontSize: 12, color: T.red }}>
+          ⚠ Esto va a <strong>reemplazar toda la cartera actual</strong> en la base de datos con las posiciones que ingresés.
+        </div>
+        {syncMsg && <div style={{ marginTop: 10, padding: 12, borderRadius: 10, background: syncMsg.type === "success" ? `${T.green}15` : `${T.red}15`, border: `1px solid ${syncMsg.type === "success" ? T.green : T.red}40`, fontSize: 12, color: syncMsg.type === "success" ? T.green : T.red }}>{syncMsg.text}</div>}
         <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 20 }}>
           <button onClick={() => setShowSyncModal(false)} style={S.btn("ghost")}>Cancelar</button>
-          <button onClick={handleSync} disabled={syncLoading || !hasDiffs} style={{ ...S.btn("blue"), opacity: syncLoading || !hasDiffs ? 0.5 : 1 }}>
-            {syncLoading ? "Sincronizando..." : "Confirmar Sincronización"}
+          <button onClick={handleSync} disabled={syncLoading || !isValid} style={{ ...S.btn("blue"), opacity: syncLoading || !isValid ? 0.5 : 1 }}>
+            {syncLoading ? "Importando..." : `Importar ${parsed.length} posiciones`}
           </button>
         </div>
       </Modal>
