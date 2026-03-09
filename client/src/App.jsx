@@ -285,6 +285,8 @@ export default function App() {
   const [confirmState, setConfirmState] = useState(null);
   const [filterSector, setFilterSector] = useState("Todos");
   const [sortBy, setSortBy] = useState("composite");
+  const [rankingUpdatedAt, setRankingUpdatedAt] = useState(null);
+  const [rankingCountdown, setRankingCountdown] = useState(0);
   const [showCapitalInput, setShowCapitalInput] = useState(false);
   const [capitalToInvest, setCapitalToInvest] = useState("");
   // New: benchmarks & backtest
@@ -301,7 +303,7 @@ export default function App() {
 
   const changeProfile = (p) => { setProfile(p); localStorage.setItem("cedear_profile", p); };
 
-  const loadRanking = useCallback(async () => { setLoading(true); setError(null); try { const d = await api.getRanking({ profile }); setRanking(d.ranking || []); setCcl(d.ccl); } catch (e) { setError(`Error: ${e.message}`); } finally { setLoading(false); } }, [profile]);
+  const loadRanking = useCallback(async () => { setLoading(true); setError(null); try { const d = await api.getRanking({ profile }); setRanking(d.ranking || []); setCcl(d.ccl); setRankingUpdatedAt(Date.now()); setRankingCountdown(300); } catch (e) { setError(`Error: ${e.message}`); } finally { setLoading(false); } }, [profile]);
   const loadPortfolioDB = useCallback(async () => { try { setPortfolioDB(await api.getPortfolioDB()); } catch (e) { console.error(e); } }, []);
   const loadCapital = useCallback(async () => { try { const hist = await api.getCapitalHistory(1); if (hist.length > 0) setCapital(hist[0].capital_available_ars); } catch (e) { console.error(e); } }, []);
   const loadTransactions = useCallback(async () => { try { setTransactions(await api.getTransactions()); } catch (e) { console.error(e); } }, []);
@@ -317,6 +319,20 @@ export default function App() {
   const handleSeedHistorical = useCallback(async () => { setSeedLoading(true); setSeedResult(null); try { const data = await api.seedHistoricalLessons(); setSeedResult(data); const hist = await api.getPostMortems(); setPmHistory(hist); } catch (err) { setSeedResult({ error: err.message }); } finally { setSeedLoading(false); } }, []);
 
   useEffect(() => { if (loggedIn) { loadRanking(); loadPortfolioDB(); loadCapital(); } }, [profile, loggedIn]);
+  // Auto-refresh ranking every 5 minutes when on ranking/dashboard view
+  useEffect(() => {
+    if (!loggedIn) return;
+    const interval = setInterval(() => {
+      if (view === "ranking" || view === "dashboard") loadRanking();
+    }, 300000);
+    return () => clearInterval(interval);
+  }, [loggedIn, view, loadRanking]);
+  // Countdown ticker
+  useEffect(() => {
+    if (rankingCountdown <= 0) return;
+    const t = setInterval(() => setRankingCountdown(c => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(t);
+  }, [rankingCountdown]);
   useEffect(() => { if (!loggedIn) return; if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); } if (view === "predicciones") { loadPredictions(); loadPerformance(); loadPmHistory(); } if (view === "historial") loadSessions(); if (view === "benchmarks") loadBenchmarks(); }, [view, loggedIn]);
   useEffect(() => { if (loggedIn && view === "dashboard" && portfolioDB.summary.length > 0 && !benchmarks) { loadBenchmarks(); loadCapitalHistory(); } }, [view, portfolioDB, loggedIn]);
 
@@ -708,7 +724,16 @@ export default function App() {
             color: sortBy === s.id ? T.blue : T.textDim,
           }}>{s.l}{sortBy === s.id ? " ▼" : ""}</button>
         ))}
-        <div style={{ marginLeft: "auto", fontSize: 12, color: T.textDim, fontFamily: T.fontMono }}>{filtered.length} <span style={{ fontFamily: T.font }}>CEDEARs</span></div>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+          {rankingUpdatedAt && (
+            <span style={{ fontSize: 10, color: T.textDark, fontFamily: T.fontMono }}>
+              Act. {new Date(rankingUpdatedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}
+              {rankingCountdown > 0 && <span style={{ color: rankingCountdown < 60 ? T.yellow : T.textDark }}> • {Math.floor(rankingCountdown / 60)}:{String(rankingCountdown % 60).padStart(2, "0")}</span>}
+            </span>
+          )}
+          <button onClick={() => loadRanking()} disabled={loading} style={{ padding: "5px 12px", borderRadius: 8, cursor: loading ? "not-allowed" : "pointer", fontFamily: T.font, fontSize: 10, fontWeight: 600, border: `1px solid ${T.border}`, background: "transparent", color: loading ? T.textDark : T.textDim, opacity: loading ? 0.5 : 1, transition: "all 0.2s" }}>↺ Actualizar</button>
+          <span style={{ fontSize: 12, color: T.textDim, fontFamily: T.fontMono }}>{filtered.length} <span style={{ fontFamily: T.font }}>CEDEARs</span></span>
+        </div>
       </div>
       {loading ? <div style={S.card}>{[1,2,3].map(i => <div key={i} style={{ marginBottom: 12 }}><Skeleton height={48} /></div>)}</div> : (
         <div className="ca-table-wrap" style={{ ...S.card, padding: 0, overflow: "auto", borderRadius: 16 }}>
