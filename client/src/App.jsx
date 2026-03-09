@@ -2054,6 +2054,8 @@ export default function App() {
       </Modal>
     );
   };
+
+  const renderConclusionModal = () => (
     <Modal
       show={showConclusionModal}
       onClose={() => setShowConclusionModal(false)}
