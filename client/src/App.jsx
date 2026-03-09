@@ -1342,7 +1342,7 @@ export default function App() {
             <div key={i} style={{ ...S.card, marginBottom: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
                 <div>
-                  <span style={{ ...S.mono, fontSize: 14, color: T.cyan }}>{ses.session_date?.slice(0, 16).replace("T", " ")}</span>
+                  <span style={{ ...S.mono, fontSize: 14, color: T.cyan }}>{ses.session_date ? new Date(ses.session_date).toLocaleString("es-AR", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : ""}</span>
                   <span style={{ fontSize: 11, color: T.textDim, marginLeft: 14 }}>CCL: ${ses.ccl_rate}</span>
                 </div>
                 <div style={{ fontSize: 12, color: T.textDim }}>Capital: <strong style={{ color: T.green }}>${ses.capital_ars?.toLocaleString()}</strong></div>
