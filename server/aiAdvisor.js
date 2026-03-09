@@ -412,6 +412,45 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
     "a_core_ars": 28000,
     "a_satellite_ars": 7170
   },
+
+  "plan_ejecucion": [
+    {
+      "paso": 1,
+      "tipo": "VENDER",
+      "ticker": "GOOGL",
+      "cantidad_cedears": 4,
+      "monto_estimado_ars": 120000,
+      "nota": "Liberar capital — ejecutar primero"
+    },
+    {
+      "paso": 2,
+      "tipo": "COMPRAR",
+      "subtipo": "CORE",
+      "ticker": "${coreETF}",
+      "cantidad_cedears": 3,
+      "monto_estimado_ars": 165000,
+      "nota": "Core — ejecutar después de las ventas"
+    },
+    {
+      "paso": 3,
+      "tipo": "COMPRAR",
+      "subtipo": "SATELLITE",
+      "ticker": "XOM",
+      "cantidad_cedears": 2,
+      "monto_estimado_ars": 90000,
+      "nota": "Satellite pick #1 — solo si el presupuesto alcanza"
+    }
+  ],
+  REGLAS CRÍTICAS para plan_ejecucion:
+  - Es un plan ORDENADO y SECUENCIAL. PRIMERO todas las ventas/reducciones, LUEGO las compras.
+  - Solo incluí acciones que requieren HACER algo: VENDER, REDUCIR, COMPRAR. NO incluyas MANTENERs.
+  - El tipo puede ser: "VENDER" (salir o reducir posición) o "COMPRAR" (añadir posición).
+  - subtipo: "CORE" para ${coreETF}, "SATELLITE" para picks activos. Solo en tipo COMPRAR.
+  - Los montos de TODAS las compras NO pueden superar capital_disponible_post_ventas.
+  - Los picks satellite van ordenados por conviction (mayor primero).
+  - Si sin_cambios_necesarios es true, plan_ejecucion debe ser [] (array vacío).
+  - Este es el plan que el inversor va a EJECUTAR EXACTAMENTE. Sé preciso con cantidades y montos.
+  
   REGLA CRÍTICA para resumen_operaciones:
   - capital_disponible_actual = el efectivo que declaró el inversor (el que ingresó)
   - total_a_vender_ars = suma de todas las ventas/reducciones que recomendás

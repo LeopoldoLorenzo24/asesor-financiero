@@ -422,6 +422,52 @@ export default function App() {
           </div>
         )}
         {a.autoevaluacion && <div style={{ background: `${T.purple}08`, borderRadius: 14, padding: 18, marginBottom: 14, border: `1px solid ${T.purple}20`, borderLeft: `3px solid ${T.purple}` }}><div style={{ ...S.label, color: T.purple }}>Autoevaluación del Bot</div><p style={{ margin: 0, color: T.textMuted, fontSize: 12 }}>{a.autoevaluacion}</p></div>}
+
+        {/* ─── PLAN DE EJECUCIÓN ─── */}
+        {a.plan_ejecucion?.length > 0 && (
+          <div style={{ background: `linear-gradient(135deg, rgba(3,7,17,0.7), rgba(15,23,42,0.7))`, borderRadius: 16, padding: 24, marginBottom: 18, border: `2px solid ${T.green}30`, boxShadow: `0 0 30px ${T.green}08` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+              <span style={{ fontSize: 22 }}>📋</span>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 15, color: T.text, letterSpacing: "-0.3px" }}>PLAN DE EJECUCIÓN</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>Ejecutar exactamente en este orden — vender primero, luego comprar</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {a.plan_ejecucion.map((step, i) => {
+                const isVender = step.tipo === "VENDER";
+                const isCore = step.subtipo === "CORE";
+                const color = isVender ? T.red : isCore ? T.blue : T.green;
+                const icon = isVender ? "↓" : "↑";
+                const label = isVender ? "VENDER" : isCore ? `COMPRAR CORE` : "COMPRAR SATELLITE";
+                return (
+                  <div key={i} style={{ display: "flex", gap: 12, alignItems: "center", background: `${color}08`, borderRadius: 12, padding: "14px 16px", border: `1px solid ${color}20`, borderLeft: `3px solid ${color}` }}>
+                    <div style={{ width: 28, height: 28, borderRadius: "50%", background: `${color}15`, border: `2px solid ${color}30`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color, flexShrink: 0, fontFamily: T.fontMono }}>
+                      {step.paso}
+                    </div>
+                    <span style={{ background: `${color}18`, color, border: `1px solid ${color}35`, borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700, letterSpacing: "0.5px", flexShrink: 0 }}>{icon} {label}</span>
+                    <strong style={{ ...S.mono, fontSize: 15, color: T.text, flexShrink: 0 }}>{step.ticker}</strong>
+                    <span style={{ fontSize: 13, color, fontWeight: 700, ...S.mono, flexShrink: 0 }}>{step.cantidad_cedears} CEDEARs</span>
+                    {step.monto_estimado_ars > 0 && (
+                      <span style={{ fontSize: 13, fontWeight: 700, color: T.textMuted, ...S.mono }}>
+                        ≈ <span style={{ color }}>${step.monto_estimado_ars.toLocaleString()}</span>
+                      </span>
+                    )}
+                    {step.nota && <span style={{ fontSize: 11, color: T.textDim, marginLeft: "auto", textAlign: "right", maxWidth: 260, lineHeight: 1.4 }}>{step.nota}</span>}
+                  </div>
+                );
+              })}
+            </div>
+            {a.resumen_operaciones?.capital_disponible_post_ventas > 0 && (
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.border}`, display: "flex", gap: 6, alignItems: "center", fontSize: 11, color: T.textDim }}>
+                <span style={{ color: T.green, fontWeight: 700 }}>Total a desplegar:</span>
+                <span style={{ ...S.mono, color: T.green, fontWeight: 800 }}>${a.resumen_operaciones.capital_disponible_post_ventas.toLocaleString()}</span>
+                {a.resumen_operaciones.total_a_vender_ars > 0 && <span>(efectivo ${a.resumen_operaciones.capital_disponible_actual?.toLocaleString()} + ventas ${a.resumen_operaciones.total_a_vender_ars?.toLocaleString()})</span>}
+              </div>
+            )}
+          </div>
+        )}
+
         <div style={{ background: "rgba(3,7,17,0.4)", borderRadius: 14, padding: 20, marginBottom: 14, border: `1px solid ${T.border}`, borderLeft: `3px solid ${T.green}` }}><div style={{ ...S.label, color: T.green }}>Resumen de Mercado</div><p style={{ margin: 0, color: T.textMuted }}>{a.resumen_mercado}</p></div>
         {a.diagnostico_cartera && (
           <div style={{ background: `${T.purple}06`, borderRadius: 14, padding: 20, marginBottom: 14, border: `1px solid ${T.purple}15`, borderLeft: `3px solid ${T.purple}` }}>
