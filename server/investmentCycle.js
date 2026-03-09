@@ -131,7 +131,7 @@ DATOS DEL CICLO:
 PORTFOLIO ACTUAL (${positionsWithData.length} posiciones, valor total: $${Math.round(portfolioValueARS).toLocaleString()} ARS):
 ${positionsWithData.map((p) =>
   `- ${p.ticker} [${p.sector}]: ${p.shares} CEDEARs | Precio/CEDEAR: $${Math.round(p.currentPrice).toLocaleString()} ARS | Valor total posición: $${p.currentValue.toLocaleString()} ARS | Compra: $${Math.round(p.avgPrice).toLocaleString()} | P&L: ${p.pnl >= 0 ? "+" : ""}$${p.pnl.toLocaleString()} (${p.pnlPct >= 0 ? "+" : ""}${p.pnlPct}%) | Score: ${p.score || "N/A"}/100 | Señal: ${p.signal || "N/A"} | RSI: ${p.rsi || "N/A"} | 1M: ${p.change1m != null ? `${p.change1m}%` : "N/A"}`
-).join("\n")}`
+).join("\n")}
 
 EXPOSICIÓN SECTORIAL:
 ${Object.entries(sectorPcts).sort((a, b) => b[1] - a[1]).map(([sector, pct]) =>
