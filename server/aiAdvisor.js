@@ -565,6 +565,69 @@ Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.`,
       result.honestidad = result.autoevaluacion;
     }
 
+    // --- POST-PROCESS: recalculate resumen_operaciones from actual portfolio prices ---
+    // Claude consistently hallucinates these numbers. We fix them server-side.
+    {
+      const posMap = {};
+      for (const pos of cycleData.positionsWithData) posMap[pos.ticker] = pos;
+
+      // Calculate actual sell proceeds using real portfolio prices
+      let totalVentasARS = 0;
+      const ventaMap = {}; // ticker -> { cantidad, precio, monto }
+      for (const accion of (result.acciones_cartera_actual || [])) {
+        const esVenta = accion.accion === "VENDER" || accion.accion === "REDUCIR";
+        if (!esVenta || !accion.cantidad_ajustar) continue;
+        const pos = posMap[accion.ticker];
+        if (!pos) continue;
+        const cantidadVender = Math.abs(accion.cantidad_ajustar);
+        const monto = Math.round(cantidadVender * pos.currentPrice);
+        totalVentasARS += monto;
+        ventaMap[accion.ticker] = { cantidad: cantidadVender, precio: pos.currentPrice, monto };
+      }
+
+      const capitalDisponiblePost = capital + totalVentasARS;
+
+      // Overwrite resumen_operaciones with correct numbers
+      if (!result.resumen_operaciones) result.resumen_operaciones = {};
+      result.resumen_operaciones.capital_disponible_actual = capital;
+      result.resumen_operaciones.total_a_vender_ars = totalVentasARS;
+      result.resumen_operaciones.capital_disponible_post_ventas = capitalDisponiblePost;
+
+      // Recalculate core/satellite splits using Claude's chosen percentages
+      const dist = result.decision_mensual?.distribucion;
+      if (dist) {
+        result.resumen_operaciones.a_core_ars = Math.round(capitalDisponiblePost * ((dist.core_pct || 0) / 100));
+        result.resumen_operaciones.a_satellite_ars = Math.round(capitalDisponiblePost * ((dist.satellite_pct || 0) / 100));
+        // Also fix the monto fields in distribucion
+        dist.core_monto_ars = result.resumen_operaciones.a_core_ars;
+        dist.satellite_monto_ars = result.resumen_operaciones.a_satellite_ars;
+      }
+
+      // Fix plan_ejecucion VENDER amounts using real prices
+      if (result.plan_ejecucion) {
+        for (const step of result.plan_ejecucion) {
+          if (step.tipo === "VENDER") {
+            const v = ventaMap[step.ticker];
+            if (v) {
+              step.cantidad_cedears = v.cantidad;
+              step.monto_estimado_ars = v.monto;
+            }
+          }
+        }
+
+        // Warn if total purchases exceed available capital (don't auto-trim — let the user decide)
+        const totalCompras = result.plan_ejecucion
+          .filter(s => s.tipo === "COMPRAR")
+          .reduce((sum, s) => sum + (s.monto_estimado_ars || 0), 0);
+        if (totalCompras > capitalDisponiblePost) {
+          result._budget_warning = `Las compras planificadas ($${totalCompras.toLocaleString()}) superan el capital real disponible ($${capitalDisponiblePost.toLocaleString()}). Ejecutá primero las ventas y ajustá las cantidades en el broker.`;
+          console.warn(`⚠ Budget overflow: purchases $${totalCompras.toLocaleString()} > capital $${capitalDisponiblePost.toLocaleString()}`);
+        }
+      }
+
+      console.log(`💰 Capital recalc: efectivo=$${capital.toLocaleString()} + ventas=$${totalVentasARS.toLocaleString()} = $${capitalDisponiblePost.toLocaleString()} disponible`);
+    }
+
     // --- LOG PREDICTIONS TO DATABASE ---
     let savedCount = 0;
     try {

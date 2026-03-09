@@ -466,6 +466,12 @@ export default function App() {
                 {a.resumen_operaciones.total_a_vender_ars > 0 && <span>(efectivo ${a.resumen_operaciones.capital_disponible_actual?.toLocaleString()} + ventas ${a.resumen_operaciones.total_a_vender_ars?.toLocaleString()})</span>}
               </div>
             )}
+            {a._budget_warning && (
+              <div style={{ marginTop: 10, padding: "10px 14px", background: `${T.red}10`, borderRadius: 10, border: `1px solid ${T.red}30`, fontSize: 11, color: T.red, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <span style={{ flexShrink: 0 }}>⚠</span>
+                <span>{a._budget_warning}</span>
+              </div>
+            )}
           </div>
         )}
 
