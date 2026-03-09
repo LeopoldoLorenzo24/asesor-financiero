@@ -117,11 +117,11 @@ function Skeleton({ width = "100%", height = 20 }) {
   );
 }
 
-function Modal({ show, onClose, title, children }) {
+function Modal({ show, onClose, title, children, maxWidth = 520 }) {
   if (!show) return null;
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999, backdropFilter: "blur(8px)" }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: T.bgCardSolid, border: `1px solid ${T.borderLight}`, borderRadius: 20, padding: 32, width: "92%", maxWidth: 520, maxHeight: "85vh", overflowY: "auto", boxShadow: "0 24px 64px rgba(0,0,0,0.5), 0 0 0 1px rgba(148,163,184,0.05)" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: T.bgCardSolid, border: `1px solid ${T.borderLight}`, borderRadius: 20, padding: 32, width: "92%", maxWidth, maxHeight: "85vh", overflowY: "auto", boxShadow: "0 24px 64px rgba(0,0,0,0.5), 0 0 0 1px rgba(148,163,184,0.05)" }}>
         <h3 style={{ margin: "0 0 24px", fontSize: 18, fontWeight: 800 }}>{title}</h3>{children}
       </div>
     </div>
@@ -268,6 +268,10 @@ export default function App() {
   const [analysisSessions, setAnalysisSessions] = useState([]);
   const [showBuyModal, setShowBuyModal] = useState(false);
   const [showSellModal, setShowSellModal] = useState(false);
+  const [showSyncModal, setShowSyncModal] = useState(false);
+  const [syncRows, setSyncRows] = useState([]);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncMsg, setSyncMsg] = useState(null);
   const [opForm, setOpForm] = useState({ ticker: "", shares: 10, priceArs: 0, notes: "" });
   const [opMsg, setOpMsg] = useState(null);
   const [evalLoading, setEvalLoading] = useState(false);
@@ -343,6 +347,45 @@ export default function App() {
 
   const handleBuy = async () => { try { setOpMsg(null); await api.buyPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Compra registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowBuyModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
   const handleSell = async () => { try { setOpMsg(null); await api.sellPosition(opForm.ticker.toUpperCase(), parseInt(opForm.shares), parseFloat(opForm.priceArs), opForm.notes); setOpMsg({ type: "success", text: `Venta registrada: ${opForm.shares} ${opForm.ticker.toUpperCase()}` }); setShowSellModal(false); loadPortfolioDB(); loadTransactions(); } catch (e) { setOpMsg({ type: "error", text: e.message }); } };
+
+  const openSyncModal = () => {
+    const rows = portfolioDB.summary.map(p => {
+      const r = ranking.find(x => x.cedear?.ticker === p.ticker);
+      return {
+        ticker: p.ticker,
+        oldShares: p.total_shares,
+        newShares: p.total_shares,
+        priceArs: r?.priceARS ? Math.round(r.priceARS) : Math.round(p.weighted_avg_price),
+      };
+    });
+    setSyncRows(rows);
+    setSyncMsg(null);
+    setShowSyncModal(true);
+  };
+
+  const handleSync = async () => {
+    setSyncLoading(true);
+    setSyncMsg(null);
+    try {
+      // Rows with newShares=0 are included so the server can close the position
+      // Filter out rows where nothing changed AND shares are not 0
+      const positions = syncRows
+        .filter(r => parseInt(r.newShares) !== r.oldShares || parseInt(r.newShares) === 0)
+        .map(r => ({ ticker: r.ticker, shares: parseInt(r.newShares), priceArs: parseFloat(r.priceArs) }));
+      if (positions.length === 0) { setSyncMsg({ type: "error", text: "No hay cambios para sincronizar." }); setSyncLoading(false); return; }
+      const res = await api.syncPortfolio(positions);
+      const buys = res.created.filter(c => c.type === "BUY");
+      const sells = res.created.filter(c => c.type === "SELL");
+      const summary = [
+        buys.length ? `${buys.length} compra${buys.length > 1 ? "s" : ""}: ${buys.map(c => `+${c.shares} ${c.ticker}`).join(", ")}` : null,
+        sells.length ? `${sells.length} venta${sells.length > 1 ? "s" : ""}: ${sells.map(c => `-${c.shares} ${c.ticker}`).join(", ")}` : null,
+      ].filter(Boolean).join(" | ");
+      setSyncMsg({ type: "success", text: `Sincronizado — ${summary || "sin cambios"}` });
+      loadPortfolioDB();
+      loadTransactions();
+    } catch (e) { setSyncMsg({ type: "error", text: e.message }); }
+    finally { setSyncLoading(false); }
+  };
   const handleEvaluateAll = async () => { setEvalLoading(true); setEvalResult(null); try { const r = await api.evaluateAll(); setEvalResult(r); loadPredictions(); loadPerformance(); } catch (e) { setEvalResult({ error: e.message }); } finally { setEvalLoading(false); } };
   const confirmEvaluateAll = () => setConfirmState({ icon: "⚖️", title: `Evaluar ${predictions.filter(p => !p.evaluated).length} predicciones pendientes`, description: "El sistema va a buscar el precio actual de cada CEDEAR con predicción pendiente y compararlo contra el precio de entrada para determinar si la predicción fue correcta o no. Este proceso es automático y no consume tokens de Claude.", confirmLabel: "Evaluar Ahora", variant: "blue", onConfirm: handleEvaluateAll });
   const handleConclude = async (predictionId) => { setConcluding(predictionId); setConclusionData(null); setShowConclusionModal(true); try { const data = await api.concludePrediction(predictionId); setConclusionData(data); } catch (err) { setConclusionData({ error: err.message }); } finally { setConcluding(null); } };
@@ -1026,6 +1069,7 @@ export default function App() {
         <div style={{ display: "flex", gap: 12, marginBottom: 24, flexWrap: "wrap" }}>
           <button onClick={() => { setOpForm({ ticker: "", shares: 10, priceArs: 0, notes: "" }); setShowBuyModal(true); }} style={S.btn()}>+ Registrar Compra</button>
           <button onClick={() => { setOpForm({ ticker: "", shares: 10, priceArs: 0, notes: "" }); setShowSellModal(true); }} style={S.btn("danger")}>- Registrar Venta</button>
+          <button onClick={openSyncModal} style={S.btn("blue")}>⟳ Sincronizar Cartera</button>
         </div>
         <div className="ca-ops-summary" style={S.grid()}>
           <div style={{ ...S.card, borderLeft: `3px solid ${T.cyan}` }}><div style={S.label}>Capital</div><input type="number" value={capital} onChange={e => setCapital(parseInt(e.target.value) || 0)} style={{ ...S.input, ...S.value, fontSize: 22, padding: "8px 12px" }} /></div>
@@ -1943,7 +1987,73 @@ export default function App() {
     </Modal>
   );
 
-  const renderConclusionModal = () => (
+  const renderSyncModal = () => {
+    const diffs = syncRows.map(r => ({ ...r, diff: parseInt(r.newShares) - r.oldShares }));
+    const hasDiffs = diffs.some(r => r.diff !== 0);
+    return (
+      <Modal show={showSyncModal} onClose={() => setShowSyncModal(false)} title="⟳ Sincronizar Cartera con Broker" maxWidth={700}>
+        <div style={{ fontSize: 12, color: T.textDim, marginBottom: 16, lineHeight: 1.6 }}>
+          Ingresá las cantidades actuales de tu broker. El sistema va a generar automáticamente las operaciones de compra/venta para cuadrar la base de datos.
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead><tr>
+              <th style={{ ...S.th, textAlign: "left" }}>Ticker</th>
+              <th style={{ ...S.th, textAlign: "center" }}>En DB</th>
+              <th style={{ ...S.th, textAlign: "center" }}>Broker (nuevo)</th>
+              <th style={{ ...S.th, textAlign: "center" }}>Cambio</th>
+              <th style={{ ...S.th, textAlign: "center" }}>Precio ARS</th>
+              <th style={{ ...S.th, textAlign: "center" }}></th>
+            </tr></thead>
+            <tbody>{syncRows.map((row, i) => {
+              const diff = parseInt(row.newShares) - row.oldShares;
+              const diffColor = diff > 0 ? T.green : diff < 0 ? T.red : T.textDark;
+              const diffLabel = diff > 0 ? `▲ +${diff}` : diff < 0 ? `▼ ${diff}` : "=";
+              return (
+                <tr key={row.ticker}>
+                  <td style={{ ...S.td, fontWeight: 800, ...S.mono }}>{row.ticker}</td>
+                  <td style={{ ...S.td, textAlign: "center", color: T.textDim }}>{row.oldShares}</td>
+                  <td style={{ ...S.td, textAlign: "center" }}>
+                    <input type="number" min="0" value={row.newShares}
+                      onChange={e => { const v = e.target.value; setSyncRows(prev => prev.map((r, j) => j === i ? { ...r, newShares: v } : r)); }}
+                      style={{ ...S.input, width: 70, textAlign: "center", padding: "4px 8px", fontSize: 13 }} />
+                  </td>
+                  <td style={{ ...S.td, textAlign: "center", ...S.mono, fontWeight: 700, color: diffColor }}>{diffLabel}</td>
+                  <td style={{ ...S.td, textAlign: "center" }}>
+                    <input type="number" min="0" value={row.priceArs}
+                      onChange={e => { const v = e.target.value; setSyncRows(prev => prev.map((r, j) => j === i ? { ...r, priceArs: v } : r)); }}
+                      style={{ ...S.input, width: 100, textAlign: "right", padding: "4px 8px", fontSize: 12 }} />
+                  </td>
+                  <td style={{ ...S.td, textAlign: "center" }}>
+                    <button onClick={() => setSyncRows(prev => prev.filter((_, j) => j !== i))} style={{ ...S.btn("ghost"), padding: "2px 8px", fontSize: 11, color: T.red }}>✕</button>
+                  </td>
+                </tr>
+              );
+            })}</tbody>
+          </table>
+        </div>
+        <button onClick={() => setSyncRows(prev => [...prev, { ticker: "", oldShares: 0, newShares: 0, priceArs: 0 }])}
+          style={{ ...S.btn("ghost"), marginTop: 12, fontSize: 12 }}>+ Agregar ticker</button>
+        {hasDiffs && (
+          <div style={{ marginTop: 16, padding: 14, background: "rgba(3,7,17,0.4)", borderRadius: 12, border: `1px solid ${T.border}`, fontSize: 12, color: T.textMuted }}>
+            <strong style={{ color: T.text }}>Operaciones a generar:</strong>{" "}
+            {diffs.filter(r => r.diff !== 0).map(r => (
+              <span key={r.ticker} style={{ marginRight: 10, color: r.diff > 0 ? T.green : T.red }}>
+                {r.diff > 0 ? `COMPRAR +${r.diff}` : `VENDER ${r.diff}`} {r.ticker}
+              </span>
+            ))}
+          </div>
+        )}
+        {syncMsg && <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: syncMsg.type === "success" ? `${T.green}15` : `${T.red}15`, border: `1px solid ${syncMsg.type === "success" ? T.green : T.red}40`, fontSize: 12, color: syncMsg.type === "success" ? T.green : T.red }}>{syncMsg.text}</div>}
+        <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 20 }}>
+          <button onClick={() => setShowSyncModal(false)} style={S.btn("ghost")}>Cancelar</button>
+          <button onClick={handleSync} disabled={syncLoading || !hasDiffs} style={{ ...S.btn("blue"), opacity: syncLoading || !hasDiffs ? 0.5 : 1 }}>
+            {syncLoading ? "Sincronizando..." : "Confirmar Sincronización"}
+          </button>
+        </div>
+      </Modal>
+    );
+  };
     <Modal
       show={showConclusionModal}
       onClose={() => setShowConclusionModal(false)}
@@ -2040,7 +2150,7 @@ export default function App() {
         {view === "predicciones" && renderPredicciones()}
         {view === "historial" && renderHistorial()}
       </main>
-      {renderOpModal("buy")}{renderOpModal("sell")}{renderConclusionModal()}
+      {renderOpModal("buy")}{renderOpModal("sell")}{renderSyncModal()}{renderConclusionModal()}
       <ConfirmModal state={confirmState} onClose={() => setConfirmState(null)} />
       <footer className="ca-footer" style={{ textAlign: "center", padding: "32px 24px", fontSize: 10, color: T.textDark, lineHeight: 2, borderTop: `1px solid ${T.border}`, marginTop: 40, background: "rgba(3,7,17,0.4)" }}>
         ⚠ DISCLAIMER: Herramienta informativa. No es asesoramiento financiero. Consultá un asesor matriculado (CNV).

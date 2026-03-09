@@ -34,7 +34,7 @@ import { calculateBenchmarks } from "./benchmarks.js";
 import { runBacktest } from "./backtest.js";
 import {
   initDb,
-  getPortfolio, getPortfolioSummary, addPosition, sellPosition,
+  getPortfolio, getPortfolioSummary, addPosition, sellPosition, syncPortfolio,
   getTransactions, getPredictions, getPredictionById, evaluatePredictionsForTicker,
   calculateBotPerformance, getCapitalHistory, logCapital,
   getAnalysisSessions, savePostMortem, getPostMortems, getLatestLessons,
@@ -739,6 +739,25 @@ app.post("/api/portfolio/sell", async (req, res) => {
     const quote = await fetchQuote(ticker).catch(() => null);
     await sellPosition(ticker.toUpperCase(), shares, priceArs, quote?.price || null, ccl.venta, notes || "");
     res.json({ success: true, message: `Venta: ${shares} ${ticker} a $${priceArs}` });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/portfolio/sync", async (req, res) => {
+  try {
+    const { positions } = req.body;
+    if (!Array.isArray(positions) || positions.length === 0) {
+      return res.status(400).json({ error: "positions debe ser un array no vacío" });
+    }
+    for (const p of positions) {
+      if (!p.ticker || p.shares == null || p.priceArs == null) {
+        return res.status(400).json({ error: "Cada posición necesita ticker, shares y priceArs" });
+      }
+      if (parseInt(p.shares) < 0 || parseFloat(p.priceArs) < 0) {
+        return res.status(400).json({ error: "shares y priceArs deben ser valores no negativos" });
+      }
+    }
+    const created = await syncPortfolio(positions);
+    res.json({ success: true, created, count: created.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

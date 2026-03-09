@@ -242,6 +242,99 @@ export async function getTransactions(ticker = null, limit = 50) {
 }
 
 // ============================================================
+// PORTFOLIO SYNC (reconcile DB against broker snapshot)
+// ============================================================
+
+export async function syncPortfolio(positions) {
+  // positions: [{ticker, shares, priceArs, priceUsd?}]
+  // Read all current portfolio lots once (FIFO order for sells)
+  const allLots = (await db.execute("SELECT * FROM portfolio ORDER BY ticker, date_bought ASC")).rows;
+
+  // Group lots by ticker and compute DB totals
+  const lotsByTicker = {};
+  for (const lot of allLots) {
+    if (!lotsByTicker[lot.ticker]) lotsByTicker[lot.ticker] = [];
+    lotsByTicker[lot.ticker].push(lot);
+  }
+  const dbTotals = {};
+  for (const [ticker, lots] of Object.entries(lotsByTicker)) {
+    dbTotals[ticker] = lots.reduce((s, l) => s + l.shares, 0);
+  }
+
+  // Broker map (uppercase tickers)
+  const brokerMap = new Map(
+    positions.map(p => [p.ticker.toUpperCase(), {
+      shares: parseInt(p.shares),
+      priceArs: parseFloat(p.priceArs),
+      priceUsd: p.priceUsd || null,
+    }])
+  );
+
+  const ops = [];
+  const created = [];
+
+  // 1. Process tickers present in broker snapshot
+  for (const [ticker, broker] of brokerMap) {
+    const dbShares = dbTotals[ticker] || 0;
+    const diff = broker.shares - dbShares;
+
+    if (diff > 0) {
+      // Need to BUY more
+      ops.push({
+        sql: `INSERT INTO portfolio (ticker, shares, avg_price_ars, notes) VALUES (?, ?, ?, ?)`,
+        args: [ticker, diff, broker.priceArs, "sincronización"],
+      });
+      ops.push({
+        sql: `INSERT INTO transactions (ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, notes) VALUES (?, 'BUY', ?, ?, ?, NULL, ?, ?)`,
+        args: [ticker, diff, broker.priceArs, broker.priceUsd, diff * broker.priceArs, "sincronización"],
+      });
+      created.push({ ticker, type: "BUY", shares: diff, priceArs: broker.priceArs });
+    } else if (diff < 0) {
+      // Need to SELL some — FIFO lot removal
+      const sharesToSell = -diff;
+      const lots = lotsByTicker[ticker] || [];
+      let remaining = sharesToSell;
+      for (const lot of lots) {
+        if (remaining <= 0) break;
+        if (lot.shares <= remaining) {
+          ops.push({ sql: "DELETE FROM portfolio WHERE id = ?", args: [lot.id] });
+          remaining -= lot.shares;
+        } else {
+          ops.push({
+            sql: "UPDATE portfolio SET shares = ?, updated_at = datetime('now') WHERE id = ?",
+            args: [lot.shares - remaining, lot.id],
+          });
+          remaining = 0;
+        }
+      }
+      ops.push({
+        sql: `INSERT INTO transactions (ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, notes) VALUES (?, 'SELL', ?, ?, ?, NULL, ?, ?)`,
+        args: [ticker, sharesToSell, broker.priceArs, broker.priceUsd, sharesToSell * broker.priceArs, "sincronización"],
+      });
+      created.push({ ticker, type: "SELL", shares: sharesToSell, priceArs: broker.priceArs });
+    }
+    // diff === 0 → already in sync, no action
+  }
+
+  // 2. Tickers in DB but absent from broker → close the position entirely
+  for (const [ticker, dbShares] of Object.entries(dbTotals)) {
+    if (!brokerMap.has(ticker)) {
+      const lots = lotsByTicker[ticker] || [];
+      const avgPrice = lots.reduce((s, l) => s + l.shares * l.avg_price_ars, 0) / dbShares;
+      ops.push({ sql: "DELETE FROM portfolio WHERE ticker = ?", args: [ticker] });
+      ops.push({
+        sql: `INSERT INTO transactions (ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, notes) VALUES (?, 'SELL', ?, ?, NULL, NULL, ?, ?)`,
+        args: [ticker, dbShares, avgPrice, dbShares * avgPrice, "sincronización — posición cerrada"],
+      });
+      created.push({ ticker, type: "SELL", shares: dbShares, priceArs: Math.round(avgPrice), note: "cerrada" });
+    }
+  }
+
+  if (ops.length > 0) await db.batch(ops, "write");
+  return created;
+}
+
+// ============================================================
 // PREDICTIONS / RECOMMENDATIONS LOG
 // ============================================================
 
