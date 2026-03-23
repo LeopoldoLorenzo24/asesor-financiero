@@ -154,6 +154,11 @@ export async function initDb() {
 
     CREATE INDEX IF NOT EXISTS idx_postmortems_date ON monthly_postmortems(analysis_date);
   `);
+
+  // Migration: add salt column to users for per-user password hashing
+  try {
+    await db.execute("ALTER TABLE users ADD COLUMN salt TEXT DEFAULT NULL");
+  } catch (_) { /* column already exists */ }
 }
 
 // ============================================================

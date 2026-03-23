@@ -27,7 +27,7 @@ import {
   fundamentalAnalysis,
   compositeScore,
 } from "./analysis.js";
-import { generateAnalysis, analyzeSingle } from "./aiAdvisor.js";
+import { generateAnalysis, analyzeSingle, extractJSON, getClient } from "./aiAdvisor.js";
 import { diversifiedSelection, portfolioExposure } from "./diversifier.js";
 import { canRegister, register, login, authMiddleware } from "./auth.js";
 import { calculateBenchmarks } from "./benchmarks.js";
@@ -294,7 +294,7 @@ app.post("/api/ai/analyze", async (req, res) => {
     if (warnings.length) console.log(`⚠️ Warnings: ${warnings.join(' | ')}`);
 
     const analysis = await generateAnalysis({ topPicks, capital, ccl, diversification, warnings, ranking: rankedResults, profileId });
-    lastAnalysisTimestamp = now;
+    if (!analysis?.error) lastAnalysisTimestamp = now;
     res.json({ analysis, diversification, warnings, ccl, timestamp: new Date().toISOString() });
   } catch (err) {
     console.error("AI analyze error:", err);
@@ -400,8 +400,7 @@ app.get("/api/portfolio/exposure", async (req, res) => {
     ]);
     res.json(await portfolioExposure(quotesMap, bymaPrices, ccl.venta));
   } catch (err) {
-    try { res.json(await portfolioExposure()); }
-    catch (e) { res.status(500).json({ error: e.message }); }
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -537,8 +536,7 @@ app.post("/api/postmortem/generate", authMiddleware, async (req, res) => {
     const worstPick = sorted[sorted.length - 1];
 
     // 4. Claude post-mortem
-    const Anthropic = (await import("@anthropic-ai/sdk")).default;
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const client = getClient();
 
     const predsDetail = recentEvaluated
       .map(
@@ -603,12 +601,11 @@ Respondé SOLO con JSON válido:
       .filter((b) => b.type === "text")
       .map((b) => b.text)
       .join("");
-    const clean = text.replace(/```json|```/g, "").trim();
-    const jsonMatch = clean.match(/\{[\s\S]*\}/);
-    if (!jsonMatch)
+    const jsonStr = extractJSON(text);
+    if (!jsonStr)
       return res.status(500).json({ error: "No se pudo parsear la respuesta de Claude" });
 
-    const pmResult = JSON.parse(jsonMatch[0]);
+    const pmResult = JSON.parse(jsonStr);
 
     // 5. Guardar en la BD
     const monthLabel = new Date().toLocaleString("es-AR", {
@@ -839,8 +836,7 @@ app.post("/api/predictions/:id/conclude", async (req, res) => {
       : null;
     const daysSince = Math.floor((Date.now() - new Date(prediction.prediction_date).getTime()) / 86400000);
 
-    const Anthropic = (await import("@anthropic-ai/sdk")).default;
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const client = getClient();
 
     const prompt = `Sos un asesor financiero que está revisando una predicción que hiciste.
 

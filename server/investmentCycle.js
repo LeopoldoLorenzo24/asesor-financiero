@@ -11,8 +11,6 @@ import {
   logCapital,
 } from "./database.js";
 
-const MONTHLY_DEPOSIT = 1000000; // $1M ARS por mes
-
 /**
  * Genera el contexto completo del ciclo mensual para el prompt de la IA.
  * Esta función arma TODO lo que el bot necesita saber antes de recomendar.

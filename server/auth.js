@@ -4,8 +4,12 @@ import db from "./database.js";
 const ALLOWED_EMAIL = "leolorenzo201123@gmail.com";
 const JWT_SECRET = process.env.JWT_SECRET || "cedear-advisor-secret-key-change-this";
 
-function hashPassword(password) {
-  const salt = JWT_SECRET;
+function generateSalt() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+// salt parameter: per-user random salt (new) or JWT_SECRET as fallback (legacy)
+function hashPassword(password, salt) {
   return crypto.pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
 }
 
@@ -39,22 +43,33 @@ export async function register(email, password) {
   if (email.toLowerCase() !== ALLOWED_EMAIL) throw new Error("Email no autorizado.");
   if (!password || password.length < 6) throw new Error("La contraseña debe tener al menos 6 caracteres.");
 
-  const hash = hashPassword(password);
-  const result = await db.execute({ sql: "INSERT INTO users (email, password_hash) VALUES (?, ?)", args: [email.toLowerCase(), hash] });
+  const salt = generateSalt();
+  const hash = hashPassword(password, salt);
+  const result = await db.execute({
+    sql: "INSERT INTO users (email, password_hash, salt) VALUES (?, ?, ?)",
+    args: [email.toLowerCase(), hash, salt],
+  });
   return generateToken(Number(result.lastInsertRowid), email.toLowerCase());
 }
 
 export async function login(email, password) {
   if (email.toLowerCase() !== ALLOWED_EMAIL) throw new Error("Email no autorizado.");
 
-  // Validate password against env var if set
+  // Validate password against env var if set (timing-safe via hash comparison)
   if (process.env.AUTH_PASSWORD) {
-    if (password !== process.env.AUTH_PASSWORD) throw new Error("Contraseña incorrecta.");
+    const expectedHash = crypto.createHash("sha256").update(process.env.AUTH_PASSWORD).digest();
+    const actualHash = crypto.createHash("sha256").update(password).digest();
+    if (!crypto.timingSafeEqual(expectedHash, actualHash)) throw new Error("Contraseña incorrecta.");
+
     // Ensure user exists in DB (auto-create on first login)
     let user = (await db.execute({ sql: "SELECT * FROM users WHERE email = ?", args: [email.toLowerCase()] })).rows[0];
     if (!user) {
-      const hash = hashPassword(password);
-      const result = await db.execute({ sql: "INSERT INTO users (email, password_hash) VALUES (?, ?)", args: [email.toLowerCase(), hash] });
+      const salt = generateSalt();
+      const hash = hashPassword(password, salt);
+      const result = await db.execute({
+        sql: "INSERT INTO users (email, password_hash, salt) VALUES (?, ?, ?)",
+        args: [email.toLowerCase(), hash, salt],
+      });
       return generateToken(Number(result.lastInsertRowid), email.toLowerCase());
     }
     return generateToken(user.id, user.email);
@@ -63,11 +78,26 @@ export async function login(email, password) {
   // Fallback: validate against DB hash
   const user = (await db.execute({ sql: "SELECT * FROM users WHERE email = ?", args: [email.toLowerCase()] })).rows[0];
   if (!user) throw new Error("Usuario no encontrado.");
-  const hash = hashPassword(password);
+
+  // Support legacy users (no per-user salt) and new users (with salt)
+  const salt = user.salt || JWT_SECRET;
+  const hash = hashPassword(password, salt);
+
   if (user.password_hash.length !== hash.length) throw new Error("Contraseña incorrecta.");
   if (!crypto.timingSafeEqual(Buffer.from(user.password_hash), Buffer.from(hash))) {
     throw new Error("Contraseña incorrecta.");
   }
+
+  // Upgrade legacy user to per-user salt on successful login
+  if (!user.salt) {
+    const newSalt = generateSalt();
+    const newHash = hashPassword(password, newSalt);
+    await db.execute({
+      sql: "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
+      args: [newHash, newSalt, user.id],
+    });
+  }
+
   return generateToken(user.id, user.email);
 }
 

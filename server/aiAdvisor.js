@@ -13,7 +13,7 @@ import { getMarketKnowledge } from "./marketKnowledge.js";
 const backtestCache = new NodeCache({ stdTTL: 21600 }); // 6 horas
 
 let client = null;
-function getClient() {
+export function getClient() {
   if (!client) {
     client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   }
@@ -63,6 +63,50 @@ Hasta 50% en un solo sector. Mínimo 2 sectores en satellite.`,
 
 function getProfileConfig(profileId = "moderate") {
   return PROFILE_PROMPTS[profileId] || PROFILE_PROMPTS.moderate;
+}
+
+// --- JSON Extraction Utility ---
+export function extractJSON(fullText) {
+  let jsonStr = "";
+  const mdMatch = fullText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+  if (mdMatch) {
+    jsonStr = mdMatch[1];
+  } else {
+    // Attempt to find the largest valid JSON object by balancing braces
+    let depth = 0, start = -1, candidates = [];
+    for (let i = 0; i < fullText.length; i++) {
+      if (fullText[i] === '{') {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (fullText[i] === '}') {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          candidates.push(fullText.substring(start, i + 1));
+        }
+      }
+    }
+    candidates.sort((a, b) => b.length - a.length);
+    for (const cand of candidates) {
+      try {
+        const cleaned = cand
+          .replace(/[\x00-\x1F\x7F]/g, ch => ch === '\n' || ch === '\r' || ch === '\t' ? ch : ' ')
+          .replace(/,\s*([\]}])/g, '$1')
+          .replace(/<cite[^>]*>|<\/cite>/g, "");
+        JSON.parse(cleaned);
+        jsonStr = cleaned;
+        break;
+      } catch (e) {}
+    }
+    if (!jsonStr) {
+      const fallback = fullText.match(/\{[\s\S]*\}/);
+      jsonStr = fallback ? fallback[0] : "";
+    }
+  }
+
+  return jsonStr
+    .replace(/[\x00-\x1F\x7F]/g, ch => ch === '\n' || ch === '\r' || ch === '\t' ? ch : ' ')
+    .replace(/,\s*([\]}])/g, '$1')
+    .replace(/<cite[^>]*>|<\/cite>/g, "");
 }
 
 // --- Generate full AI analysis ---
@@ -441,28 +485,7 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
       "nota": "Satellite pick #1 — solo si el presupuesto alcanza"
     }
   ],
-  REGLAS CRÍTICAS para plan_ejecucion:
-  - Es un plan ORDENADO y SECUENCIAL. PRIMERO todas las ventas/reducciones, LUEGO las compras.
-  - Solo incluí acciones que requieren HACER algo: VENDER, REDUCIR, COMPRAR. NO incluyas MANTENERs.
-  - El tipo puede ser: "VENDER" (salir o reducir posición) o "COMPRAR" (añadir posición).
-  - subtipo: "CORE" para ${coreETF}, "SATELLITE" para picks activos. Solo en tipo COMPRAR.
-  - Los montos de TODAS las compras NO pueden superar capital_disponible_post_ventas.
-  - Los picks satellite van ordenados por conviction (mayor primero).
-  - Si sin_cambios_necesarios es true, plan_ejecucion debe ser [] (array vacío).
-  - Este es el plan que el inversor va a EJECUTAR EXACTAMENTE. Sé preciso con cantidades y montos.
-  CÁLCULO DE monto_estimado_ars: OBLIGATORIO usar la fórmula correcta para cada tipo:
-  - Para VENDER: monto_estimado_ars = cantidad_cedears × "Precio/CEDEAR" del ticker en el portfolio context. Ejemplo: si GOOGL tiene Precio/CEDEAR $7.600 y vendés 4 CEDEARs → monto_estimado_ars = 30.400
-  - Para COMPRAR: monto_estimado_ars = cantidad_cedears × precio_aprox_ars del ticker en el ranking. Este valor es orientativo.
-  - NUNCA uses el precio USD × CCL directamente sin dividir por el ratio del CEDEAR.
-  
-  REGLA CRÍTICA para resumen_operaciones:
-  - capital_disponible_actual = el efectivo que declaró el inversor (el que ingresó)
-  - total_a_vender_ars = suma de todas las ventas/reducciones que recomendás
-  - capital_disponible_post_ventas = capital_disponible_actual + total_a_vender_ars (siempre sumar ambos)
-  - a_core_ars = capital_disponible_post_ventas × (core_pct / 100)
-  - a_satellite_ars = capital_disponible_post_ventas × (satellite_pct / 100)
-  Estos 4 números deben ser matemáticamente consistentes entre sí y con decision_mensual.distribucion.
-  
+
   "cartera_objetivo": {
     "descripcion": "Así debería quedar tu cartera después de ejecutar todas las operaciones",
     "posiciones": [
@@ -480,7 +503,29 @@ Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin t
   
   "honestidad": "Evaluación brutalmente honesta: ¿los picks activos de este mes realmente le van a ganar a ${coreETF}? ¿O estoy recomendando picks por recomendar? Si no tengo convicción real, lo digo acá.",
   "proximo_review": "Cuándo reanalizar"
-}`;
+}
+
+REGLAS CRÍTICAS para plan_ejecucion:
+- Es un plan ORDENADO y SECUENCIAL. PRIMERO todas las ventas/reducciones, LUEGO las compras.
+- Solo incluí acciones que requieren HACER algo: VENDER, REDUCIR, COMPRAR. NO incluyas MANTENERs.
+- El tipo puede ser: "VENDER" (salir o reducir posición) o "COMPRAR" (añadir posición).
+- subtipo: "CORE" para ${coreETF}, "SATELLITE" para picks activos. Solo en tipo COMPRAR.
+- Los montos de TODAS las compras NO pueden superar capital_disponible_post_ventas.
+- Los picks satellite van ordenados por conviction (mayor primero).
+- Si sin_cambios_necesarios es true, plan_ejecucion debe ser [] (array vacío).
+- Este es el plan que el inversor va a EJECUTAR EXACTAMENTE. Sé preciso con cantidades y montos.
+
+CÁLCULO DE monto_estimado_ars (OBLIGATORIO usar la fórmula correcta):
+- Para VENDER: monto_estimado_ars = cantidad_cedears × "Precio/CEDEAR" del ticker en el portfolio context. Ejemplo: si GOOGL tiene Precio/CEDEAR $7.600 y vendés 4 → monto = 30.400
+- Para COMPRAR: monto_estimado_ars = cantidad_cedears × precio_aprox_ars del ticker en el ranking.
+- NUNCA uses el precio USD × CCL directamente sin dividir por el ratio del CEDEAR.
+
+REGLA CRÍTICA para resumen_operaciones (estos 4 números deben ser matemáticamente consistentes):
+- capital_disponible_actual = el efectivo que declaró el inversor (el que ingresó)
+- total_a_vender_ars = suma de todas las ventas/reducciones que recomendás
+- capital_disponible_post_ventas = capital_disponible_actual + total_a_vender_ars (siempre sumar ambos)
+- a_core_ars = capital_disponible_post_ventas × (core_pct / 100)
+- a_satellite_ars = capital_disponible_post_ventas × (satellite_pct / 100)`;
 
   try {
     const response = await getClient().messages.create({
@@ -518,24 +563,12 @@ Evitá recomendaciones de "timing perfecto" o "tácticas" que exijan reacción i
       .map((block) => block.text);
 
     const fullText = textParts.join("");
-    const clean = fullText
-      .replace(/```json|```/g, "")
-      .replace(/<cite[^>]*>|<\/cite>/g, "")
-      .replace(/<search_quality_reflection>[\s\S]*?<\/search_quality_reflection>/g, "")
-      .replace(/<\/?[a-z_]+>/g, "")
-      .trim();
+    const jsonStr = extractJSON(fullText);
 
-    // Try to extract JSON from the response
-    const jsonMatch = clean.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.error("No JSON found in AI response:", clean.substring(0, 200));
-      return { error: "No se pudo parsear la respuesta de la IA", raw: clean.substring(0, 500) };
+    if (!jsonStr) {
+      console.error("No JSON found in AI response:", fullText.substring(0, 200));
+      return { error: "No se pudo parsear la respuesta de la IA", raw: fullText.substring(0, 500) };
     }
-
-    let jsonStr = jsonMatch[0];
-    // Fix common JSON issues: control chars inside strings, trailing commas
-    jsonStr = jsonStr.replace(/[\x00-\x1F\x7F]/g, (ch) => ch === '\n' || ch === '\r' || ch === '\t' ? ch : ' ');
-    jsonStr = jsonStr.replace(/,\s*([\]}])/g, '$1');
 
     let result;
     try {
@@ -543,16 +576,7 @@ Evitá recomendaciones de "timing perfecto" o "tácticas" que exijan reacción i
     } catch (parseErr) {
       console.error("JSON parse error:", parseErr.message);
       console.error("Raw text (first 500):", jsonStr.substring(0, 500));
-      // Try a second pass: extract the outermost balanced braces more carefully
-      let depth = 0, start = -1, end = -1;
-      for (let i = 0; i < jsonStr.length; i++) {
-        if (jsonStr[i] === '{') { if (start === -1) start = i; depth++; }
-        else if (jsonStr[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
-      }
-      if (start !== -1 && end !== -1) {
-        try { result = JSON.parse(jsonStr.substring(start, end + 1)); } catch { result = null; }
-      }
-      if (!result) return { error: "No se pudo parsear la respuesta de la IA", raw: jsonStr.substring(0, 500) };
+      return { error: "No se pudo parsear la respuesta de la IA", raw: jsonStr.substring(0, 500) };
     }
 
     // --- NORMALIZE AI RESPONSE FORMAT ---
@@ -821,10 +845,9 @@ Respondé SOLO con JSON válido (sin markdown, sin backticks):
     });
 
     const textParts = response.content.filter((b) => b.type === "text").map((b) => b.text);
-    const clean = textParts.join("").replace(/```json|```/g, "").replace(/<cite[^>]*>|<\/cite>/g, "").replace(/<\/?[a-z_]+>/g, "").trim();
-    const jsonMatch = clean.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return { error: "Parse error" };
-    let jsonStr = jsonMatch[0].replace(/[\x00-\x1F\x7F]/g, (ch) => ch === '\n' || ch === '\r' || ch === '\t' ? ch : ' ').replace(/,\s*([\]}])/g, '$1');
+    const fullText = textParts.join("");
+    const jsonStr = extractJSON(fullText);
+    if (!jsonStr) return { error: "Parse error" };
     try { return JSON.parse(jsonStr); } catch { return { error: "Parse error" }; }
   } catch (err) {
     console.error(`AI single analysis error for ${ticker}:`, err.message);
