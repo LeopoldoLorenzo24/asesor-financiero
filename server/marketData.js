@@ -136,14 +136,9 @@ export async function fetchFinancials(ticker) {
   });
 
   try {
-    const [summary, stats] = await Promise.all([
-      yahooFinance.quoteSummary(ticker, {
-        modules: ["defaultKeyStatistics", "financialData", "earningsTrend"],
-      }).catch(() => ({})),
-      yahooFinance.quoteSummary(ticker, {
-        modules: ["incomeStatementHistory"],
-      }).catch(() => ({})),
-    ]);
+    const summary = await yahooFinance.quoteSummary(ticker, {
+      modules: ["defaultKeyStatistics", "financialData", "earningsTrend"],
+    }).catch(() => ({}));
 
     const keyStats = summary?.defaultKeyStatistics || {};
     const financial = summary?.financialData || {};

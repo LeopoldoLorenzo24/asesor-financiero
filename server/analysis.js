@@ -203,8 +203,17 @@ export function technicalAnalysis(prices) {
   let score = 50;
   const signals = [];
 
-  // RSI scoring
-  if (rsi < 30) { score += 18; signals.push({ type: "bullish", text: `RSI sobrevendido (${rsi})` }); }
+  // RSI scoring — context-aware: oversold in uptrend ≠ oversold in downtrend
+  const aboveSMA200 = sma200 && currentPrice > sma200;
+  if (rsi < 30) {
+    if (aboveSMA200) {
+      // Oversold in long-term uptrend → strong contrarian buy signal
+      score += 18; signals.push({ type: "bullish", text: `RSI sobrevendido (${rsi}) sobre SMA200 — potencial rebote` });
+    } else {
+      // Oversold BELOW SMA200 → may be a falling knife, be cautious
+      score += 4; signals.push({ type: "bearish", text: `RSI sobrevendido (${rsi}) bajo SMA200 — cuidado con trampa bajista` });
+    }
+  }
   else if (rsi < 40) { score += 8; signals.push({ type: "bullish", text: `RSI bajo (${rsi})` }); }
   else if (rsi > 70) { score -= 15; signals.push({ type: "bearish", text: `RSI sobrecomprado (${rsi})` }); }
   else if (rsi > 60) { score -= 3; }
@@ -226,9 +235,12 @@ export function technicalAnalysis(prices) {
   if (macd.histogram > 0) { score += 8; signals.push({ type: "bullish", text: "MACD positivo" }); }
   else { score -= 5; signals.push({ type: "bearish", text: "MACD negativo" }); }
 
-  // Bollinger Bands
+  // Bollinger Bands — only strong buy signal if also above SMA200
   if (bb) {
-    if (currentPrice < bb.lower) { score += 10; signals.push({ type: "bullish", text: "Precio bajo banda inferior de Bollinger" }); }
+    if (currentPrice < bb.lower) {
+      if (aboveSMA200) { score += 10; signals.push({ type: "bullish", text: "Precio bajo banda inferior de Bollinger (uptrend)" }); }
+      else { score += 3; signals.push({ type: "neutral", text: "Precio bajo BB inferior — tendencia bajista de largo plazo" }); }
+    }
     else if (currentPrice > bb.upper) { score -= 8; signals.push({ type: "bearish", text: "Precio sobre banda superior de Bollinger" }); }
   }
 
@@ -241,7 +253,21 @@ export function technicalAnalysis(prices) {
 
   // Momentum / performance
   if (perf.month1 > 5 && perf.month3 > 10) score += 5;
-  if (perf.month1 < -10) { score += 6; signals.push({ type: "neutral", text: "Posible rebote tras caída fuerte (-" + Math.abs(perf.month1) + "% en 1 mes)" }); }
+  if (perf.month1 < -10) {
+    if (aboveSMA200) {
+      // Big drop but long-term uptrend intact → contrarian buy
+      score += 6; signals.push({ type: "neutral", text: `Posible rebote tras caída fuerte (${perf.month1?.toFixed(1)}% en 1M) — tendencia alcista de fondo` });
+    } else {
+      // Big drop AND below SMA200 → ongoing downtrend, don't treat as bounce opportunity
+      score -= 4; signals.push({ type: "bearish", text: `Caída de ${perf.month1?.toFixed(1)}% en 1M bajo SMA200 — tendencia bajista confirmada` });
+    }
+  }
+
+  // Long-term downtrend penalty: death cross + price below SMA200 = confirmed bearish regime
+  const deathCross = sma50 && sma200 && sma50 < sma200;
+  if (!aboveSMA200 && deathCross) {
+    score -= 8; signals.push({ type: "bearish", text: "Tendencia bajista de largo plazo confirmada (Death Cross + bajo SMA200)" });
+  }
 
   return {
     score: Math.max(0, Math.min(100, Math.round(score))),
@@ -400,7 +426,17 @@ export function compositeScore(techAnalysis, fundAnalysis, quote, sector = "", p
 
   sentiment = Math.max(0, Math.min(100, sentiment));
 
-  const composite = Math.round(tech * weights.tech + fund * weights.fund + sentiment * weights.sent);
+  let composite = Math.round(tech * weights.tech + fund * weights.fund + sentiment * weights.sent);
+
+  // Long-term downtrend penalty at composite level:
+  // If stock has a confirmed death cross AND is below SMA200, cap conviction
+  const sma50c = techAnalysis?.indicators?.sma50;
+  const sma200c = techAnalysis?.indicators?.sma200;
+  const currentPriceC = techAnalysis?.indicators?.currentPrice;
+  const confirmedDowntrend = sma50c && sma200c && currentPriceC && sma50c < sma200c && currentPriceC < sma200c;
+  if (confirmedDowntrend) {
+    composite = Math.min(composite, 68); // Cap at COMPRA (just below COMPRA FUERTE) when in confirmed downtrend
+  }
 
   // Generate signal
   let signal, signalColor;
