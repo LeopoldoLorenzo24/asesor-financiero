@@ -46,18 +46,28 @@ import { initTelegramBot } from "./telegramBot.js";
 
 // ── Validate required environment variables ──
 function validateEnv() {
+  console.log("[startup] Validando variables de entorno...");
+  console.log("[startup] JWT_SECRET presente:", !!process.env.JWT_SECRET, "Longitud:", String(process.env.JWT_SECRET || "").length);
+  console.log("[startup] TURSO_URL presente:", !!process.env.TURSO_URL);
+  console.log("[startup] TURSO_AUTH_TOKEN presente:", !!process.env.TURSO_AUTH_TOKEN);
+  console.log("[startup] ANTHROPIC_API_KEY presente:", !!process.env.ANTHROPIC_API_KEY);
+  console.log("[startup] AUTH_PASSWORD presente:", !!process.env.AUTH_PASSWORD, "Longitud:", String(process.env.AUTH_PASSWORD || "").length);
+
   const required = ["JWT_SECRET"];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length > 0) {
+    console.error(`[env] Variables requeridas faltantes: ${missing.join(", ")}`);
     throw new Error(`[env] Variables requeridas faltantes: ${missing.join(", ")}`);
   }
 
   const jwtSecret = String(process.env.JWT_SECRET || "");
   if (jwtSecret.length < 32 || jwtSecret.includes("cambia-esto")) {
+    console.error("[env] JWT_SECRET es inseguro. Usá un valor aleatorio de al menos 32 caracteres.");
     throw new Error("[env] JWT_SECRET es inseguro. Usá un valor aleatorio de al menos 32 caracteres.");
   }
 
   if (process.env.AUTH_PASSWORD && String(process.env.AUTH_PASSWORD).length < 12) {
+    console.error("[env] AUTH_PASSWORD es demasiado corto. Usá al menos 12 caracteres.");
     throw new Error("[env] AUTH_PASSWORD es demasiado corto. Usá al menos 12 caracteres.");
   }
 
@@ -72,8 +82,15 @@ function validateEnv() {
   if (!process.env.ANTHROPIC_API_KEY) {
     console.warn("[env] ANTHROPIC_API_KEY no configurada. Las rutas de IA no estarán disponibles.");
   }
+
+  console.log("[startup] Validación de variables completada.");
 }
-validateEnv();
+try {
+  validateEnv();
+} catch (err) {
+  console.error("[FATAL] El servidor no puede arrancar:", err.message);
+  process.exit(1);
+}
 
 export const app = express();
 const PORT = APP_CONFIG.port;
