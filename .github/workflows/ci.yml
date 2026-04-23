@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      - name: Install Server Dependencies
+        run: npm ci --prefix server
+
+      - name: Run Server Unit Tests
+        run: npm --prefix server test
+
+      - name: Start Server For Smoke
+        run: |
+          node server/index.js > /tmp/cedear-server.log 2>&1 &
+          echo $! > /tmp/cedear-server.pid
+
+      - name: Run Server Smoke Test
+        run: SMOKE_BASE_URL=http://localhost:3001 npm --prefix server run smoke
+
+      - name: Stop Smoke Server
+        if: always()
+        run: |
+          if [ -f /tmp/cedear-server.pid ]; then kill "$(cat /tmp/cedear-server.pid)" || true; fi
+          if [ -f /tmp/cedear-server.log ]; then tail -n 200 /tmp/cedear-server.log || true; fi
+
+      - name: Install Client Dependencies
+        run: npm ci --prefix client
+
+      - name: Build Client
+        run: npm --prefix client run build

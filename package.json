@@ -3,10 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "install:all": "cd server && npm install && cd ../client && npm install",
-    "build": "cd client && npm run build",
-    "start": "cd server && node index.js",
-    "dev:server": "cd server && node index.js",
-    "dev:client": "cd client && npx vite --port 5173"
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "build": "npm --prefix client run build",
+    "test": "npm --prefix server test",
+    "test:server": "npm --prefix server test",
+    "smoke:server": "npm --prefix server run smoke",
+    "start": "npm --prefix server start",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev"
   }
 }

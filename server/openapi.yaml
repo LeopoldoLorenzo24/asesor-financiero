@@ -1,0 +1,271 @@
+openapi: 3.0.3
+info:
+  title: CEDEAR Advisor API
+  version: 2.0.0
+  description: |
+    API para análisis, scoring y gestión de portfolios de CEDEARs.
+    Incluye fallback multi-proveedor (Yahoo Finance, Finnhub, Stooq),
+    motor de riesgo, backtests y asesoramiento con IA (Claude).
+servers:
+  - url: http://localhost:3001/api
+    description: Local development
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: Servidor activo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  cedears: { type: integer }
+                  timestamp: { type: string, format: date-time }
+
+  /auth/status:
+    get:
+      summary: Verificar si el registro está habilitado
+      responses:
+        "200":
+          description: Estado de registro
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  canRegister: { type: boolean }
+
+  /auth/register:
+    post:
+      summary: Registrar nuevo usuario
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 6 }
+      responses:
+        "200":
+          description: Token JWT generado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  email: { type: string }
+        "400":
+          description: Error de validación
+
+  /auth/login:
+    post:
+      summary: Iniciar sesión
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: Token JWT
+        "401":
+          description: Credenciales inválidas
+
+  /ccl:
+    get:
+      summary: Cotización del dólar CCL
+      responses:
+        "200":
+          description: Precio CCL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  compra: { type: number }
+                  venta: { type: number }
+                  fecha: { type: string }
+
+  /cedears:
+    get:
+      summary: Listado completo de CEDEARs disponibles
+      responses:
+        "200":
+          description: Array de definiciones de CEDEARs
+
+  /ranking:
+    get:
+      summary: Ranking cuantitativo de CEDEARs
+      parameters:
+        - in: query
+          name: top
+          schema: { type: integer, default: 20 }
+        - in: query
+          name: profile
+          schema: { type: string, enum: [conservative, moderate, aggressive], default: moderate }
+        - in: query
+          name: sectors
+          schema: { type: string }
+        - in: query
+          name: minScore
+          schema: { type: integer, default: 55 }
+        - in: query
+          name: showDiversified
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Ranking con scores técnicos y fundamentales
+
+  /cedear/{ticker}:
+    get:
+      summary: Datos completos de un CEDEAR
+      parameters:
+        - in: path
+          name: ticker
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Quote, financials, analysis y signals
+        "404":
+          description: Ticker no encontrado
+
+  /history/{ticker}:
+    get:
+      summary: Historial de precios
+      parameters:
+        - in: path
+          name: ticker
+          required: true
+          schema: { type: string }
+        - in: query
+          name: range
+          schema: { type: string, default: "1y" }
+      responses:
+        "200":
+          description: Array de precios históricos
+
+  /ai/analyze:
+    post:
+      summary: Análisis mensual con IA (Claude)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                capital: { type: number }
+                profile: { type: string, enum: [conservative, moderate, aggressive], default: moderate }
+      responses:
+        "200":
+          description: Análisis completo con picks y plan de ejecución
+        "429":
+          description: Rate limit excedido
+
+  /portfolio/db:
+    get:
+      summary: Resumen y posiciones del portfolio
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Datos del portfolio desde la base de datos
+
+  /portfolio/buy:
+    post:
+      summary: Registrar compra
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticker, shares, priceArs]
+              properties:
+                ticker: { type: string }
+                shares: { type: integer }
+                priceArs: { type: number }
+                notes: { type: string }
+      responses:
+        "200":
+          description: Compra registrada con alertas de riesgo
+
+  /portfolio/sell:
+    post:
+      summary: Registrar venta
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticker, shares, priceArs]
+              properties:
+                ticker: { type: string }
+                shares: { type: integer }
+                priceArs: { type: number }
+                notes: { type: string }
+
+  /backtest:
+    get:
+      summary: Backtest de estrategia Core/Satellite
+      parameters:
+        - in: query
+          name: months
+          schema: { type: integer, default: 12 }
+        - in: query
+          name: profile
+          schema: { type: string, default: moderate }
+        - in: query
+          name: capital
+          schema: { type: number, default: 1000000 }
+      responses:
+        "200":
+          description: Resultados del backtest
+
+  /capital-history:
+    get:
+      summary: Historial de capital
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, default: 90 }
+      responses:
+        "200":
+          description: Array de registros de capital
+
+  /performance:
+    get:
+      summary: Performance del bot
+      parameters:
+        - in: query
+          name: days
+          schema: { type: integer, default: 30 }
+      responses:
+        "200":
+          description: Métricas de performance
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

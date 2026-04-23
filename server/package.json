@@ -5,8 +5,12 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js"
+    "start": "tsx index.js",
+    "dev": "tsx watch index.js",
+    "test": "node --import tsx --test --test-isolation=none tests/*.test.js tests/**/*.test.js",
+    "test:watch": "node --import tsx --test --test-isolation=none --watch tests/*.test.js",
+    "smoke": "node --import tsx scripts/smoke.js",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -14,7 +18,15 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "helmet": "^8.1.0",
     "node-cache": "^5.1.2",
+    "telegraf": "^4.16.3",
     "yahoo-finance2": "^3.13.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "supertest": "^7.2.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
   }
 }

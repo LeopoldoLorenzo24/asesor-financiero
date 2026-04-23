@@ -14,14 +14,14 @@ export async function calculateBenchmarks(ranking = []) {
   const now = new Date();
   const monthsBack = Math.max(1, Math.ceil((now - firstDate) / (30 * 86400000)));
 
-  // Calculate total invested and current portfolio value
-  let totalInvestedARS = 0;
-  const buys = transactions.filter(t => t.type === "BUY");
-  const sells = transactions.filter(t => t.type === "SELL");
-  for (const tx of buys) totalInvestedARS += tx.total_ars;
-  for (const tx of sells) totalInvestedARS -= tx.total_ars;
-
+  // Use current portfolio cost basis (weighted avg × shares) as invested amount.
+  // This avoids double-counting from portfolio resets that add duplicate BUY transactions.
   const summary = await getPortfolioSummary();
+  let totalInvestedARS = 0;
+  for (const pos of summary) {
+    totalInvestedARS += (pos.total_shares || 0) * (pos.weighted_avg_price || 0);
+  }
+
   let currentValueARS = 0;
   for (const pos of summary) {
     const r = ranking.find(x => x.cedear?.ticker === pos.ticker);

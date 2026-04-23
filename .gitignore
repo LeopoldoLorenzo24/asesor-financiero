@@ -1,7 +1,16 @@
 node_modules/
 dist/
 .env
+.env.local
 *.db
 *.db-wal
 *.db-shm
 .DS_Store
+*.log
+output*.json
+success_raw.txt
+server/test_*.js
+server/stderr.txt
+server/stdout.txt
+server/data/
+.claude/

@@ -194,7 +194,7 @@ export function diversifiedSelection(rankedResults, portfolioPositions = [], pro
 // --- Portfolio exposure calculator ---
 export async function portfolioExposure(quotesMap = null, bymaPrices = null, cclRate = null) {
   const positions = await getPortfolioSummary();
-  const result = { sectors: {}, categories: {}, total: 0, positions: positions.length, hasEstimates: false };
+  const result = { sectors: {}, categories: {}, total: 0, positionCount: positions.length, hasEstimates: false };
 
   let totalValue = 0;
   for (const pos of positions) {

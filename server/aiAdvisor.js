@@ -1,97 +1,301 @@
+/** @format */
 // ============================================================
-// AI ADVISOR SERVICE
-// Uses Claude API with web search for intelligent analysis
+// AI ADVISOR SERVICE v2
+// Compressed prompts, centralized config, shared utilities
 // ============================================================
 
 import Anthropic from "@anthropic-ai/sdk";
 import NodeCache from "node-cache";
-import { logPrediction, logAnalysisSession, buildAIContext, getLatestLessons } from "./database.js";
+import {
+  logPrediction, logAnalysisSession, buildAIContext, getLatestLessons, logDecisionAudit, logCapital,
+} from "./database.js";
 import { buildMonthlyCycleContext } from "./investmentCycle.js";
 import { runBacktest } from "./backtest.js";
 import { getMarketKnowledge } from "./marketKnowledge.js";
+import { assertAiBudgetAvailable, recordAnthropicUsage } from "./aiUsage.js";
+import { FLAGS } from "./featureFlags.js";
+import { fetchQuote, fetchVIX } from "./marketData.js";
+import CEDEARS from "./cedears.js";
+import { PROFILE_CONFIG, AI_CONFIG, RISK_CONFIG } from "./config.js";
+import {
+  toFiniteNumber, roundMoney, clampPct, isSellAction,
+  getPriceArsFromRankingItem, getFundData, sleep, safeJsonParse,
+} from "./utils.js";
 
-const backtestCache = new NodeCache({ stdTTL: 21600 }); // 6 horas
+const backtestCache = new NodeCache({ stdTTL: AI_CONFIG.backtestCacheTtlMs / 1000 });
 
 let client = null;
 export function getClient() {
-  if (!client) {
-    client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  }
+  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   return client;
 }
 
-// Profile-specific system prompts — SPY-default philosophy
-// Core = SPY/QQQ indexation, Satellite = active picks only when conviction is high
-const PROFILE_PROMPTS = {
-  conservative: {
-    label: "CONSERVADOR",
-    corePct: 80,
-    personality: `Sos un asesor financiero CONSERVADOR argentino experto en CEDEARs.
-Tu DEFAULT es SPY. Solo recomendás picks activos si tenés convicción altísima (>85/100).
-Preservar capital es la prioridad absoluta. Ante la duda: todo a SPY.
-Stop loss ajustados: -5% a -8%.`,
-    rules: `DISTRIBUCIÓN CORE/SATELLITE: 80% SPY (core) / 20% picks activos (satellite) como MÁXIMO.
-Si no hay oportunidades claras, mandá 100% a SPY. No inventés picks por inventar.
-Picks solo con conviction ≥85. Priorizar dividendos, empresas estables, baja volatilidad.
-Máximo 20% en un solo CEDEAR activo, mínimo 3 sectores si hay satellite.`,
-  },
-  moderate: {
-    label: "MODERADO-AGRESIVO",
-    corePct: 50,
-    personality: `Sos un asesor financiero argentino experto en CEDEARs.
-Tu DEFAULT es SPY. Solo recomendás picks activos si tenés convicción real (>70/100).
-Buscás balance: indexación pasiva + stock picking oportunista.
-Stop loss: -8% a -12%.`,
-    rules: `DISTRIBUCIÓN CORE/SATELLITE: 50% SPY (core) / 50% picks activos (satellite) como MÁXIMO.
-Si no hay oportunidades claras, subí la proporción de SPY hasta 80-100%.
-Cada pick activo necesita conviction ≥70 y una razón concreta de por qué le gana a SPY.
-Máximo 35% en un sector, mínimo 3 sectores en satellite.`,
-  },
-  aggressive: {
-    label: "AGRESIVO",
-    corePct: 30,
-    personality: `Sos un asesor financiero AGRESIVO argentino experto en CEDEARs.
-Tu core es QQQ en lugar de SPY. Buscás alpha con picks de alta convicción.
-Tolerás volatilidad alta. Pero incluso en modo agresivo, QQQ es tu default.
-Stop loss amplios: -15% a -20%.`,
-    rules: `DISTRIBUCIÓN CORE/SATELLITE: 30% QQQ (core) / 70% picks activos (satellite) como MÁXIMO.
-Si no hay oportunidades claras, subí QQQ hasta 60-100%.
-Cada pick activo necesita conviction ≥60 y explicación de alpha esperado vs QQQ.
-Hasta 50% en un solo sector. Mínimo 2 sectores en satellite.`,
-  },
-};
-
 function getProfileConfig(profileId = "moderate") {
-  return PROFILE_PROMPTS[profileId] || PROFILE_PROMPTS.moderate;
+  return PROFILE_CONFIG[profileId] || PROFILE_CONFIG.moderate;
 }
 
-// --- JSON Extraction Utility ---
+function buildPriceMap({ ranking = [], cycleData, ccl }) {
+  const map = {};
+  for (const pos of cycleData?.positionsWithData || []) {
+    const ticker = String(pos?.ticker || "").toUpperCase();
+    const price = roundMoney(pos?.currentPrice);
+    if (ticker && price > 0) map[ticker] = price;
+  }
+  for (const item of ranking || []) {
+    const ticker = String(item?.cedear?.ticker || item?.ticker || "").toUpperCase();
+    if (!ticker) continue;
+    const priceArs = getPriceArsFromRankingItem(item, ccl);
+    if (priceArs && priceArs > 0) map[ticker] = priceArs;
+  }
+  return map;
+}
+
+export function enforceAnalysisConsistency({ result, capital, coreETF, profile, cycleData, ranking, ccl }) {
+  const notes = [];
+  const priceMap = buildPriceMap({ ranking, cycleData, ccl });
+  const positionsMap = {};
+  for (const pos of cycleData?.positionsWithData || []) {
+    positionsMap[String(pos.ticker || "").toUpperCase()] = pos;
+  }
+
+  if (!result || typeof result !== "object") return { notes };
+  if (!result.decision_mensual || typeof result.decision_mensual !== "object") {
+    result.decision_mensual = {};
+  }
+
+  const decision = result.decision_mensual;
+  decision.core_etf = String(decision.core_etf || coreETF || "SPY").toUpperCase();
+  if (!decision.distribucion || typeof decision.distribucion !== "object") {
+    decision.distribucion = {};
+  }
+  if (!Array.isArray(decision.picks_activos)) decision.picks_activos = [];
+  if (!Array.isArray(result.acciones_cartera_actual)) result.acciones_cartera_actual = [];
+
+  const dist = decision.distribucion;
+  let corePct = clampPct(dist.core_pct);
+  let satPct = clampPct(dist.satellite_pct);
+  if (corePct + satPct === 0) {
+    corePct = clampPct(profile?.corePct ?? 50);
+    satPct = 100 - corePct;
+    notes.push("Distribucion vacia: se aplico porcentaje base del perfil.");
+  } else if (corePct + satPct !== 100) {
+    const sum = corePct + satPct;
+    corePct = Math.round((corePct / sum) * 100);
+    satPct = 100 - corePct;
+    notes.push("Distribucion normalizada para sumar 100%.");
+  }
+
+  const seenPick = new Set();
+  const picks = [];
+  for (const raw of decision.picks_activos) {
+    const ticker = String(raw?.ticker || "").toUpperCase();
+    if (!ticker || seenPick.has(ticker)) continue;
+    seenPick.add(ticker);
+    const conviction = clampPct(raw?.conviction || 70);
+    const trustedPrice = priceMap[ticker] ? roundMoney(priceMap[ticker]) : null;
+    const aiPrice = roundMoney(raw?.precio_aprox_ars || 0);
+    const price = trustedPrice || aiPrice || 0;
+    const priceFromMarket = !!trustedPrice;
+    const monto = Math.max(0, roundMoney(raw?.monto_total_ars || 0));
+    const cantidad = priceFromMarket && price > 0 && monto > 0
+      ? Math.max(1, Math.floor(monto / price))
+      : Math.max(0, roundMoney(raw?.cantidad_cedears || 0));
+
+    if (priceFromMarket && trustedPrice !== aiPrice && aiPrice > 0) {
+      notes.push(`Precio de ${ticker} corregido con datos de mercado: AI estimó $${aiPrice.toLocaleString()}/CEDEAR → real $${price.toLocaleString()}/CEDEAR. Cantidad recalculada a ${cantidad} CEDEARs.`);
+    }
+
+    picks.push({ ...raw, ticker, conviction, precio_aprox_ars: price > 0 ? price : null, cantidad_cedears: cantidad, monto_total_ars: monto, _price_verified: priceFromMarket });
+  }
+  picks.sort((a, b) => toFiniteNumber(b.conviction, 0) - toFiniteNumber(a.conviction, 0));
+  decision.picks_activos = picks;
+
+  if (picks.length === 0) {
+    if (satPct !== 0 || corePct !== 100) notes.push("Sin picks activos: se fuerza 100% CORE y 0% SATELLITE.");
+    satPct = 0;
+    corePct = 100;
+  }
+
+  const hadActionable =
+    result.acciones_cartera_actual.some((a) => isSellAction(a?.accion) && Math.abs(toFiniteNumber(a?.cantidad_ajustar, 0)) > 0) ||
+    picks.length > 0 ||
+    (Array.isArray(result.plan_ejecucion) && result.plan_ejecucion.length > 0);
+
+  if (result.sin_cambios_necesarios && hadActionable) {
+    result.sin_cambios_necesarios = false;
+    notes.push("sin_cambios_necesarios estaba en conflicto con operaciones; se ajusto a false.");
+  }
+
+  const sellSteps = [];
+  const sellMap = {};
+  let totalVentasARS = 0;
+  for (const action of result.acciones_cartera_actual) {
+    const actionType = String(action?.accion || "").toUpperCase();
+    if (!isSellAction(actionType)) continue;
+    const ticker = String(action?.ticker || "").toUpperCase();
+    const pos = positionsMap[ticker];
+    if (!pos) continue;
+
+    let qty = 0;
+    if (actionType === "VENDER TODO") qty = roundMoney(pos.shares);
+    else {
+      qty = Math.abs(roundMoney(action?.cantidad_ajustar || 0));
+      if (qty === 0 && actionType === "VENDER") qty = roundMoney(pos.shares);
+    }
+    qty = Math.min(qty, roundMoney(pos.shares));
+    if (qty <= 0) continue;
+
+    const price = roundMoney(pos.currentPrice || priceMap[ticker] || 0);
+    if (price <= 0) continue;
+    const amount = roundMoney(qty * price);
+    totalVentasARS += amount;
+    sellMap[ticker] = { qty, price, amount };
+    sellSteps.push({ tipo: "VENDER", ticker, cantidad_cedears: qty, monto_estimado_ars: amount, nota: action?.razon || "Liberar capital - ejecutar primero" });
+
+    if (actionType === "REDUCIR") action.cantidad_ajustar = -qty;
+    else if (actionType === "VENDER" || actionType === "VENDER TODO") action.cantidad_ajustar = -qty;
+  }
+
+  const capitalDisponiblePost = roundMoney(capital + totalVentasARS);
+  const aCoreArs = roundMoney(capitalDisponiblePost * (corePct / 100));
+  const aSatelliteArs = Math.max(0, capitalDisponiblePost - aCoreArs);
+
+  dist.core_pct = corePct;
+  dist.satellite_pct = satPct;
+  dist.core_monto_ars = aCoreArs;
+  dist.satellite_monto_ars = aSatelliteArs;
+
+  if (!result.resumen_operaciones || typeof result.resumen_operaciones !== "object") result.resumen_operaciones = {};
+  result.resumen_operaciones.capital_disponible_actual = roundMoney(capital);
+  result.resumen_operaciones.total_a_vender_ars = totalVentasARS;
+  result.resumen_operaciones.capital_disponible_post_ventas = capitalDisponiblePost;
+  result.resumen_operaciones.a_core_ars = aCoreArs;
+  result.resumen_operaciones.a_satellite_ars = aSatelliteArs;
+
+  const buySteps = [];
+  const coreTicker = String(decision.core_etf || coreETF || "SPY").toUpperCase();
+  const corePrice = roundMoney(priceMap[coreTicker] || 0);
+  if (aCoreArs > 0 && corePrice > 0) {
+    const qty = Math.floor(aCoreArs / corePrice);
+    const amount = roundMoney(qty * corePrice);
+    if (qty > 0 && amount > 0) {
+      buySteps.push({ tipo: "COMPRAR", subtipo: "CORE", ticker: coreTicker, cantidad_cedears: qty, monto_estimado_ars: amount, nota: "Core - ejecutar despues de ventas" });
+    }
+  }
+
+  if (aSatelliteArs > 0 && picks.length > 0) {
+    const desiredSum = picks.reduce((sum, p) => sum + Math.max(0, roundMoney(p.monto_total_ars)), 0);
+    let remaining = aSatelliteArs;
+    for (let i = 0; i < picks.length; i++) {
+      const p = picks[i];
+      const price = roundMoney(p.precio_aprox_ars || priceMap[p.ticker] || 0);
+      if (price <= 0 || remaining <= 0) continue;
+
+      const weight = desiredSum > 0 ? Math.max(0, roundMoney(p.monto_total_ars)) / desiredSum : 1 / picks.length;
+      const targetAmount = i === picks.length - 1 ? remaining : Math.min(remaining, roundMoney(aSatelliteArs * weight));
+      const qty = Math.floor(targetAmount / price);
+      const amount = roundMoney(qty * price);
+      if (qty <= 0 || amount <= 0) {
+        p.cantidad_cedears = 0;
+        p.monto_total_ars = 0;
+        continue;
+      }
+      p.precio_aprox_ars = price;
+      p.cantidad_cedears = qty;
+      p.monto_total_ars = amount;
+      remaining -= amount;
+      buySteps.push({ tipo: "COMPRAR", subtipo: "SATELLITE", ticker: p.ticker, cantidad_cedears: qty, monto_estimado_ars: amount, nota: "Satellite pick - ejecutar despues del core" });
+    }
+  } else if (aSatelliteArs > 0 && picks.length === 0) {
+    notes.push("No habia picks activos para asignar el presupuesto satellite.");
+  }
+
+  const buyQtyByTicker = Object.fromEntries(buySteps.map((s) => [String(s.ticker || "").toUpperCase(), s.cantidad_cedears]));
+  for (const action of result.acciones_cartera_actual) {
+    const actionType = String(action?.accion || "").toUpperCase();
+    const ticker = String(action?.ticker || "").toUpperCase();
+    if (actionType === "AUMENTAR" && buyQtyByTicker[ticker] > 0) action.cantidad_ajustar = buyQtyByTicker[ticker];
+  }
+
+  const finalPlan = [...sellSteps, ...buySteps].map((step, idx) => ({ paso: idx + 1, ...step }));
+  result.plan_ejecucion = finalPlan;
+
+  const totalCompras = finalPlan.filter((s) => s.tipo === "COMPRAR").reduce((sum, s) => sum + roundMoney(s.monto_estimado_ars), 0);
+  if (totalCompras > capitalDisponiblePost) {
+    result._budget_warning = `Las compras planificadas ($${totalCompras.toLocaleString()}) superan el capital real disponible ($${capitalDisponiblePost.toLocaleString()}).`;
+    notes.push("Compras por encima del capital disponible.");
+  } else {
+    delete result._budget_warning;
+  }
+
+  if (notes.length > 0) result._consistency_notes = notes;
+  else delete result._consistency_notes;
+
+  return { notes, totalVentasARS, capitalDisponiblePost };
+}
+
+export function detectMacroClaims(text) {
+  if (!text || typeof text !== "string") return [];
+  const warnings = [];
+  const shortTermCtx = /\b(hoy|today|esta semana|this week|sesion|intraday|diario|daily|en el dia|en la semana)\b/i;
+  const hasShortTermContext = shortTermCtx.test(text);
+
+  for (const m of text.matchAll(/(\d{1,3}(?:\.\d+)?)\s*%/g)) {
+    const val = parseFloat(m[1]);
+    if (val >= 100) warnings.push(`Porcentaje ≥100% detectado: "${m[0]}" — probablemente incorrecto.`);
+    else if (val >= 80) warnings.push(`Porcentaje inusualmente alto: "${m[0]}" — verificar.`);
+    else if (val >= 50 && hasShortTermContext) warnings.push(`Movimiento de ${m[0]} en corto plazo — confirmar.`);
+  }
+  for (const m of text.matchAll(/(\d+(?:\.\d+)?)\s*(trillion|billones?)\b/gi)) {
+    if (parseFloat(m[1]) > 500) warnings.push(`Cifra de "${m[0]}" parece fuera de escala.`);
+  }
+  for (const m of text.matchAll(/(\d+)\s*(?:M|millones?)\s*(?:de\s+)?barriles?/gi)) {
+    if (parseInt(m[1]) > 500) warnings.push(`Cantidad de barriles "${m[0]}" supera producción mundial.`);
+  }
+  return warnings;
+}
+
+export function validateAnalysisSchema(result) {
+  const errors = [];
+  if (!result || typeof result !== "object") return ["La respuesta no es un objeto JSON válido."];
+  if (typeof result.resumen_mercado !== "string" || result.resumen_mercado.trim().length === 0) errors.push("resumen_mercado faltante o vacío.");
+  if (!result.decision_mensual || typeof result.decision_mensual !== "object") errors.push("decision_mensual faltante.");
+  else {
+    const dm = result.decision_mensual;
+    if (typeof dm.core_etf !== "string" || dm.core_etf.trim().length === 0) errors.push("decision_mensual.core_etf faltante.");
+    if (!dm.distribucion || typeof dm.distribucion !== "object") errors.push("decision_mensual.distribucion faltante.");
+    else {
+      const corePct = Number(dm.distribucion.core_pct);
+      const satPct = Number(dm.distribucion.satellite_pct);
+      if (!Number.isFinite(corePct) || !Number.isFinite(satPct)) errors.push("decision_mensual.distribucion: core_pct o satellite_pct no son números.");
+    }
+    if (!Array.isArray(dm.picks_activos)) errors.push("decision_mensual.picks_activos debe ser un array.");
+  }
+  if (!Array.isArray(result.acciones_cartera_actual)) errors.push("acciones_cartera_actual debe ser un array.");
+  if (!result.riesgos || (typeof result.riesgos !== "string" && !Array.isArray(result.riesgos))) errors.push("riesgos faltante.");
+  return errors;
+}
+
 export function extractJSON(fullText) {
   let jsonStr = "";
   const mdMatch = fullText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
   if (mdMatch) {
     jsonStr = mdMatch[1];
   } else {
-    // Attempt to find the largest valid JSON object by balancing braces
     let depth = 0, start = -1, candidates = [];
     for (let i = 0; i < fullText.length; i++) {
-      if (fullText[i] === '{') {
+      if (fullText[i] === "{") {
         if (depth === 0) start = i;
         depth++;
-      } else if (fullText[i] === '}') {
+      } else if (fullText[i] === "}") {
         depth--;
-        if (depth === 0 && start !== -1) {
-          candidates.push(fullText.substring(start, i + 1));
-        }
+        if (depth === 0 && start !== -1) candidates.push(fullText.substring(start, i + 1));
       }
     }
     candidates.sort((a, b) => b.length - a.length);
     for (const cand of candidates) {
       try {
-        const cleaned = cand
-          .replace(/[\x00-\x1F\x7F]/g, ch => ch === '\n' || ch === '\r' || ch === '\t' ? ch : ' ')
-          .replace(/,\s*([\]}])/g, '$1')
-          .replace(/<cite[^>]*>|<\/cite>/g, "");
+        const cleaned = cand.replace(/[\x00-\x1F\x7F]/g, (ch) => (ch === "\n" || ch === "\r" || ch === "\t" ? ch : " ")).replace(/,\s*([\]}])/g, "$1").replace(/<cite[^>]*>|<\/cite>/g, "");
         JSON.parse(cleaned);
         jsonStr = cleaned;
         break;
@@ -102,50 +306,109 @@ export function extractJSON(fullText) {
       jsonStr = fallback ? fallback[0] : "";
     }
   }
-
-  return jsonStr
-    .replace(/[\x00-\x1F\x7F]/g, ch => ch === '\n' || ch === '\r' || ch === '\t' ? ch : ' ')
-    .replace(/,\s*([\]}])/g, '$1')
-    .replace(/<cite[^>]*>|<\/cite>/g, "");
+  return jsonStr.replace(/[\x00-\x1F\x7F]/g, (ch) => (ch === "\n" || ch === "\r" || ch === "\t" ? ch : " ")).replace(/,\s*([\]}])/g, "$1").replace(/<cite[^>]*>|<\/cite>/g, "");
 }
 
-// --- Generate full AI analysis ---
+// ── COMPRESSED PROMPT BUILDERS ──
+
+function buildBacktestSection(backtestSummary, coreETF) {
+  if (!backtestSummary) return "";
+  const h = backtestSummary.horizons || [];
+  const horizonsTxt = h.length > 1
+    ? "\nResumen por horizontes:" + h.map((hh) => `\n- ${hh.months}m: estrategia ${hh.returnPct != null ? hh.returnPct + "%" : "N/A"} vs ${coreETF} ${hh.spyReturnPct != null ? hh.spyReturnPct + "%" : "N/A"} (alfa ${hh.alphaVsSpy != null ? hh.alphaVsSpy + "pp" : "N/A"})`).join("")
+    : "";
+
+  const picksTxt = backtestSummary.picksGanadores?.length
+    ? backtestSummary.picksGanadores.map((p) => `- ${p.ticker} (${p.sector}) -> vs ${coreETF}: ${p.vsSpy != null ? (p.vsSpy >= 0 ? "+" : "") + p.vsSpy + "pp" : "N/A"}`).join("\n")
+    : `Ninguno de los picks actuales aparece como ganador claro vs ${coreETF} en el backtest; sé extremadamente selectivo con el satellite.`;
+
+  return `
+BACKTEST RECIENTE (estrategia vs ${coreETF}):
+- Principal: ${backtestSummary.months || 6}m | Bot: ${backtestSummary.returnPct != null ? backtestSummary.returnPct + "%" : "N/A"} | ${coreETF}: ${backtestSummary.spyReturnPct != null ? backtestSummary.spyReturnPct + "%" : "N/A"} | Satellite: ${backtestSummary.satelliteReturnPct != null ? backtestSummary.satelliteReturnPct + "%" : "N/A"} (alfa: ${backtestSummary.satelliteAlpha != null ? backtestSummary.satelliteAlpha + "pp" : "N/A"})
+- Veredicto: ${backtestSummary.veredicto || "N/A"}${horizonsTxt}
+- Picks ganadores en backtest que están en ranking actual:
+${picksTxt}
+INSTRUCCIÓN: Si el backtest muestra que el satellite NO le gana a ${coreETF}, reducir satellite al mínimo (10-25%). Si hay alfa positivo consistente, justificar satellite más grande dentro del perfil.`;
+}
+
+function buildTickerDetails(topPicks, ccl) {
+  const today = new Date();
+  return topPicks.slice(0, 10).map((p, i) => {
+    const fund = getFundData(p.fundamentals);
+    const nextEarnings = fund.nextEarningsDate || p.fundamentals?.nextEarningsDate || null;
+    let earningsTag = "";
+    if (nextEarnings) {
+      const days = Math.round((new Date(nextEarnings) - today) / 86400000);
+      earningsTag = days <= 7 ? ` ⚠ EARNINGS ${days}d` : days <= 21 ? ` 📅 Earnings ${days}d` : ` | Earnings: ${nextEarnings}`;
+    }
+    const rsTag = p.rsRating != null ? ` | RS:${p.rsRating}${p.rsRating >= 80 ? "🔥" : p.rsRating <= 30 ? "❄" : ""}` : "";
+    const perf = p.technical?.indicators?.performance || {};
+    return `${i + 1}. ${p.cedear?.ticker || p.ticker} (${p.cedear.name}) [${p.cedear.sector}]${earningsTag}
+   Score:${p.scores.composite}/100 T:${p.scores.techScore} F:${p.scores.fundScore} S:${p.scores.sentScore}${rsTag} | Signal:${p.scores.signal} | Horizon:${p.scores.horizon}
+   USD:$${p.quote?.price?.toFixed(2) || "N/A"} | P/E:${fund.pe?.toFixed(1) || "N/A"} EPSg:${fund.epsGrowth?.toFixed(1) || "N/A"}% | Div:${p.quote?.dividendYield?.toFixed(2) || 0}% Beta:${p.quote?.beta?.toFixed(2) || "N/A"}
+   1M:${perf.month1?.toFixed(1) || "N/A"}% 3M:${perf.month3?.toFixed(1) || "N/A"}% RSI:${p.technical?.indicators?.rsi || "N/A"} MACD:${p.technical?.indicators?.macd?.histogram || "N/A"}
+   Target:$${fund.targetMeanPrice?.toFixed(2) || "N/A"} Rec:${fund.recommendationKey || "N/A"} | Ratio ${p.cedear.ratio}:1 ARS:~$${p.quote?.price ? Math.round(p.quote.price * ccl.venta / p.cedear.ratio) : "N/A"}`;
+  }).join("\n\n");
+}
+
+function buildSectorRotation(ranking) {
+  const map = {};
+  for (const item of ranking || []) {
+    const sector = item.cedear?.sector;
+    const m1 = item.technical?.indicators?.performance?.month1;
+    const m3 = item.technical?.indicators?.performance?.month3;
+    if (!sector || m1 == null) continue;
+    if (!map[sector]) map[sector] = { m1: [], m3: [] };
+    map[sector].m1.push(m1);
+    if (m3 != null) map[sector].m3.push(m3);
+  }
+  const rows = Object.entries(map)
+    .map(([sector, { m1, m3 }]) => ({
+      sector,
+      avg1m: m1.length ? Math.round((m1.reduce((a, b) => a + b, 0) / m1.length) * 10) / 10 : null,
+      avg3m: m3.length ? Math.round((m3.reduce((a, b) => a + b, 0) / m3.length) * 10) / 10 : null,
+      n: m1.length,
+    }))
+    .filter((s) => s.avg1m != null && s.n >= 1)
+    .sort((a, b) => (b.avg1m ?? 0) - (a.avg1m ?? 0));
+
+  if (rows.length === 0) return "";
+  return `
+ROTACIÓN SECTORIAL (promedio 1M/3M):
+${rows.map((s) => {
+  const tag = s.avg1m >= 5 ? "🔥 LIDER" : s.avg1m >= 2 ? "↑" : s.avg1m <= -5 ? "🧊 REZAG" : s.avg1m <= -2 ? "↓" : "→";
+  return `- ${tag} ${s.sector}: ${s.avg1m >= 0 ? "+" : ""}${s.avg1m}% (1M)${s.avg3m != null ? ` | 3M: ${s.avg3m >= 0 ? "+" : ""}${s.avg3m}%` : ""} [${s.n}]`;
+}).join("\n")}
+INSTRUCCIÓN: Priorizar picks en sectores LIDERANDO. Evitar agregar exposición a REZAGADOS salvo catalizador concreto.`;
+}
+
 export async function generateAnalysis({ topPicks, capital, ccl, diversification, warnings, ranking, profileId = "moderate" }) {
   const profile = getProfileConfig(profileId);
+  const coreETF = profile.coreETF;
 
-  // Construir contexto mensual completo (incluye valor de portfolio y performance reciente)
-  const cycleData = await buildMonthlyCycleContext({ capital, ccl, ranking: ranking || topPicks });
+  const [cycleData, vix] = await Promise.all([
+    buildMonthlyCycleContext({ capital, ccl, ranking: ranking || topPicks }),
+    fetchVIX().catch(() => null),
+  ]);
   const monthlyContext = cycleData.context;
   const cartEraYaAlineada = cycleData.cartEraYaAlineada;
-
-  // Contexto adicional de auto-evaluación (historial de predicciones evaluadas)
   const selfEvalContext = await buildAIContext();
-
-  // Lecciones de post-mortems anteriores — el conocimiento acumulado del bot
   const lessons = await getLatestLessons();
+
   let lessonsSection = "";
   if (lessons.length > 0) {
-    lessonsSection = `
-LECCIONES DE TUS POST-MORTEMS ANTERIORES (LEELAS Y RESPETÁ TUS PROPIAS REGLAS):
-${lessons
-  .map((l) => {
-    const rules = l.self_imposed_rules ? JSON.parse(l.self_imposed_rules) : [];
-    const patterns = l.patterns_detected ? JSON.parse(l.patterns_detected) : [];
-    return `[${l.month_label}] (Confianza en estrategia: ${l.confidence_in_strategy ?? "—"}%)
-Lecciones: ${l.lessons_learned || "—"}
-Patrones: ${patterns.length > 0 ? patterns.join("; ") : "—"}
-Reglas autoimpuestas: ${rules.length > 0 ? rules.join("; ") : "—"}`;
-  })
-  .join("\n\n")}
-
-IMPORTANTE: Las reglas que te autoimpusiste son OBLIGATORIAS. Si dijiste "no recomendar X cuando Y", NO lo hagas. Si lo hacés, explicá explícitamente por qué cambiaste de opinión.
-`;
+    lessonsSection = `\nLECCIONES DE POST-MORTEMS ANTERIORES (OBLIGATORIAS):\n${lessons
+      .map((l) => {
+        const rules = safeJsonParse(l.self_imposed_rules, []);
+        const patterns = safeJsonParse(l.patterns_detected, []);
+        return `[${l.month_label}] Confianza:${l.confidence_in_strategy ?? "—"}%\nLecciones: ${l.lessons_learned || "—"}\nPatrones: ${patterns.length > 0 ? patterns.join("; ") : "—"}\nReglas: ${rules.length > 0 ? rules.join("; ") : "—"}`;
+      })
+      .join("\n\n")}\nIMPORTANTE: Las reglas autoimpuestas son OBLIGATORIAS. Si dijiste "no recomendar X cuando Y", NO lo hagas.`;
   }
 
-  // Base de conocimiento estática de historia del mercado
   const knowledge = getMarketKnowledge();
 
-  // ── Mini-backtest interno multi-horizonte: cómo le viene yendo al bot vs SPY/QQQ ──
+  // Mini-backtest multi-horizonte
   let backtestSummary = null;
   const backtestCacheKey = `minibt_${profileId}`;
   const cachedBacktest = backtestCache.get(backtestCacheKey);
@@ -154,516 +417,310 @@ IMPORTANTE: Las reglas que te autoimpusiste son OBLIGATORIAS. Si dijiste "no rec
     console.log("📦 Using cached mini-backtest result");
     backtestSummary = cachedBacktest;
   } else {
-  try {
-    const monthsSinceStart = cycleData?.monthNumber || 6;
-    const horizons = [];
-    if (monthsSinceStart >= 3) horizons.push(3);
-    if (monthsSinceStart >= 6) horizons.push(6);
-    if (monthsSinceStart >= 12) horizons.push(12);
-    if (horizons.length === 0) horizons.push(Math.min(6, Math.max(3, monthsSinceStart)));
+    try {
+      const monthsSinceStart = cycleData?.monthNumber || 6;
+      const horizons = [];
+      if (monthsSinceStart >= 3) horizons.push(3);
+      if (monthsSinceStart >= 6) horizons.push(6);
+      if (monthsSinceStart >= 12) horizons.push(12);
+      if (horizons.length === 0) horizons.push(Math.min(6, Math.max(3, monthsSinceStart)));
 
-    const backtests = await Promise.allSettled(
-      horizons.map((m) =>
-        runBacktest({
-          months: m,
-          monthlyDeposit: 1000000,
-          profile: profileId,
-          picksPerMonth: 4,
-        })
-      )
-    );
+      const backtests = await Promise.allSettled(
+        horizons.map((m) => runBacktest({ months: m, monthlyDeposit: BACKTEST_CONFIG.defaultMonthlyDeposit, profile: profileId, picksPerMonth: BACKTEST_CONFIG.defaultPicksPerMonth }))
+      );
 
-    const successful = backtests
-      .map((r, idx) => (r.status === "fulfilled" && !r.value.error ? { months: horizons[idx], data: r.value } : null))
-      .filter(Boolean);
+      const successful = backtests
+        .map((r, idx) => (r.status === "fulfilled" && !r.value.error ? { months: horizons[idx], data: r.value } : null))
+        .filter(Boolean);
 
-    if (successful.length > 0) {
-      // Tomamos como principal el horizonte más largo disponible
-      const main = successful.reduce((a, b) => (a.months >= b.months ? a : b));
-      const bt = main.data;
+      if (successful.length > 0) {
+        const main = successful.reduce((a, b) => (a.months >= b.months ? a : b));
+        const bt = main.data;
+        const winners = (bt.riskManagement?.picksVsSpy || []).filter((p) => p.beatsSpy);
+        const topTickers = new Set((topPicks || []).map((p) => p.cedear?.ticker));
+        const winnersInTopPicks = winners.filter((w) => topTickers.has(w.ticker));
 
-      const winners = (bt.riskManagement?.picksVsSpy || []).filter((p) => p.beatsSpy);
-      const topTickers = new Set((topPicks || []).map((p) => p.cedear?.ticker));
-      const winnersInTopPicks = winners.filter((w) => topTickers.has(w.ticker));
-
-      backtestSummary = {
-        months: bt.config?.months,
-        monthlyDeposit: bt.config?.monthlyDeposit,
-        returnPct: bt.resultado?.returnPct,
-        spyReturnPct: bt.resultado?.spyReturnPct,
-        beatsSPY: bt.resultado?.beatsSPY,
-        satelliteReturnPct: bt.satellite?.returnPct,
-        satelliteAlpha: bt.satellite?.alpha,
-        satelliteGeneraAlfa: bt.satellite?.generaAlfa,
-        veredicto: bt.veredicto,
-        picksGanadores: winnersInTopPicks
-          .slice(0, 15)
-          .map((w) => ({
-            ticker: w.ticker,
-            sector: w.sector,
-            returnPct: w.returnPct,
-            vsSpy: w.vsSpy,
+        backtestSummary = {
+          months: bt.config?.months,
+          monthlyDeposit: bt.config?.monthlyDeposit,
+          returnPct: bt.resultado?.returnPct,
+          spyReturnPct: bt.resultado?.spyReturnPct,
+          beatsSPY: bt.resultado?.beatsSPY,
+          satelliteReturnPct: bt.satellite?.returnPct,
+          satelliteAlpha: bt.satellite?.alpha,
+          satelliteGeneraAlfa: bt.satellite?.generaAlfa,
+          veredicto: bt.veredicto,
+          picksGanadores: winnersInTopPicks.slice(0, 15).map((w) => ({ ticker: w.ticker, sector: w.sector, returnPct: w.returnPct, vsSpy: w.vsSpy })),
+          totalPicksGanadores: winners.length,
+          horizons: successful.map(({ months, data }) => ({
+            months,
+            returnPct: data.resultado?.returnPct,
+            spyReturnPct: data.resultado?.spyReturnPct,
+            satelliteReturnPct: data.satellite?.returnPct,
+            alphaVsSpy: data.resultado?.alpha,
           })),
-        totalPicksGanadores: winners.length,
-        horizons: successful.map(({ months, data }) => ({
-          months,
-          returnPct: data.resultado?.returnPct,
-          spyReturnPct: data.resultado?.spyReturnPct,
-          satelliteReturnPct: data.satellite?.returnPct,
-          alphaVsSpy: data.resultado?.alpha,
-        })),
-      };
+        };
+      }
+    } catch (e) {
+      console.error("Mini-backtest error inside advisor:", e.message);
     }
-  } catch (e) {
-    console.error("Mini-backtest error inside advisor:", e.message);
+
+    if (backtestSummary) {
+      backtestCache.set(backtestCacheKey, backtestSummary);
+      console.log("💾 Mini-backtest cached for 6 hours");
+    }
   }
 
-  if (backtestSummary) {
-    backtestCache.set(backtestCacheKey, backtestSummary);
-    console.log("💾 Mini-backtest cached for 6 hours");
-  }
-  } // end cache-miss block
+  const tickerDetails = buildTickerDetails(topPicks, ccl);
+  const backtestSection = buildBacktestSection(backtestSummary, coreETF);
+  const sectorRotationSection = buildSectorRotation(ranking || topPicks);
 
-  const tickerDetails = topPicks
-    .slice(0, 10)
-    .map(
-      (p, i) =>
-        `${i + 1}. ${p.ticker} (${p.cedear.name}) - Sector: ${p.cedear.sector}
-   Score compuesto: ${p.scores.composite}/100 | Técnico: ${p.scores.techScore} | Fundamental: ${p.scores.fundScore} | Sentimiento: ${p.scores.sentScore}
-   Señal: ${p.scores.signal} | Horizonte: ${p.scores.horizon}
-   Precio USD: $${p.quote?.price?.toFixed(2) || "N/A"} | P/E: ${p.fundamentals?.pe?.toFixed(1) || "N/A"} | EPS Growth: ${p.fundamentals?.epsGrowth?.toFixed(1) || "N/A"}%
-   Div Yield: ${p.quote?.dividendYield?.toFixed(2) || 0}% | Beta: ${p.quote?.beta?.toFixed(2) || "N/A"}
-   Cambio 1M: ${p.technical?.indicators?.performance?.month1?.toFixed(1) || "N/A"}% | Cambio 3M: ${p.technical?.indicators?.performance?.month3?.toFixed(1) || "N/A"}%
-   RSI: ${p.technical?.indicators?.rsi || "N/A"} | MACD Hist: ${p.technical?.indicators?.macd?.histogram || "N/A"}
-   Target analistas: $${p.fundamentals?.targetMeanPrice?.toFixed(2) || "N/A"} | Rec: ${p.fundamentals?.recommendationKey || "N/A"}
-   Ratio CEDEAR: ${p.cedear.ratio}:1 | Precio aprox ARS: $${p.quote?.price ? Math.round(p.quote.price * ccl.venta / p.cedear.ratio) : "N/A"}`
-    )
-    .join("\n\n");
-
-  const coreETF = profileId === "aggressive" ? "QQQ" : "SPY";
-
-  const backtestSection = backtestSummary ? `
-RESULTADOS DEL BACKTEST RECIENTE (estrategia del bot vs ${coreETF}):
-- Horizonte principal: ${backtestSummary.months || 6} meses
-- Retorno total estrategia bot (core + satellite): ${backtestSummary.returnPct != null ? backtestSummary.returnPct + "%" : "N/A"}
-- Retorno de ${coreETF} en el mismo período: ${backtestSummary.spyReturnPct != null ? backtestSummary.spyReturnPct + "%" : "N/A"}
-- Retorno del SATELLITE (picks activos): ${backtestSummary.satelliteReturnPct != null ? backtestSummary.satelliteReturnPct + "%" : "N/A"} (alfa vs ${coreETF}: ${backtestSummary.satelliteAlpha != null ? backtestSummary.satelliteAlpha + "pp" : "N/A"})
-- Veredicto sintético del backtest: ${backtestSummary.veredicto || "N/A"}
-${backtestSummary.horizons && backtestSummary.horizons.length > 1
-  ? "\nResumen por horizontes:" +
-    backtestSummary.horizons
-      .map(
-        (h) =>
-          `\n- ${h.months}m: estrategia ${h.returnPct != null ? h.returnPct + "%" : "N/A"} vs ${coreETF} ${h.spyReturnPct != null ? h.spyReturnPct + "%" : "N/A"} (alfa ${h.alphaVsSpy != null ? h.alphaVsSpy + "pp" : "N/A"})`
-      )
-      .join("")
-  : ""}
-- Cantidad de CEDEARs que le ganaron a ${coreETF} dentro de la estrategia: ${backtestSummary.totalPicksGanadores}
-
-INSTRUCCIÓN CLAVE BASADA EN EL BACKTEST:
-- Usá estos números como realidad dura: si el backtest muestra que la estrategia de picks del bot NO le gana a ${coreETF}, debés REDUCIR el peso del satellite (por ejemplo 10-25% del capital nuevo) y concentrarte en pocos picks de altísima convicción.
-- Siempre debe haber una base sólida en ${coreETF} como core, pero podés sumar algunos CEDEARs cuando tengan buen respaldo tanto en backtest como en tus predicciones históricas.
-- Si el satellite muestra alfa POSITIVO y consistente en varios horizontes, podés justificar un satellite más grande dentro de los límites del perfil.
-
-CEDEARs que históricamente le ganaron a ${coreETF} en el backtest y que también están en el ranking actual:
-${backtestSummary.picksGanadores && backtestSummary.picksGanadores.length
-  ? backtestSummary.picksGanadores
-      .map((p) =>
-        "- " +
-        p.ticker +
-        " (" +
-        p.sector +
-        ") -> retorno vs " +
-        coreETF +
-        ": " +
-        (p.vsSpy != null ? (p.vsSpy >= 0 ? "+" : "") + p.vsSpy + "pp" : "N/A")
-      )
-      .join("\n")
-  : "Ninguno de los picks actuales aparece como ganador claro vs " + coreETF + " en el backtest; sé extremadamente selectivo con el satellite."}
-` : "";
+  const vixSection = vix
+    ? `\nVIX ACTUAL: ${vix.price} (${vix.changePct >= 0 ? "+" : ""}${vix.changePct}% hoy) → Regimen: ${vix.regime === "crisis" ? "🚨 CRISIS (VIX>35): ultra-defensivo, satellite mínimo" : vix.regime === "elevated" ? "⚠ ELEVADO (25-35): reducir satellite" : vix.regime === "normal" ? "✅ NORMAL (15-25): operar normal" : "⚡ COMPLACENCIA (<15): no exceder satellite"}`
+    : "";
 
   const prompt = `Sos el asesor financiero personal de un inversor argentino que opera CEDEARs.
-Él te consulta para revisar su cartera y decidir qué hacer.
 
-═══ FILOSOFÍA FUNDAMENTAL: ${coreETF} ES TU DEFAULT ═══
-Tu benchmark y tu recomendación default es ${coreETF}. Si no tenés una razón CONCRETA y con ALTA CONVICCIÓN
-de que un CEDEAR individual le va a ganar a ${coreETF} en los próximos 1-3 meses, NO lo recomiendes.
-Es mejor indexar que hacer stock picking mediocre. Cada pick activo que recomiendes necesita:
-- Conviction score (0-100): qué tan seguro estás
-- Razón concreta de por qué le gana a ${coreETF}
-- Si no encontrás oportunidades claras, está PERFECTO recomendar 100% ${coreETF}
+FILOSOFÍA FUNDAMENTAL: ${coreETF} ES TU DEFAULT
+Tu benchmark y recomendación default es ${coreETF}. Solo recomendá picks activos si tenés ALTA CONVICCIÓN de que le ganan a ${coreETF} en 1-3 meses. Es mejor indexar que hacer stock picking mediocre.
 
 IMPORTANTE SOBRE EL CAPITAL:
-- El inversor declaró que tiene $${capital.toLocaleString()} ARS disponibles para invertir HOY.
-- Ese monto es el que él ingresó manualmente. Es la plata que tiene libre en su cuenta.
-- Si ese monto es $0 significa que no tiene efectivo nuevo, solo puede rebalancear vendiendo algo.
-- Si querés que compre algo nuevo por MÁS del capital disponible, PRIMERO tenés que recomendar VENDER o REDUCIR posiciones para liberar plata.
-- NUNCA recomiendes comprar por más plata de la que realmente tiene disponible.
+- El inversor tiene $${capital.toLocaleString()} ARS disponibles HOY.
+- Si es $0, solo puede rebalancear vendiendo.
+- NUNCA recomiendes comprar por más plata de la disponible.
 
-Tu trabajo es:
-1. Revisar su cartera existente (qué le recomendaste antes, cómo le fue)
-2. Diagnosticar qué mantener, qué vender, qué ajustar
-3. Decidir la DISTRIBUCIÓN CORE/SATELLITE del capital:
-   - CORE (${coreETF}): la parte que va a indexación pasiva
-   - SATELLITE (picks activos): SOLO si hay oportunidades con alta convicción
-4. Dar un plan de acción CONCRETO con tickers, cantidades y montos en ARS
+PERFIL: ${profile.label}
+REGLAS: ${profile.rules}
 
-Esto es la sesión mensual de ${new Date().toLocaleString("es-AR", { month: "long", year: "numeric" })}:
+Tu trabajo:
+1. Revisar cartera existente (mantener/vender/ajustar)
+2. Diagnosticar concentración sectorial y posiciones perdedoras
+3. Decidir DISTRIBUCIÓN CORE/SATELLITE
+4. Plan de acción CONCRETO con tickers, cantidades y montos en ARS
 
-PERFIL DE RIESGO: ${profile.label}
-REGLAS DEL PERFIL:
-${profile.rules}
+Sesión mensual de ${new Date().toLocaleString("es-AR", { month: "long", year: "numeric" })}:
+${vixSection}
 
 ${monthlyContext}
 
 ${knowledge}
 ${lessonsSection}
-AUTO-EVALUACIÓN DEL ASESOR (performance histórica y predicciones evaluadas):
+AUTO-EVALUACIÓN (predicciones evaluadas):
 ${selfEvalContext}
 
 ${backtestSection}
 
-RANKING DE CEDEARs (top ${topPicks.length} pre-filtrados por nuestro motor de diversificación):
+${sectorRotationSection}
+
+RANKING TOP ${topPicks.length} (pre-filtrados por diversificación):
 ${tickerDetails}
 
-DIVERSIFICACIÓN ALGORÍTMICA (ya aplicada al filtro):
-- Picks totales: ${diversification?.totalPicks || topPicks.length}
-- Sectores representados: ${diversification?.sectorsRepresented || 'N/A'}
-- Distribución: ${JSON.stringify(diversification?.distribution || {})}
-- Categorías: Growth [${diversification?.categories?.growth?.join(', ') || ''}] | Defensive [${diversification?.categories?.defensive?.join(', ') || ''}] | Hedge [${diversification?.categories?.hedge?.join(', ') || ''}]
-- Exposición actual del portfolio: ${JSON.stringify(diversification?.portfolioExposure || {})}
-${warnings?.length ? `\nALERTAS DE CONCENTRACIÓN:\n${warnings.join('\n')}` : ''}
+DIVERSIFICACIÓN:
+- Picks: ${diversification?.totalPicks || topPicks.length} | Sectores: ${diversification?.sectorsRepresented || "N/A"}
+- Growth:[${diversification?.categories?.growth?.join(", ") || ""}] Defensive:[${diversification?.categories?.defensive?.join(", ") || ""}] Hedge:[${diversification?.categories?.hedge?.join(", ") || ""}]
+${warnings?.length ? `\nALERTAS DE CONCENTRACIÓN:\n${warnings.join("\n")}` : ""}
 
-INSTRUCCIONES - LEELAS TODAS ANTES DE RESPONDER:
+INSTRUCCIONES:
+1. DIAGNOSTICAR cartera actual: ¿sigue siendo buena cada posición?
+2. BUSCAR noticias recientes de tickers en cartera y top ranking
+3. Para cada posición: MANTENER | AUMENTAR | REDUCIR | VENDER (con cantidades)
+4. CAPITAL REAL = efectivo + ventas/reducciones recomendadas
+5. DECISIÓN CORE/SATELLITE: Regla ${profile.rules}
+   - Solo picks con conviction ≥ ${profile.minConviction}
+   - Cada pick DEBE tener "por_que_le_gana_a_spy"
+   - Si no hay convicción, 100% ${coreETF} está PERFECTO
+6. HONESTIDAD: si no tenés idea, decilo y recomendá ${coreETF}
+7. CARTERA YA ALINEADA: ${cartEraYaAlineada ? `El inversor ejecutó TODO lo recomendado anteriormente. Si el mercado no cambió significativamente, respondé sin_cambios_necesarios:true y plan_ejecucion:[].` : `Revisá operaciones pendientes de sesiones anteriores.`}
 
-CONTEXTO: El inversor ya tiene una cartera armada de CEDEARs (detallada arriba en el contexto de la BD). 
-Este NO es un portfolio nuevo. Vos tenés que actuar como su asesor que REVISA lo que ya compró 
-y le dice qué ajustar.
-
-PASO 1 - DIAGNOSTICAR LA CARTERA ACTUAL:
-- Revisá cada posición que tiene. ¿Sigue siendo buena? ¿Cambió algo?
-- Identificá concentración excesiva en algún sector
-- Identificá posiciones perdedoras que deberían cortarse (stop loss mental)
-- Identificá posiciones que ya dieron lo que tenían que dar
-
-PASO 2 - BUSCAR NOTICIAS:
-- Buscá noticias recientes de los tickers que tiene en cartera Y de los mejores del ranking
-- Si hay noticias negativas sobre algo que tiene, recomendá reducir o vender
-
-PASO 3 - ARMAR PLAN DE ACCIÓN:
-Para CADA posición actual, decidí una de estas acciones:
-- MANTENER: está bien, sigue la tesis
-- AUMENTAR: está bien y conviene comprar más (si tiene liquidez)
-- REDUCIR: vender una parte (indicar cuántos CEDEARs vender y por qué)
-- VENDER TODO: salir de la posición completamente (explicar por qué)
-
-PASO 4 - CALCULAR CAPITAL REAL DISPONIBLE:
-- Sumá el capital disponible actual (en efectivo) + lo que liberaría con las ventas/reducciones del paso 3.
-- Ese es el ÚNICO dinero que tiene para comprar. NO inventes plata que no tiene.
-
-PASO 5 - DECISIÓN CORE/SATELLITE:
-Definí cuánto va a ${coreETF} (core) y cuánto a picks activos (satellite).
-Regla: ${profile.rules}
-IMPORTANTE: Solo recomendá picks activos si tenés ALTA CONVICCIÓN.
-Si no encontrás oportunidades claras con conviction ≥ ${profileId === "conservative" ? 85 : profileId === "aggressive" ? 60 : 70}, mandá más o todo a ${coreETF}.
-Cada pick activo DEBE tener un campo "por_que_le_gana_a_spy" explicando concretamente por qué le va a ganar a ${coreETF}.
-
-PASO 6 - HONESTIDAD:
-Evaluá honestamente si tus picks activos realmente valen la pena vs indexar.
-Si la respuesta honesta es "no tengo idea", decilo y recomendá ${coreETF}.
-
-PASO 7 - ¿CARTERA YA ALINEADA? (MUY IMPORTANTE)
-${cartEraYaAlineada
-  ? `El sistema detectó que el inversor ejecutó TODAS las operaciones que recomendaste en la sesión anterior.
-Su cartera ya está alineada con tu estrategia.
-REGLA: Si el mercado no cambió de forma significativa (no hay shocks macro, noticias graves, ni desvíos importantes), respondé con "sin_cambios_necesarios: true" y un mensaje claro validando que está bien.
-NO INVENTES operaciones para parecer útil. Cambiar algo solo por cambiar es peor que no hacer nada.
-En ese caso, usá el analysis para MONITOREAR: confirmá que las tesis siguen vigentes, alertá si algo cambió.
-Ejemplo de "mensaje_sin_cambios": "Ejecutaste todo lo que te recomendé. La cartera está como la planeamos: X% SPY como base + [picks]. Las tesis siguen vigentes, no hay motivo para mover nada esta semana. El próximo review formal en [fecha]."
-Si hubo cambios significativos de mercado que justifiquen ajustes IGUALMENTE explicalo claramente.`
-  : `Revisá si el inversor ejecutó o no las operaciones anteriores (aparecen en el contexto de la sesión pasada con el indicador ⚠ si quedaron pendientes).
-Si hay operaciones pendientes sin ejecutar, mencionalo y evaluá si siguen siendo válidas o si el contexto cambió.`}
-
-El perfil es ${profile.label}. ${profile.rules}
-MIRÁ TU HISTORIAL DE PREDICCIONES: Si acertaste, repetí. Si fallaste, explicá por qué y ajustá.
-
-Respondé EXCLUSIVAMENTE con un JSON válido (sin markdown, sin backticks, sin texto adicional) con esta estructura:
+Respondé EXCLUSIVAMENTE con JSON válido (sin markdown, sin backticks):
 {
-  "resumen_mercado": "2-3 oraciones sobre el contexto macro actual",
-  
-  "diagnostico_cartera": {
-    "estado_general": "Evaluación general de la cartera en 2-3 oraciones",
-    "exposicion_sectorial": {
-      "Technology": "35%",
-      "Healthcare": "18%"
-    },
-    "problemas_detectados": [
-      "Problema 1 (ej: sobreexposición a tech)",
-      "Problema 2 (ej: falta energía/commodities)"
-    ],
-    "fortalezas": [
-      "Fortaleza 1 (ej: buena base defensiva con UNH y ABBV)"
-    ]
-  },
-  
-  "acciones_cartera_actual": [
-    {
-      "ticker": "NVDA",
-      "accion": "MANTENER|AUMENTAR|REDUCIR|VENDER",
-      "cantidad_actual": 13,
-      "cantidad_ajustar": 0,
-      "razon": "Explicación de por qué mantener/vender/reducir",
-      "urgencia": "alta|media|baja"
-    }
-  ],
-  
+  "resumen_mercado": "2-3 oraciones macro",
+  "diagnostico_cartera": { "estado_general": "...", "exposicion_sectorial": {}, "problemas_detectados": [], "fortalezas": [] },
+  "acciones_cartera_actual": [{ "ticker": "X", "accion": "MANTENER|AUMENTAR|REDUCIR|VENDER", "cantidad_actual": 0, "cantidad_ajustar": 0, "razon": "...", "urgencia": "alta|media|baja" }],
   "decision_mensual": {
-    "resumen": "Explicación de la decisión core/satellite de este mes",
+    "resumen": "...",
     "core_etf": "${coreETF}",
-    "distribucion": {
-      "core_pct": 80,
-      "core_monto_ars": 800000,
-      "satellite_pct": 20,
-      "satellite_monto_ars": 200000
-    },
-    "picks_activos": [
-      {
-        "ticker": "TICKER",
-        "nombre": "Nombre completo",
-        "sector": "Sector",
-        "conviction": 85,
-        "por_que_le_gana_a_spy": "Razón concreta por la que este pick le gana a ${coreETF}",
-        "cantidad_cedears": 10,
-        "precio_aprox_ars": 5000,
-        "monto_total_ars": 50000,
-        "horizonte": "Mediano plazo (1-3 meses)|Largo plazo (3-12 meses) — NUNCA pongas 'Corto plazo' si el inversor no va a poder monitorear en las próximas 2-4 semanas. Cada pick debe poder sobrevivir 30 días sin intervención.",
-        "target_pct": 20,
-        "stop_loss_pct": -10,
-        "cuando_ver_rendimiento": "Descripción concreta de cuándo el inversor debería empezar a ver retornos positivos. Ejemplo: 'En las primeras 2-3 semanas si el catalizador X ocurre, resultados más sólidos a partir del mes 2 con el reporte de earnings'.",
-        "proyeccion_retornos": {
-          "1_mes": "+3-5%",
-          "3_meses": "+10-15%",
-          "6_meses": "+20-28%"
-        }
-      }
-    ]
+    "distribucion": { "core_pct": 80, "core_monto_ars": 800000, "satellite_pct": 20, "satellite_monto_ars": 200000 },
+    "picks_activos": [{ "ticker": "X", "nombre": "...", "sector": "...", "conviction": 85, "por_que_le_gana_a_spy": "...", "cantidad_cedears": 10, "precio_aprox_ars": 5000, "monto_total_ars": 50000, "horizonte": "Mediano plazo (1-3 meses)", "target_pct": 20, "stop_loss_pct": -10, "cuando_ver_rendimiento": "...", "proyeccion_retornos": { "1_mes": "+3-5%", "3_meses": "+10-15%", "6_meses": "+20-28%" } }]
   },
-  
-  "resumen_operaciones": {
-    "total_a_vender_ars": 0,
-    "capital_disponible_actual": 35170,
-    "capital_disponible_post_ventas": 35170,
-    "a_core_ars": 28000,
-    "a_satellite_ars": 7170
-  },
-
-  "plan_ejecucion": [
-    {
-      "paso": 1,
-      "tipo": "VENDER",
-      "ticker": "GOOGL",
-      "cantidad_cedears": 4,
-      "monto_estimado_ars": 120000,
-      "nota": "Liberar capital — ejecutar primero"
-    },
-    {
-      "paso": 2,
-      "tipo": "COMPRAR",
-      "subtipo": "CORE",
-      "ticker": "${coreETF}",
-      "cantidad_cedears": 3,
-      "monto_estimado_ars": 165000,
-      "nota": "Core — ejecutar después de las ventas"
-    },
-    {
-      "paso": 3,
-      "tipo": "COMPRAR",
-      "subtipo": "SATELLITE",
-      "ticker": "XOM",
-      "cantidad_cedears": 2,
-      "monto_estimado_ars": 90000,
-      "nota": "Satellite pick #1 — solo si el presupuesto alcanza"
-    }
-  ],
-
-  "cartera_objetivo": {
-    "descripcion": "Así debería quedar tu cartera después de ejecutar todas las operaciones",
-    "posiciones": [
-      { "ticker": "TICKER", "sector": "Sector", "porcentaje_target": 15, "es_core": false }
-    ]
-  },
-
-  "riesgos": [
-    "Riesgo 1",
-    "Riesgo 2"  
-  ],
-  
+  "resumen_operaciones": { "total_a_vender_ars": 0, "capital_disponible_actual": ${capital}, "capital_disponible_post_ventas": ${capital}, "a_core_ars": 0, "a_satellite_ars": 0 },
+  "plan_ejecucion": [{ "paso": 1, "tipo": "VENDER|COMPRAR", "subtipo": "CORE|SATELLITE", "ticker": "X", "cantidad_cedears": 0, "monto_estimado_ars": 0, "nota": "..." }],
+  "cartera_objetivo": { "descripcion": "...", "posiciones": [{ "ticker": "X", "sector": "...", "porcentaje_target": 15, "es_core": false }] },
+  "riesgos": ["Riesgo 1", "Riesgo 2"],
   "sin_cambios_necesarios": false,
   "mensaje_sin_cambios": null,
-  
-  "honestidad": "Evaluación brutalmente honesta: ¿los picks activos de este mes realmente le van a ganar a ${coreETF}? ¿O estoy recomendando picks por recomendar? Si no tengo convicción real, lo digo acá.",
-  "proximo_review": "Cuándo reanalizar"
+  "honestidad": "Evaluación brutalmente honesta de si los picks le ganan a ${coreETF}",
+  "proximo_review": "próximo mes"
 }
 
-REGLAS CRÍTICAS para plan_ejecucion:
-- Es un plan ORDENADO y SECUENCIAL. PRIMERO todas las ventas/reducciones, LUEGO las compras.
-- Solo incluí acciones que requieren HACER algo: VENDER, REDUCIR, COMPRAR. NO incluyas MANTENERs.
-- El tipo puede ser: "VENDER" (salir o reducir posición) o "COMPRAR" (añadir posición).
-- subtipo: "CORE" para ${coreETF}, "SATELLITE" para picks activos. Solo en tipo COMPRAR.
-- Los montos de TODAS las compras NO pueden superar capital_disponible_post_ventas.
-- Los picks satellite van ordenados por conviction (mayor primero).
-- Si sin_cambios_necesarios es true, plan_ejecucion debe ser [] (array vacío).
-- Este es el plan que el inversor va a EJECUTAR EXACTAMENTE. Sé preciso con cantidades y montos.
-
-CÁLCULO DE monto_estimado_ars (OBLIGATORIO usar la fórmula correcta):
-- Para VENDER: monto_estimado_ars = cantidad_cedears × "Precio/CEDEAR" del ticker en el portfolio context. Ejemplo: si GOOGL tiene Precio/CEDEAR $7.600 y vendés 4 → monto = 30.400
-- Para COMPRAR: monto_estimado_ars = cantidad_cedears × precio_aprox_ars del ticker en el ranking.
-- NUNCA uses el precio USD × CCL directamente sin dividir por el ratio del CEDEAR.
-
-REGLA CRÍTICA para resumen_operaciones (estos 4 números deben ser matemáticamente consistentes):
-- capital_disponible_actual = el efectivo que declaró el inversor (el que ingresó)
-- total_a_vender_ars = suma de todas las ventas/reducciones que recomendás
-- capital_disponible_post_ventas = capital_disponible_actual + total_a_vender_ars (siempre sumar ambos)
-- a_core_ars = capital_disponible_post_ventas × (core_pct / 100)
-- a_satellite_ars = capital_disponible_post_ventas × (satellite_pct / 100)`;
+REGLAS CRÍTICAS plan_ejecucion:
+- ORDENADO y SECUENCIAL: PRIMERO ventas, LUEGO compras.
+- Solo incluir acciones que requieren HACER algo (no MANTENERs).
+- subtipo solo en COMPRAR: CORE para ${coreETF}, SATELLITE para picks.
+- Montos de compras NO pueden superar capital_disponible_post_ventas.
+- Picks ordenados por conviction (mayor primero).
+- Si sin_cambios_necesarios es true, plan_ejecucion debe ser [].
+- monto_estimado_ars = cantidad_cedears × precio_aprox_ars del ticker.
+- capital_disponible_post_ventas = capital_disponible_actual + total_a_vender_ars (SIEMPRE sumar ambos).
+- a_core_ars = capital_disponible_post_ventas × (core_pct / 100).
+- a_satellite_ars = capital_disponible_post_ventas × (satellite_pct / 100).
+- CONSISTENCIA NUMÉRICA: monto_total_ars de cada pick DEBE ser cantidad_cedears × precio_aprox_ars (sin redondeos extra).`;
 
   try {
-    const response = await getClient().messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4000,
-      tools: [
-        {
-          type: "web_search_20250305",
-          name: "web_search",
-        },
-      ],
-      system: `${profile.personality}
-El inversor te consulta UNA VEZ POR MES para decidir qué hacer con su cartera.
-FILOSOFÍA CENTRAL: ${coreETF} es tu default. No recomiendes picks activos a menos que tengas alta convicción.
-Si no encontrás oportunidades claras, recomendá ${coreETF} y listo. Eso NO es un fracaso, es buena gestión.
-IMPORTANTE: El inversor NO tiene plata nueva para depositar cada mes. Su capital ya está invertido.
-Si querés que compre algo, primero tenés que recomendar vender algo para liberar plata.
-Tenés acceso a tu historial de predicciones y su resultado real. Usá esa info para mejorar.
+    const model = AI_CONFIG.model;
+    await assertAiBudgetAvailable("/api/ai/analyze");
+    const startedAt = Date.now();
+    let response;
+    try {
+      response = await getClient().messages.create({
+        model,
+        max_tokens: AI_CONFIG.maxTokensAnalyze,
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        system: `${profile.personality}
+El inversor te consulta UNA VEZ POR MES. ${coreETF} es tu default. No recomiendes picks activos sin alta convicción. Si no hay oportunidades claras, recomendá ${coreETF}. Eso NO es fracaso, es buena gestión.
+El inversor NO deposita plata nueva cada mes. Si querés que compre algo, primero recomendá vender algo.
+Tenés acceso a tu historial de predicciones y su resultado real. Usá esa info.
 Buscá noticias recientes con web search ANTES de responder.
 Respondé SOLO JSON válido, sin markdown, sin backticks, sin tags HTML.
+REGLA ANTI-ALUCINACIÓN: Si no tenés el dato exacto de precio, ratio o fecha de earnings, usá SOLO los datos del ranking proporcionado. NUNCA inventes números.
+REGLA CRÍTICA DEL CICLO MENSUAL: El inversor ejecuta HOY y no toca la cartera hasta ~30 días. NO recomendés jugadas de corto plazo que dependan de seguimiento semanal. Cualquier pick debe aguantar 30 días sin intervención, con stop loss como única protección.`,
+        messages: [{ role: "user", content: prompt }],
+      });
+      await recordAnthropicUsage({ route: "/api/ai/analyze", model, response, latencyMs: Date.now() - startedAt, success: true });
+    } catch (llmErr) {
+      await recordAnthropicUsage({ route: "/api/ai/analyze", model, response: null, latencyMs: Date.now() - startedAt, success: false, errorMessage: llmErr.message });
+      throw llmErr;
+    }
 
-REGLA CRÍTICA DEL CICLO MENSUAL:
-El inversor ejecuta las operaciones HOY y no va a tocar la cartera hasta el próximo análisis en ~30 días.
-NO recomendés jugadas de "corto plazo" que dependan de un seguimiento semanal o quincenal.
-Si un pick necesita revisión en 2 semanas, NO lo recomendés — el inversor no va a estar mirando.
-Cualquier pick que recomendés debe poder aguantar 30 días sin intervención, con el stop loss como única protección.
-El campo proximo_review siempre debe ser "próximo mes" salvo que haya un evento extraordinario absolutamente obvio.
-Evitá recomendaciones de "timing perfecto" o "tácticas" que exijan reacción inmediata.`,
-      messages: [{ role: "user", content: prompt }],
-    });
+    function parseAIResponse(rawText) {
+      const str = extractJSON(rawText);
+      if (!str) return { result: null, jsonStr: str, parseError: "No se encontró JSON." };
+      try {
+        return { result: JSON.parse(str), jsonStr: str, parseError: null };
+      } catch (err) {
+        return { result: null, jsonStr: str, parseError: err.message };
+      }
+    }
 
-    // Extract text from response (may have multiple content blocks)
-    const textParts = response.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text);
-
+    const textParts = response.content.filter((block) => block.type === "text").map((block) => block.text);
     const fullText = textParts.join("");
-    const jsonStr = extractJSON(fullText);
+    let { result, jsonStr, parseError } = parseAIResponse(fullText);
+    let schemaErrors = [];
+    let retryAttempted = false;
+    const rawOutput = result ? { ...result } : null;
 
-    if (!jsonStr) {
+    if (!result || (schemaErrors = validateAnalysisSchema(result)).length > 0) {
+      const retryReason = parseError || `Schema inválido: ${schemaErrors.join("; ")}`;
+      console.warn(`[advisor] Respuesta inválida, reintentando (${retryReason})`);
+      retryAttempted = true;
+      const correctionMsg = parseError
+        ? `Tu respuesta anterior no contenía un JSON válido. Error: ${parseError}. Respondé EXCLUSIVAMENTE con el JSON sin texto adicional.`
+        : `Tu respuesta anterior tenía errores de estructura:\n${schemaErrors.map((e) => `- ${e}`).join("\n")}\nCorregí estos campos y respondé solo con el JSON válido.`;
+
+      try {
+        const retryStartedAt = Date.now();
+        const retryResponse = await getClient().messages.create({
+          model,
+          max_tokens: AI_CONFIG.maxTokensAnalyze,
+          system: `${profile.personality}\nRespondé SOLO con JSON válido. Sin markdown, sin texto adicional.`,
+          messages: [
+            { role: "user", content: prompt },
+            { role: "assistant", content: fullText },
+            { role: "user", content: correctionMsg },
+          ],
+        });
+        await recordAnthropicUsage({ route: "/api/ai/analyze (retry)", model, response: retryResponse, latencyMs: Date.now() - retryStartedAt, success: true });
+        const retryText = retryResponse.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+        const retryParsed = parseAIResponse(retryText);
+        if (retryParsed.result) {
+          result = retryParsed.result;
+          schemaErrors = validateAnalysisSchema(result);
+          console.log(`[advisor] Reintento exitoso. Errores restantes: ${schemaErrors.length}`);
+        } else {
+          console.error("[advisor] Reintento también falló:", retryParsed.parseError);
+        }
+      } catch (retryErr) {
+        console.error("[advisor] Error en reintento:", retryErr.message);
+      }
+    }
+
+    if (!result) {
       console.error("No JSON found in AI response:", fullText.substring(0, 200));
       return { error: "No se pudo parsear la respuesta de la IA", raw: fullText.substring(0, 500) };
     }
 
-    let result;
-    try {
-      result = JSON.parse(jsonStr);
-    } catch (parseErr) {
-      console.error("JSON parse error:", parseErr.message);
-      console.error("Raw text (first 500):", jsonStr.substring(0, 500));
-      return { error: "No se pudo parsear la respuesta de la IA", raw: jsonStr.substring(0, 500) };
+    const macroWarnings = detectMacroClaims(result.resumen_mercado);
+    if (macroWarnings.length > 0) {
+      result._macro_warnings = macroWarnings;
+      console.warn("[advisor] Macro claims sospechosas:", macroWarnings);
     }
 
-    // --- NORMALIZE AI RESPONSE FORMAT ---
-    // The AI sometimes uses old format (nuevas_compras) instead of decision_mensual.picks_activos
     if (!result.decision_mensual && result.nuevas_compras) {
       result.decision_mensual = {
         resumen: result.distribucion_capital?.estrategia || "",
         core_etf: coreETF,
         distribucion: result.distribucion_capital || {},
-        picks_activos: result.nuevas_compras.map(nc => ({
-          ...nc,
-          conviction: nc.conviction || 70,
-          por_que_le_gana_a_spy: nc.por_que_le_gana_a_spy || nc.razon,
-        })),
+        picks_activos: result.nuevas_compras.map((nc) => ({ ...nc, conviction: nc.conviction || 70, por_que_le_gana_a_spy: nc.por_que_le_gana_a_spy || nc.razon })),
       };
     }
-    if (!result.honestidad && result.autoevaluacion) {
-      result.honestidad = result.autoevaluacion;
-    }
+    if (!result.honestidad && result.autoevaluacion) result.honestidad = result.autoevaluacion;
 
-    // --- POST-PROCESS: recalculate resumen_operaciones from actual portfolio prices ---
-    // Claude consistently hallucinates these numbers. We fix them server-side.
-    {
-      const posMap = {};
-      for (const pos of cycleData.positionsWithData) posMap[pos.ticker] = pos;
+    const consistency = enforceAnalysisConsistency({ result, capital, coreETF, profile, cycleData, ranking: ranking || topPicks, ccl });
+    console.log(`CONSISTENCY: efectivo=$${roundMoney(capital).toLocaleString()} + ventas=$${roundMoney(consistency.totalVentasARS).toLocaleString()} = $${roundMoney(consistency.capitalDisponiblePost).toLocaleString()}`);
 
-      // Calculate actual sell proceeds using real portfolio prices
-      let totalVentasARS = 0;
-      const ventaMap = {}; // ticker -> { cantidad, precio, monto }
-      for (const accion of (result.acciones_cartera_actual || [])) {
-        const esVenta = accion.accion === "VENDER" || accion.accion === "REDUCIR";
-        if (!esVenta || !accion.cantidad_ajustar) continue;
-        const pos = posMap[accion.ticker];
-        if (!pos) continue;
-        const cantidadVender = Math.abs(accion.cantidad_ajustar);
-        const monto = Math.round(cantidadVender * pos.currentPrice);
-        totalVentasARS += monto;
-        ventaMap[accion.ticker] = { cantidad: cantidadVender, precio: pos.currentPrice, monto };
-      }
-
-      const capitalDisponiblePost = capital + totalVentasARS;
-
-      // Overwrite resumen_operaciones with correct numbers
-      if (!result.resumen_operaciones) result.resumen_operaciones = {};
-      result.resumen_operaciones.capital_disponible_actual = capital;
-      result.resumen_operaciones.total_a_vender_ars = totalVentasARS;
-      result.resumen_operaciones.capital_disponible_post_ventas = capitalDisponiblePost;
-
-      // Recalculate core/satellite splits using Claude's chosen percentages
-      const dist = result.decision_mensual?.distribucion;
-      if (dist) {
-        result.resumen_operaciones.a_core_ars = Math.round(capitalDisponiblePost * ((dist.core_pct || 0) / 100));
-        result.resumen_operaciones.a_satellite_ars = Math.round(capitalDisponiblePost * ((dist.satellite_pct || 0) / 100));
-        // Also fix the monto fields in distribucion
-        dist.core_monto_ars = result.resumen_operaciones.a_core_ars;
-        dist.satellite_monto_ars = result.resumen_operaciones.a_satellite_ars;
-      }
-
-      // Fix plan_ejecucion VENDER amounts using real prices
-      if (result.plan_ejecucion) {
-        for (const step of result.plan_ejecucion) {
-          if (step.tipo === "VENDER") {
-            const v = ventaMap[step.ticker];
-            if (v) {
-              step.cantidad_cedears = v.cantidad;
-              step.monto_estimado_ars = v.monto;
+    // Async price verification for unverified picks
+    const unverifiedPicks = (result.decision_mensual?.picks_activos || []).filter((p) => !p._price_verified && p.ticker);
+    if (unverifiedPicks.length > 0) {
+      await Promise.all(
+        unverifiedPicks.map(async (pick) => {
+          try {
+            const cedearInfo = CEDEARS.find((c) => c.ticker === pick.ticker);
+            const ratio = cedearInfo?.ratio || 1;
+            const quote = await fetchQuote(pick.ticker).catch(() => null);
+            if (!quote?.price || !ccl?.venta) return;
+            const realPriceArs = Math.round((quote.price * ccl.venta) / ratio);
+            if (realPriceArs <= 0) return;
+            const aiPrice = pick.precio_aprox_ars || 0;
+            const discrepancyPct = aiPrice > 0 ? (Math.abs(realPriceArs - aiPrice) / realPriceArs) * 100 : 100;
+            if (discrepancyPct > 20) {
+              const monto = pick.monto_total_ars || 0;
+              const newCantidad = monto > 0 ? Math.max(1, Math.floor(monto / realPriceArs)) : pick.cantidad_cedears;
+              consistency.notes.push(`[PRICE FIX] ${pick.ticker}: AI estimó $${(aiPrice || 0).toLocaleString()}/CEDEAR, precio real $${realPriceArs.toLocaleString()}/CEDEAR (${discrepancyPct.toFixed(0)}% dif). Cantidad corregida ${pick.cantidad_cedears} → ${newCantidad}.`);
+              pick.precio_aprox_ars = realPriceArs;
+              pick.cantidad_cedears = newCantidad;
+              pick.monto_total_ars = newCantidad * realPriceArs;
+              pick._price_verified = true;
+              console.warn(`[advisor] Precio corregido ${pick.ticker}: AI $${aiPrice?.toLocaleString()} → real $${realPriceArs.toLocaleString()}`);
             }
+          } catch (e) {
+            console.warn(`[advisor] No se pudo verificar precio de ${pick.ticker}:`, e.message);
           }
-        }
-
-        // Warn if total purchases exceed available capital (don't auto-trim — let the user decide)
-        const totalCompras = result.plan_ejecucion
-          .filter(s => s.tipo === "COMPRAR")
-          .reduce((sum, s) => sum + (s.monto_estimado_ars || 0), 0);
-        if (totalCompras > capitalDisponiblePost) {
-          result._budget_warning = `Las compras planificadas ($${totalCompras.toLocaleString()}) superan el capital real disponible ($${capitalDisponiblePost.toLocaleString()}). Ejecutá primero las ventas y ajustá las cantidades en el broker.`;
-          console.warn(`⚠ Budget overflow: purchases $${totalCompras.toLocaleString()} > capital $${capitalDisponiblePost.toLocaleString()}`);
-        }
-      }
-
-      console.log(`💰 Capital recalc: efectivo=$${capital.toLocaleString()} + ventas=$${totalVentasARS.toLocaleString()} = $${capitalDisponiblePost.toLocaleString()} disponible`);
+        })
+      );
     }
 
-    // --- LOG PREDICTIONS TO DATABASE ---
+    if (FLAGS.STRICT_CONSISTENCY && consistency.notes.length > 0) {
+      console.error("[advisor] STRICT_CONSISTENCY activo, correcciones aplicadas:", consistency.notes);
+      return { error: "La respuesta IA requirió correcciones automáticas.", consistencyNotes: consistency.notes };
+    }
+
+    if (FLAGS.ENABLE_AUDIT_LOG) {
+      logDecisionAudit({
+        route: "/api/ai/analyze",
+        profile: profileId,
+        capitalArs: capital,
+        tickersConsidered: (topPicks || []).map((p) => p.cedear?.ticker).filter(Boolean),
+        rawOutput,
+        normalizedOutput: result,
+        consistencyNotes: consistency.notes,
+        schemaErrors,
+        retryAttempted,
+      }).catch((e) => console.error("[audit] Error:", e.message));
+    }
+
+    // Log predictions
     let savedCount = 0;
     try {
-      // Log picks activos (satellite) como predicciones
       const picksActivos = result.decision_mensual?.picks_activos || result.nuevas_compras || [];
       for (const rec of picksActivos) {
         if (!rec.ticker) continue;
@@ -687,7 +744,7 @@ Evitá recomendaciones de "timing perfecto" o "tácticas" que exijan reacción i
             scoreTechnical: pickData?.scores?.techScore || null,
             scoreFundamental: pickData?.scores?.fundScore || null,
             scoreSentiment: pickData?.scores?.sentScore || null,
-            pe: pickData?.fundamentals?.pe || null,
+            pe: getFundData(pickData?.fundamentals).pe || null,
           });
           savedCount++;
         } catch (e) {
@@ -695,16 +752,18 @@ Evitá recomendaciones de "timing perfecto" o "tácticas" que exijan reacción i
         }
       }
 
-      // Log acciones sobre cartera actual (REDUCIR y VENDER como predicciones inversas)
       if (result.acciones_cartera_actual) {
         for (const acc of result.acciones_cartera_actual) {
-          if (acc.accion === "REDUCIR" || acc.accion === "VENDER") {
+          if (acc.accion === "REDUCIR" || acc.accion === "VENDER" || acc.accion === "VENDER TODO") {
             if (!acc.ticker) continue;
-            const pickData = topPicks.find((p) => p.cedear?.ticker === acc.ticker);
+            const pickData = topPicks.find((p) => p.cedear?.ticker === acc.ticker) || (ranking || []).find((p) => p.cedear?.ticker === acc.ticker);
+            const portfolioPos = cycleData?.positionsWithData?.find((p) => p.ticker === acc.ticker);
+            const priceUsd = pickData?.quote?.price || (portfolioPos?.currentPrice > 0 && ccl.venta > 0 ? portfolioPos.currentPrice / ccl.venta : null);
+            const priceArs = pickData?.priceARS || portfolioPos?.currentPrice || null;
             try {
               await logPrediction({
                 ticker: acc.ticker,
-                action: acc.accion,
+                action: acc.accion === "VENDER TODO" ? "VENDER" : acc.accion,
                 confidence: acc.urgencia === "alta" ? 85 : 60,
                 targetPriceUsd: null,
                 stopLossPct: null,
@@ -712,15 +771,15 @@ Evitá recomendaciones de "timing perfecto" o "tácticas" que exijan reacción i
                 horizon: "Inmediato",
                 reasoning: acc.razon,
                 newsContext: result.resumen_mercado,
-                priceUsd: pickData?.quote?.price || null,
-                priceArs: null,
+                priceUsd,
+                priceArs,
                 ccl: ccl.venta,
                 rsi: pickData?.technical?.indicators?.rsi || null,
                 scoreComposite: pickData?.scores?.composite || null,
                 scoreTechnical: pickData?.scores?.techScore || null,
                 scoreFundamental: pickData?.scores?.fundScore || null,
                 scoreSentiment: pickData?.scores?.sentScore || null,
-                pe: pickData?.fundamentals?.pe || null,
+                pe: getFundData(pickData?.fundamentals).pe || null,
               });
               savedCount++;
             } catch (e) {
@@ -730,21 +789,13 @@ Evitá recomendaciones de "timing perfecto" o "tácticas" que exijan reacción i
         }
       }
 
-      console.log(`📊 Predictions saved: ${savedCount} (picks: ${picksActivos.length}, actions: ${(result.acciones_cartera_actual || []).filter(a => a.accion === "REDUCIR" || a.accion === "VENDER").length})`);
-
-      // Log the full analysis session, incluyendo valor real del portfolio
-      await logAnalysisSession({
-        capitalArs: capital,
-        portfolioValueArs: cycleData?.portfolioValueARS || 0,
-        cclRate: ccl.venta,
-        marketSummary: result.resumen_mercado,
-        strategyMonthly: result.decision_mensual?.resumen || result.distribucion_capital?.estrategia,
-        risks: result.riesgos,
-        fullResponse: result,
-      });
+      console.log(`📊 Predictions saved: ${savedCount}`);
+      await logAnalysisSession({ capitalArs: capital, portfolioValueArs: cycleData?.portfolioValueARS || 0, cclRate: ccl.venta, marketSummary: result.resumen_mercado, strategyMonthly: result.decision_mensual?.resumen || result.distribucion_capital?.estrategia, risks: result.riesgos, fullResponse: result });
+      if (cycleData?.portfolioValueARS > 0 || capital > 0) {
+        await logCapital(capital, cycleData?.portfolioValueARS || 0, ccl.venta).catch(() => {});
+      }
     } catch (logErr) {
       console.error("❌ Error logging to database:", logErr.message);
-      // Don't fail the response if logging fails
     }
 
     return result;
@@ -754,101 +805,58 @@ Evitá recomendaciones de "timing perfecto" o "tácticas" que exijan reacción i
   }
 }
 
-// --- Comprehensive analysis for a single CEDEAR ---
 export async function analyzeSingle({ ticker, name, sector, scores, technical, fundamentals, quote, ccl, portfolioContext = "" }) {
   const ind = technical?.indicators || {};
   const perf = ind.performance || {};
-  const bb = ind.bollingerBands;
-  const sr = ind.supportResistance;
-  const stoch = ind.stochastic;
-  const vol = ind.volume;
+  const fund = getFundData(fundamentals);
 
-  const prompt = `Hacé un análisis COMPLETO y DETALLADO del CEDEAR ${ticker} (${name}, sector ${sector}) para un inversor argentino.
+  const prompt = `Análisis COMPLETO del CEDEAR ${ticker} (${name}, ${sector}) para inversor argentino.
 
-═══ DATOS COMPLETOS DEL ACTIVO ═══
+DATOS:
+Precio USD: $${quote?.price?.toFixed(2) || "N/A"} | ARS: $${quote?.price ? Math.round((quote.price * ccl.venta) / scores.ratio) : "N/A"} | Δ${quote?.changePercent?.toFixed(2) || "N/A"}%
+52w: $${quote?.fiftyTwoWeekLow?.toFixed(2) || "N/A"}-$${quote?.fiftyTwoWeekHigh?.toFixed(2) || "N/A"} | Cap: ${quote?.marketCap ? `$${(quote.marketCap / 1e9).toFixed(1)}B` : "N/A"} | Beta: ${quote?.beta?.toFixed(2) || "N/A"}
 
-PRECIO Y COTIZACIÓN:
-- Precio USD: $${quote?.price?.toFixed(2) || "N/A"}
-- Precio ARS aprox: $${quote?.price ? Math.round((quote.price * ccl.venta) / scores.ratio) : "N/A"}
-- Variación diaria: ${quote?.changePercent?.toFixed(2) || "N/A"}%
-- Rango del día: $${quote?.dayLow?.toFixed(2) || "N/A"} — $${quote?.dayHigh?.toFixed(2) || "N/A"}
-- 52-week high: $${quote?.fiftyTwoWeekHigh?.toFixed(2) || "N/A"}
-- 52-week low: $${quote?.fiftyTwoWeekLow?.toFixed(2) || "N/A"}
-- Market Cap: ${quote?.marketCap ? `$${(quote.marketCap / 1e9).toFixed(1)}B` : "N/A"}
-- Beta: ${quote?.beta?.toFixed(2) || "N/A"}
+SCORING: Comp:${scores.composite}/100 T:${scores.techScore} F:${scores.fundScore} S:${scores.sentScore} | Signal:${scores.signal} | Horizon:${scores.horizon}
 
-SCORING DEL SISTEMA:
-- Score compuesto: ${scores.composite}/100
-- Score técnico: ${scores.techScore}/100
-- Score fundamental: ${scores.fundScore}/100
-- Score sentimiento: ${scores.sentScore}/100
-- Señal: ${scores.signal}
-- Horizonte sugerido: ${scores.horizon}
+TÉCNICOS: RSI:${ind.rsi || "N/A"} MACD:${ind.macd?.histogram || "N/A"} SMA20:$${ind.sma20?.toFixed(2) || "N/A"} SMA50:$${ind.sma50?.toFixed(2) || "N/A"} SMA200:$${ind.sma200?.toFixed(2) || "N/A"} BB:$${ind.bollingerBands?.lower?.toFixed(1) || "N/A"}-$${ind.bollingerBands?.upper?.toFixed(1) || "N/A"} Stoch:${ind.stochastic?.k || "N/A"} ATR:$${ind.atr || "N/A"} VolTrend:${ind.volume?.volumeTrend || "N/A"}%
+PERF: 1d:${perf.day1 ?? "N/A"}% 1w:${perf.week1 ?? "N/A"}% 1m:${perf.month1 ?? "N/A"}% 3m:${perf.month3 ?? "N/A"}% 6m:${perf.month6 ?? "N/A"}%
 
-INDICADORES TÉCNICOS:
-- RSI (14): ${ind.rsi || "N/A"}
-- MACD: ${ind.macd?.macd || "N/A"} | Signal: ${ind.macd?.signal || "N/A"} | Histogram: ${ind.macd?.histogram || "N/A"}
-- SMA 20: $${ind.sma20?.toFixed(2) || "N/A"} ${ind.sma20 && quote?.price ? (quote.price > ind.sma20 ? "(precio ARRIBA)" : "(precio ABAJO)") : ""}
-- SMA 50: $${ind.sma50?.toFixed(2) || "N/A"} ${ind.sma50 && quote?.price ? (quote.price > ind.sma50 ? "(precio ARRIBA)" : "(precio ABAJO)") : ""}
-- SMA 200: $${ind.sma200?.toFixed(2) || "N/A"} ${ind.sma200 && quote?.price ? (quote.price > ind.sma200 ? "(precio ARRIBA)" : "(precio ABAJO)") : ""}
-- Bollinger Bands: Upper $${bb?.upper || "N/A"} | Middle $${bb?.middle || "N/A"} | Lower $${bb?.lower || "N/A"} | Bandwidth: ${bb?.bandwidth || "N/A"}%
-- Estocástico: K=${stoch?.k || "N/A"} D=${stoch?.d || "N/A"}
-- ATR (14): $${ind.atr || "N/A"}
-- Soporte: $${sr?.support || "N/A"} | Resistencia: $${sr?.resistance || "N/A"}
-- Volumen promedio: ${vol?.avgVolume?.toLocaleString() || "N/A"} | Tendencia volumen: ${vol?.volumeTrend || "N/A"}%
+FUNDAMENTALES: P/E:${fund.pe?.toFixed(1) || "N/A"} fP/E:${fund.forwardPE?.toFixed(1) || "N/A"} PEG:${fund.pegRatio?.toFixed(2) || "N/A"} EPSg:${fund.epsGrowth?.toFixed(1) || "N/A"}% RevG:${fund.revenueGrowth?.toFixed(1) || "N/A"}% Margin:${fund.profitMargin?.toFixed(1) || "N/A"}% ROE:${fund.returnOnEquity?.toFixed(1) || "N/A"}% D/E:${fund.debtToEquity?.toFixed(0) || "N/A"}% Div:${quote?.dividendYield?.toFixed(2) || 0}% Target:$${fund.targetMeanPrice?.toFixed(2) || "N/A"} (${fund.recommendationKey || "N/A"}, ${fund.numberOfAnalystOpinions || 0} analistas)
 
-PERFORMANCE:
-- 1 día: ${perf.day1 != null ? `${perf.day1}%` : "N/A"}
-- 1 semana: ${perf.week1 != null ? `${perf.week1}%` : "N/A"}
-- 1 mes: ${perf.month1 != null ? `${perf.month1}%` : "N/A"}
-- 3 meses: ${perf.month3 != null ? `${perf.month3}%` : "N/A"}
-- 6 meses: ${perf.month6 != null ? `${perf.month6}%` : "N/A"}
-
-FUNDAMENTALES:
-- P/E: ${fundamentals?.pe?.toFixed(1) || "N/A"} | Forward P/E: ${fundamentals?.forwardPE?.toFixed(1) || "N/A"}
-- PEG: ${fundamentals?.pegRatio?.toFixed(2) || "N/A"}
-- EPS Growth: ${fundamentals?.epsGrowth?.toFixed(1) || "N/A"}%
-- Revenue Growth: ${fundamentals?.revenueGrowth?.toFixed(1) || "N/A"}%
-- Profit Margin: ${fundamentals?.profitMargin?.toFixed(1) || "N/A"}%
-- ROE: ${fundamentals?.returnOnEquity?.toFixed(1) || "N/A"}%
-- Debt/Equity: ${fundamentals?.debtToEquity?.toFixed(0) || "N/A"}%
-- Div Yield: ${quote?.dividendYield?.toFixed(2) || 0}%
-- Target analistas: $${fundamentals?.targetMeanPrice?.toFixed(2) || "N/A"} (${fundamentals?.recommendationKey || "N/A"}, ${fundamentals?.numberOfAnalystOpinions || 0} analistas)
-
-Buscá noticias recientes sobre ${ticker} y su sector (${sector}). Analizá TODO en profundidad.
 ${portfolioContext}
 
-Respondé SOLO con JSON válido (sin markdown, sin backticks):
-{
-  "veredicto": "COMPRAR|MANTENER|VENDER",
-  "confianza": 75,
-  "analisis": "Análisis detallado de 4-6 oraciones cubriendo técnico, fundamental y sentimiento",
-  "noticias_relevantes": "Resumen detallado de noticias recientes que afectan al ticker y su sector",
-  "catalizadores": ["Catalizador positivo 1", "Catalizador positivo 2"],
-  "riesgos": ["Riesgo 1", "Riesgo 2"],
-  "precio_objetivo_usd": 150.00,
-  "soporte_usd": 130.00,
-  "resistencia_usd": 160.00,
-  "horizonte": "Corto|Mediano|Largo plazo",
-  "comparacion_sector": "Cómo se compara este ticker con otros del mismo sector",
-  "recomendacion_detallada": "Qué haría exactamente: cuándo comprar, a qué precio, con qué stop-loss y target"
-}`;
+Buscá noticias recientes de ${ticker} y sector ${sector}.
+Respondé SOLO JSON:
+{"veredicto":"COMPRAR|MANTENER|VENDER","confianza":75,"analisis":"4-6 oraciones técnico+fundamental+sentimiento","noticias_relevantes":"...","catalizadores":["..."],"riesgos":["..."],"precio_objetivo_usd":0,"soporte_usd":0,"resistencia_usd":0,"horizonte":"Corto|Mediano|Largo","comparacion_sector":"...","recomendacion_detallada":"..."}`;
 
   try {
-    const response = await getClient().messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 2000,
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
-      system:
-        "Sos un analista financiero experto en CEDEARs para inversores argentinos. Usá web search para buscar noticias recientes del ticker y su sector. Dá un análisis completo y detallado. Respondé SOLO JSON válido, sin markdown ni backticks.",
-      messages: [{ role: "user", content: prompt }],
-    });
+    const model = AI_CONFIG.model;
+    await assertAiBudgetAvailable("/api/ai/analyze/:ticker");
+    const startedAt = Date.now();
+    let response;
+    try {
+      response = await getClient().messages.create({
+        model,
+        max_tokens: AI_CONFIG.maxTokensSingle,
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        system: "Sos un analista financiero experto en CEDEARs para inversores argentinos. Usá web search para buscar noticias recientes. Respondé SOLO JSON válido.",
+        messages: [{ role: "user", content: prompt }],
+      });
+      await recordAnthropicUsage({ route: "/api/ai/analyze/:ticker", model, response, latencyMs: Date.now() - startedAt, success: true });
+    } catch (llmErr) {
+      await recordAnthropicUsage({ route: "/api/ai/analyze/:ticker", model, response: null, latencyMs: Date.now() - startedAt, success: false, errorMessage: llmErr.message });
+      throw llmErr;
+    }
 
     const textParts = response.content.filter((b) => b.type === "text").map((b) => b.text);
     const fullText = textParts.join("");
     const jsonStr = extractJSON(fullText);
     if (!jsonStr) return { error: "Parse error" };
-    try { return JSON.parse(jsonStr); } catch { return { error: "Parse error" }; }
+    try {
+      return JSON.parse(jsonStr);
+    } catch {
+      return { error: "Parse error" };
+    }
   } catch (err) {
     console.error(`AI single analysis error for ${ticker}:`, err.message);
     return { error: err.message };

@@ -25,30 +25,37 @@ const PORTFOLIO = [
   { ticker: "V", shares: 7, priceArs: 26400.25, notes: "Compra mes 1-2 - Financial / pagos" },
 ];
 
-console.log("=== CARGANDO PORTFOLIO REAL ===\n");
+async function main() {
+  console.log("=== CARGANDO PORTFOLIO REAL ===\n");
 
-for (const pos of PORTFOLIO) {
-  try {
-    addPosition(pos.ticker, pos.shares, pos.priceArs, null, null, pos.notes);
-    const total = pos.shares * pos.priceArs;
-    console.log(`✓ ${pos.ticker}: ${pos.shares} CEDEARs a $${pos.priceArs.toLocaleString()} = $${Math.round(total).toLocaleString()} ARS`);
-  } catch (err) {
-    console.error(`✗ Error con ${pos.ticker}: ${err.message}`);
+  for (const pos of PORTFOLIO) {
+    try {
+      await addPosition(pos.ticker, pos.shares, pos.priceArs, null, null, pos.notes);
+      const total = pos.shares * pos.priceArs;
+      console.log(`✓ ${pos.ticker}: ${pos.shares} CEDEARs a $${pos.priceArs.toLocaleString()} = $${Math.round(total).toLocaleString()} ARS`);
+    } catch (err) {
+      console.error(`✗ Error con ${pos.ticker}: ${err.message}`);
+    }
   }
+
+  // Registrar capital inicial
+  const portfolioValue = 1964830;
+  const capitalDisponible = 35170; // 2.000.000 - 1.964.830
+  await logCapital(capitalDisponible, portfolioValue, null, 1000000);
+  console.log(`\n✓ Capital registrado: $${capitalDisponible.toLocaleString()} disponible + $${portfolioValue.toLocaleString()} invertido`);
+
+  // Verificar
+  const summary = await getPortfolioSummary();
+  console.log(`\n=== PORTFOLIO CARGADO (${summary.length} posiciones) ===`);
+  for (const s of summary) {
+    console.log(`  ${s.ticker}: ${s.total_shares} CEDEARs @ $${s.weighted_avg_price} ARS`);
+  }
+
+  console.log("\n¡Listo! Ahora el bot sabe qué tenés comprado.");
+  console.log("Podés ejecutar el servidor normalmente con: npm run dev");
 }
 
-// Registrar capital inicial
-const portfolioValue = 1964830;
-const capitalDisponible = 35170; // 2.000.000 - 1.964.830
-logCapital(capitalDisponible, portfolioValue, null, 1000000);
-console.log(`\n✓ Capital registrado: $${capitalDisponible.toLocaleString()} disponible + $${portfolioValue.toLocaleString()} invertido`);
-
-// Verificar
-const summary = getPortfolioSummary();
-console.log(`\n=== PORTFOLIO CARGADO (${summary.length} posiciones) ===`);
-for (const s of summary) {
-  console.log(`  ${s.ticker}: ${s.total_shares} CEDEARs @ $${s.weighted_avg_price} ARS`);
-}
-
-console.log("\n¡Listo! Ahora el bot sabe qué tenés comprado.");
-console.log("Podés ejecutar el servidor normalmente con: npm run dev");
+main().catch((err) => {
+  console.error("[seed-portfolio] Fatal:", err);
+  process.exit(1);
+});
