@@ -381,15 +381,57 @@ export async function runAutoPaperTrading(aiAnalysis) {
     if (!config.autoSyncEnabled) return;
     const picks = aiAnalysis?.decision_mensual?.picks_activos || aiAnalysis?.picks || aiAnalysis?.recommendations;
     if (!picks || !picks.length) return;
+
+    const { simulateBuyExecution } = await import("./executionSimulator.js");
+    const { logVirtualTransaction } = await import("./database.js");
+
     await resetVirtualPortfolio([]);
+    let executedCount = 0;
     for (const pick of picks) {
-      if (pick.ticker && pick.cantidad_cedears > 0 && pick.precio_aprox_ars > 0) {
-        await addVirtualPosition(pick.ticker, pick.cantidad_cedears, pick.precio_aprox_ars, pick.nombre || "");
+      if (!pick.ticker || !pick.cantidad_cedears || !pick.precio_aprox_ars) continue;
+      const tradeAmountArs = pick.cantidad_cedears * pick.precio_aprox_ars;
+      const simulated = await simulateBuyExecution(pick.ticker, pick.cantidad_cedears, pick.precio_aprox_ars, tradeAmountArs, true);
+
+      await logVirtualTransaction({
+        ticker: pick.ticker,
+        type: "BUY",
+        shares: simulated.executedShares,
+        requestedShares: simulated.requestedShares,
+        executedShares: simulated.executedShares,
+        requestedPriceArs: simulated.requestedPrice,
+        executedPriceArs: simulated.executedPrice,
+        slippagePct: simulated.slippagePct,
+        delayMinutes: simulated.delayMinutes,
+        partialFill: simulated.partialFill,
+        brokerCostsArs: simulated.brokerCosts.totalCosts,
+        totalCostArs: simulated.totalCostArs,
+        notes: simulated.liquidityWarning || `Auto-sync ${pick.ticker}`,
+      });
+
+      if (simulated.executedShares > 0) {
+        await addVirtualPosition(pick.ticker, simulated.executedShares, simulated.executedPrice, pick.nombre || "");
+        executedCount++;
       }
     }
-    console.log(`[auto-paper] Portfolio virtual sincronizado con ${picks.length} picks`);
+    console.log(`[auto-paper] Portfolio virtual sincronizado: ${executedCount}/${picks.length} picks ejecutados con simulación realista`);
   } catch (err) {
     console.error("[auto-paper] Error:", err.message);
+  }
+}
+
+// ── CORPORATE ACTIONS SCAN ──
+let corpActionsRunning = false;
+export async function runCorporateActionsScan() {
+  if (corpActionsRunning) return;
+  corpActionsRunning = true;
+  try {
+    const { scanCorporateActions } = await import("./corporateActions.js");
+    const result = await scanCorporateActions();
+    console.log(`[corp-actions] Scan: ${result.dividends} dividends, ${result.splits} splits`);
+  } catch (err) {
+    console.error("[corp-actions] Error:", err.message);
+  } finally {
+    corpActionsRunning = false;
   }
 }
 
@@ -402,40 +444,135 @@ export async function runTrackRecordLog() {
       getCapitalHistory(1).catch(() => []),
       fetchCCL().catch(() => ({ venta: 0 })),
     ]);
-    const quotesMap = await fetchAllQuotes([...virtualPortfolio.map((p) => p.ticker), ...realPortfolio.map((p) => p.ticker)]).catch(() => ({}));
 
+    const allTickers = [...new Set([...virtualPortfolio.map((p) => p.ticker), ...realPortfolio.map((p) => p.ticker)])];
+    const [quotesMap, bymaPrices] = await Promise.all([
+      fetchAllQuotes(allTickers).catch(() => ({})),
+      allTickers.length > 0 ? fetchBymaPrices(allTickers).catch(() => ({})) : {},
+    ]);
+
+    // Virtual value with dividends
     let virtualValue = 0;
     for (const pos of virtualPortfolio) {
+      const cedearDef = CEDEARS.find((c) => c.ticker === pos.ticker);
+      const byma = bymaPrices[pos.ticker];
       const quote = quotesMap[pos.ticker];
-      const price = quote?.price || pos.weighted_avg_price;
+      const price = byma?.priceARS || calcPriceARS(quote?.price, ccl.venta, cedearDef?.ratio) || pos.weighted_avg_price;
       virtualValue += price * pos.total_shares;
     }
 
+    // Dividendos virtuales
+    let virtualDividends = 0;
+    try {
+      const { calculateVirtualDividends } = await import("./corporateActions.js");
+      const divData = await calculateVirtualDividends(
+        virtualPortfolio.map((p) => ({ ticker: p.ticker, shares: p.total_shares })),
+        ccl.venta || 1200
+      );
+      virtualDividends = divData.totalArs;
+    } catch (e) { /* ignore */ }
+
+    const virtualTotal = virtualValue + virtualDividends;
+
     let realValue = 0;
     for (const pos of realPortfolio) {
+      const cedearDef = CEDEARS.find((c) => c.ticker === pos.ticker);
+      const byma = bymaPrices[pos.ticker];
       const quote = quotesMap[pos.ticker];
-      const price = quote?.price || pos.weighted_avg_price;
+      const price = byma?.priceARS || calcPriceARS(quote?.price, ccl.venta, cedearDef?.ratio) || pos.weighted_avg_price;
       realValue += price * pos.total_shares;
     }
 
     const capital = capitalHist.length > 0 ? capitalHist[0].capital_available_ars : 0;
     const today = new Date().toISOString().slice(0, 10);
 
-    // SPY benchmark
+    // SPY benchmark más preciso: simular cartera equivalente en SPY
     let spyValue = 0;
     try {
       const spyQuote = await fetchQuote("SPY").catch(() => null);
       const cclRate = ccl.venta || 1;
-      if (spyQuote?.price) {
+      if (spyQuote?.price && cclRate > 0) {
         const spyPriceArs = spyQuote.price * cclRate;
-        // Approximate: assume holding 1 share of SPY per $50k invested
-        const approxShares = Math.floor((realValue + capital) / 50000);
-        spyValue = approxShares * spyPriceArs;
+        const totalPortfolio = realValue + capital;
+        // Asumimos que desde el inicio se hubiera comprado SPY con todo
+        const spyHistory = await getTrackRecord(365);
+        if (spyHistory.length > 0 && spyHistory[0].spy_value_ars > 0) {
+          // Ya tenemos SPY acumulado, solo actualizamos precio
+          const firstSpyShares = (spyHistory[0].spy_value_ars || 0) / (spyPriceArs || 1);
+          spyValue = firstSpyShares * spyPriceArs;
+        } else {
+          // Primera vez: calcular shares iniciales
+          const initialShares = totalPortfolio / spyPriceArs;
+          spyValue = initialShares * spyPriceArs;
+        }
       }
     } catch { /* ignore spy calc errors */ }
 
-    await saveTrackRecord(today, virtualValue, realValue, spyValue, capital, ccl.venta || null);
-    console.log(`[track-record] Guardado: virtual=$${Math.round(virtualValue)} real=$${Math.round(realValue)} spy=$${Math.round(spyValue)}`);
+    // Calcular métricas diarias vs el registro anterior
+    let alphaVsSpy = null;
+    let dailyReturn = null;
+    let spyDailyReturn = null;
+    let drawdown = null;
+    let rollingSharpe = null;
+
+    try {
+      const previous = await getTrackRecord(2);
+      if (previous.length >= 2) {
+        const prev = previous[previous.length - 2];
+        const prevVirtual = (prev.virtual_total_ars || prev.virtual_value_ars) || 1;
+        const prevSpy = prev.spy_value_ars || 1;
+
+        dailyReturn = prevVirtual > 0 ? ((virtualTotal - prevVirtual) / prevVirtual) * 100 : 0;
+        spyDailyReturn = prevSpy > 0 ? ((spyValue - prevSpy) / prevSpy) * 100 : 0;
+        alphaVsSpy = (dailyReturn || 0) - (spyDailyReturn || 0);
+      }
+
+      // Drawdown desde pico histórico
+      const allHistory = await getTrackRecord(365);
+      let peak = 0;
+      for (const h of allHistory) {
+        const v = h.virtual_total_ars || h.virtual_value_ars || 0;
+        if (v > peak) peak = v;
+      }
+      drawdown = peak > 0 ? ((virtualTotal - peak) / peak) * 100 : 0;
+
+      // Rolling Sharpe (últimos 30 días)
+      const recent30 = allHistory.slice(-30);
+      if (recent30.length >= 10) {
+        const returns = [];
+        for (let i = 1; i < recent30.length; i++) {
+          const prev = recent30[i - 1];
+          const curr = recent30[i];
+          const p = prev.virtual_total_ars || prev.virtual_value_ars || 1;
+          const c = curr.virtual_total_ars || curr.virtual_value_ars || 0;
+          if (p > 0) returns.push(((c - p) / p) * 100);
+        }
+        if (returns.length > 5) {
+          const avg = returns.reduce((a, b) => a + b, 0) / returns.length;
+          const varianza = returns.reduce((s, r) => s + Math.pow(r - avg, 2), 0) / returns.length;
+          const vol = Math.sqrt(varianza);
+          rollingSharpe = vol > 0 ? (avg / vol) * Math.sqrt(252) : 0;
+        }
+      }
+    } catch (e) { /* ignore calc errors */ }
+
+    await saveTrackRecord({
+      date: today,
+      virtualValueArs: virtualValue,
+      realValueArs: realValue,
+      spyValueArs: spyValue,
+      capitalArs: capital,
+      cclRate: ccl.venta || null,
+      virtualDividendsArs: virtualDividends,
+      virtualTotalArs: virtualTotal,
+      alphaVsSpyPct: alphaVsSpy != null ? Math.round(alphaVsSpy * 100) / 100 : null,
+      drawdownFromPeakPct: drawdown != null ? Math.round(drawdown * 100) / 100 : null,
+      dailyReturnPct: dailyReturn != null ? Math.round(dailyReturn * 100) / 100 : null,
+      spyDailyReturnPct: spyDailyReturn != null ? Math.round(spyDailyReturn * 100) / 100 : null,
+      rollingSharpe: rollingSharpe != null ? Math.round(rollingSharpe * 100) / 100 : null,
+    });
+
+    console.log(`[track-record] Guardado: virtual=${Math.round(virtualValue)} div=${Math.round(virtualDividends)} total=${Math.round(virtualTotal)} real=${Math.round(realValue)} spy=${Math.round(spyValue)} alpha=${alphaVsSpy?.toFixed(2) || "-"} dd=${drawdown?.toFixed(2) || "-"}`);
   } catch (err) {
     console.error("[track-record] Error:", err.message);
   }

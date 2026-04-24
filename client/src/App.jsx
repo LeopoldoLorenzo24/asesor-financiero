@@ -396,8 +396,16 @@ export default function App() {
       <ToastSystem />
       <div style={{ minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.text, ...gridBg }}>
         <Header view={view} setView={nav} profile={profile} setProfile={setProfile} ccl={ccl} readiness={systemReadiness} />
-        {error && <div className="ca-main" style={{ padding: "20px 28px", maxWidth: 1400, margin: "0 auto" }}><StatusMsg type="error">{error}</StatusMsg></div>}
-        {selectedTicker && view === "ranking" ? renderDetail() : (views[view] || renderDashboard)()}
+        <main style={{ marginLeft: 220, marginTop: 64, minHeight: "calc(100vh - 64px)" }}>
+          {error && (
+            <div style={{ padding: "20px 32px", maxWidth: 1400 }}>
+              <StatusMsg type="error">{error}</StatusMsg>
+            </div>
+          )}
+          <div style={{ animation: "fadeUp 0.5s ease" }}>
+            {selectedTicker && view === "ranking" ? renderDetail() : (views[view] || renderDashboard)()}
+          </div>
+        </main>
         <ConfirmModal state={confirmState} onClose={() => setConfirmState(null)} />
       </div>
     </ErrorBoundary>

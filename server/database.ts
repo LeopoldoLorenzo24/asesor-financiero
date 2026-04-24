@@ -95,6 +95,72 @@ const MIGRATIONS: Migration[] = [
     name: "add_2fa_to_users",
     sql: `ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT NULL`,
   },
+  {
+    version: 7,
+    name: "create_virtual_transactions",
+    sql: `CREATE TABLE IF NOT EXISTS virtual_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticker TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('BUY','SELL','DIVIDEND','SPLIT')),
+      shares REAL NOT NULL DEFAULT 0,
+      requested_shares REAL,
+      executed_shares REAL,
+      requested_price_ars REAL,
+      executed_price_ars REAL,
+      slippage_pct REAL,
+      delay_minutes INTEGER,
+      partial_fill INTEGER NOT NULL DEFAULT 0,
+      broker_costs_ars REAL NOT NULL DEFAULT 0,
+      total_cost_ars REAL NOT NULL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+  },
+  {
+    version: 8,
+    name: "create_corporate_actions",
+    sql: `CREATE TABLE IF NOT EXISTS corporate_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticker TEXT NOT NULL,
+      action_date TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('DIVIDEND','SPLIT','RATIO_CHANGE')),
+      amount REAL,
+      ratio_from REAL,
+      ratio_to REAL,
+      description TEXT,
+      source TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+  },
+  {
+    version: 9,
+    name: "enhance_track_record",
+    sql: `ALTER TABLE track_record ADD COLUMN virtual_dividends_ars REAL DEFAULT 0;
+      ALTER TABLE track_record ADD COLUMN virtual_total_ars REAL DEFAULT 0;
+      ALTER TABLE track_record ADD COLUMN alpha_vs_spy_pct REAL;
+      ALTER TABLE track_record ADD COLUMN drawdown_from_peak_pct REAL;
+      ALTER TABLE track_record ADD COLUMN daily_return_pct REAL;
+      ALTER TABLE track_record ADD COLUMN spy_daily_return_pct REAL;
+      ALTER TABLE track_record ADD COLUMN rolling_sharpe REAL;`,
+  },
+  {
+    version: 10,
+    name: "create_track_record_monthly",
+    sql: `CREATE TABLE IF NOT EXISTS track_record_monthly (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      month TEXT NOT NULL UNIQUE,
+      virtual_return_pct REAL,
+      real_return_pct REAL,
+      spy_return_pct REAL,
+      alpha_pct REAL,
+      max_drawdown_pct REAL,
+      sharpe_ratio REAL,
+      win_rate_pct REAL,
+      trades_count INTEGER,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+  },
 ];
 
 async function runMigrations() {
@@ -1206,6 +1272,95 @@ export async function removeVirtualPosition(ticker: string) {
   return await db.execute({ sql: "DELETE FROM virtual_portfolio WHERE ticker = ?", args: [ticker.toUpperCase()] });
 }
 
+export async function logVirtualTransaction(data: {
+  ticker: string;
+  type: "BUY" | "SELL" | "DIVIDEND" | "SPLIT";
+  shares: number;
+  requestedShares?: number;
+  executedShares?: number;
+  requestedPriceArs?: number;
+  executedPriceArs?: number;
+  slippagePct?: number;
+  delayMinutes?: number;
+  partialFill?: boolean;
+  brokerCostsArs?: number;
+  totalCostArs?: number;
+  notes?: string;
+}) {
+  return await db.execute({
+    sql: `INSERT INTO virtual_transactions
+      (ticker, type, shares, requested_shares, executed_shares, requested_price_ars, executed_price_ars, slippage_pct, delay_minutes, partial_fill, broker_costs_ars, total_cost_ars, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      data.ticker.toUpperCase(), data.type, data.shares,
+      data.requestedShares ?? null, data.executedShares ?? null,
+      data.requestedPriceArs ?? null, data.executedPriceArs ?? null,
+      data.slippagePct ?? null, data.delayMinutes ?? null,
+      data.partialFill ? 1 : 0, data.brokerCostsArs ?? 0, data.totalCostArs ?? 0, data.notes || "",
+    ],
+  });
+}
+
+export async function getVirtualTransactions(ticker?: string, limit = 100) {
+  if (ticker) {
+    return (await db.execute({
+      sql: "SELECT * FROM virtual_transactions WHERE ticker = ? ORDER BY created_at DESC LIMIT ?",
+      args: [ticker.toUpperCase(), limit],
+    })).rows;
+  }
+  return (await db.execute({
+    sql: "SELECT * FROM virtual_transactions ORDER BY created_at DESC LIMIT ?",
+    args: [limit],
+  })).rows;
+}
+
+// ============================================================
+// CORPORATE ACTIONS
+// ============================================================
+
+export async function saveCorporateAction(data: {
+  ticker: string;
+  actionDate: string;
+  type: "DIVIDEND" | "SPLIT" | "RATIO_CHANGE";
+  amount?: number;
+  ratioFrom?: number;
+  ratioTo?: number;
+  description?: string;
+  source?: string;
+}) {
+  return await db.execute({
+    sql: `INSERT INTO corporate_actions (ticker, action_date, type, amount, ratio_from, ratio_to, description, source)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      data.ticker.toUpperCase(), data.actionDate, data.type,
+      data.amount ?? null, data.ratioFrom ?? null, data.ratioTo ?? null,
+      data.description || "", data.source || "",
+    ],
+  });
+}
+
+export async function getCorporateActions(ticker?: string, limit = 50) {
+  if (ticker) {
+    return (await db.execute({
+      sql: "SELECT * FROM corporate_actions WHERE ticker = ? ORDER BY action_date DESC LIMIT ?",
+      args: [ticker.toUpperCase(), limit],
+    })).rows;
+  }
+  return (await db.execute({
+    sql: "SELECT * FROM corporate_actions ORDER BY action_date DESC LIMIT ?",
+    args: [limit],
+  })).rows;
+}
+
+export async function getPendingDividendsForPortfolio(tickers: string[]) {
+  if (tickers.length === 0) return [];
+  const placeholders = tickers.map(() => "?").join(",");
+  return (await db.execute({
+    sql: `SELECT * FROM corporate_actions WHERE type = 'DIVIDEND' AND ticker IN (${placeholders}) AND action_date >= date('now', '-90 days') ORDER BY action_date DESC`,
+    args: tickers,
+  })).rows;
+}
+
 // ============================================================
 // ADHERENCE LOG (tracking execution of AI recommendations)
 // ============================================================
@@ -1330,17 +1485,49 @@ export async function setPaperTradingConfig(autoSyncEnabled: boolean) {
 // TRACK RECORD
 // ============================================================
 
-export async function saveTrackRecord(date: string, virtualValueArs: number, realValueArs: number, spyValueArs: number, capitalArs: number, cclRate: number | null) {
+export async function saveTrackRecord(data: {
+  date: string;
+  virtualValueArs: number;
+  realValueArs: number;
+  spyValueArs: number;
+  capitalArs: number;
+  cclRate: number | null;
+  virtualDividendsArs?: number;
+  virtualTotalArs?: number;
+  alphaVsSpyPct?: number;
+  drawdownFromPeakPct?: number;
+  dailyReturnPct?: number;
+  spyDailyReturnPct?: number;
+  rollingSharpe?: number;
+}) {
   await db.execute({
-    sql: `INSERT INTO track_record (date, virtual_value_ars, real_value_ars, spy_value_ars, capital_ars, ccl_rate)
-          VALUES (?, ?, ?, ?, ?, ?)
+    sql: `INSERT INTO track_record (
+            date, virtual_value_ars, real_value_ars, spy_value_ars, capital_ars, ccl_rate,
+            virtual_dividends_ars, virtual_total_ars, alpha_vs_spy_pct, drawdown_from_peak_pct,
+            daily_return_pct, spy_daily_return_pct, rolling_sharpe
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(date) DO UPDATE SET
             virtual_value_ars = excluded.virtual_value_ars,
             real_value_ars = excluded.real_value_ars,
             spy_value_ars = excluded.spy_value_ars,
             capital_ars = excluded.capital_ars,
-            ccl_rate = excluded.ccl_rate`,
-    args: [date, virtualValueArs, realValueArs, spyValueArs, capitalArs, cclRate],
+            ccl_rate = excluded.ccl_rate,
+            virtual_dividends_ars = excluded.virtual_dividends_ars,
+            virtual_total_ars = excluded.virtual_total_ars,
+            alpha_vs_spy_pct = excluded.alpha_vs_spy_pct,
+            drawdown_from_peak_pct = excluded.drawdown_from_peak_pct,
+            daily_return_pct = excluded.daily_return_pct,
+            spy_daily_return_pct = excluded.spy_daily_return_pct,
+            rolling_sharpe = excluded.rolling_sharpe`,
+    args: [
+      data.date, data.virtualValueArs, data.realValueArs, data.spyValueArs,
+      data.capitalArs, data.cclRate,
+      data.virtualDividendsArs ?? 0, data.virtualTotalArs ?? data.virtualValueArs,
+      data.alphaVsSpyPct ?? null, data.drawdownFromPeakPct ?? null,
+      data.dailyReturnPct ?? null, data.spyDailyReturnPct ?? null,
+      data.rollingSharpe ?? null,
+    ],
   });
 }
 
@@ -1348,6 +1535,118 @@ export async function getTrackRecord(days = 365) {
   return (await db.execute({
     sql: `SELECT * FROM track_record WHERE date >= date('now', '-' || ? || ' days') ORDER BY date ASC`,
     args: [days],
+  })).rows;
+}
+
+export async function getTrackRecordWithMetrics(days = 365) {
+  const rows = await getTrackRecord(days);
+  if (rows.length < 2) return { rows, metrics: null };
+
+  const values = rows.map((r: any) => ({
+    date: r.date,
+    virtual: r.virtual_total_ars || r.virtual_value_ars || 0,
+    real: r.real_value_ars || 0,
+    spy: r.spy_value_ars || 0,
+    alpha: r.alpha_vs_spy_pct,
+    drawdown: r.drawdown_from_peak_pct,
+    sharpe: r.rolling_sharpe,
+  }));
+
+  const first = values[0];
+  const last = values[values.length - 1];
+
+  // Calculate metrics
+  const virtualReturn = first.virtual > 0 ? ((last.virtual - first.virtual) / first.virtual) * 100 : 0;
+  const spyReturn = first.spy > 0 ? ((last.spy - first.spy) / first.spy) * 100 : 0;
+  const alpha = virtualReturn - spyReturn;
+
+  // Max drawdown
+  let peak = first.virtual;
+  let maxDrawdown = 0;
+  for (const v of values) {
+    if (v.virtual > peak) peak = v.virtual;
+    const dd = peak > 0 ? ((v.virtual - peak) / peak) * 100 : 0;
+    if (dd < maxDrawdown) maxDrawdown = dd;
+  }
+
+  // Volatility (std dev of daily returns)
+  const dailyReturns = values.slice(1).map((v, i) => {
+    const prev = values[i].virtual;
+    return prev > 0 ? ((v.virtual - prev) / prev) * 100 : 0;
+  }).filter((r) => Number.isFinite(r));
+
+  const avgReturn = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
+  const variance = dailyReturns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / dailyReturns.length;
+  const volatility = Math.sqrt(variance);
+
+  // Sharpe (using 0% risk-free for simplicity, or 8% annual = ~0.021% daily)
+  const riskFreeDaily = 0.021; // ~8% annual
+  const sharpe = volatility > 0 ? ((avgReturn - riskFreeDaily) / volatility) * Math.sqrt(252) : 0;
+
+  // Win rate (days beating SPY)
+  const spyDailyReturns = values.slice(1).map((v, i) => {
+    const prev = values[i].spy;
+    return prev > 0 ? ((v.spy - prev) / prev) * 100 : 0;
+  });
+  let wins = 0;
+  for (let i = 0; i < dailyReturns.length; i++) {
+    if (dailyReturns[i] > spyDailyReturns[i]) wins++;
+  }
+  const winRate = dailyReturns.length > 0 ? (wins / dailyReturns.length) * 100 : 0;
+
+  return {
+    rows,
+    metrics: {
+      days: values.length,
+      virtualReturnPct: Math.round(virtualReturn * 100) / 100,
+      spyReturnPct: Math.round(spyReturn * 100) / 100,
+      alphaPct: Math.round(alpha * 100) / 100,
+      maxDrawdownPct: Math.round(maxDrawdown * 100) / 100,
+      volatilityAnnualPct: Math.round(volatility * Math.sqrt(252) * 100) / 100,
+      sharpeRatio: Math.round(sharpe * 100) / 100,
+      winRateVsSpyPct: Math.round(winRate * 100) / 100,
+      avgDailyReturnPct: Math.round(avgReturn * 100) / 100,
+    },
+  };
+}
+
+export async function saveMonthlyTrackRecord(data: {
+  month: string;
+  virtualReturnPct: number;
+  realReturnPct: number;
+  spyReturnPct: number;
+  alphaPct: number;
+  maxDrawdownPct: number;
+  sharpeRatio: number;
+  winRatePct: number;
+  tradesCount: number;
+  notes?: string;
+}) {
+  await db.execute({
+    sql: `INSERT INTO track_record_monthly (month, virtual_return_pct, real_return_pct, spy_return_pct, alpha_pct, max_drawdown_pct, sharpe_ratio, win_rate_pct, trades_count, notes)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(month) DO UPDATE SET
+            virtual_return_pct = excluded.virtual_return_pct,
+            real_return_pct = excluded.real_return_pct,
+            spy_return_pct = excluded.spy_return_pct,
+            alpha_pct = excluded.alpha_pct,
+            max_drawdown_pct = excluded.max_drawdown_pct,
+            sharpe_ratio = excluded.sharpe_ratio,
+            win_rate_pct = excluded.win_rate_pct,
+            trades_count = excluded.trades_count,
+            notes = excluded.notes`,
+    args: [
+      data.month, data.virtualReturnPct, data.realReturnPct, data.spyReturnPct,
+      data.alphaPct, data.maxDrawdownPct, data.sharpeRatio, data.winRatePct,
+      data.tradesCount, data.notes || "",
+    ],
+  });
+}
+
+export async function getMonthlyTrackRecord(months = 12) {
+  return (await db.execute({
+    sql: `SELECT * FROM track_record_monthly WHERE month >= date('now', '-' || ? || ' months') ORDER BY month ASC`,
+    args: [months],
   })).rows;
 }
 

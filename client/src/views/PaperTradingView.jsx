@@ -66,8 +66,20 @@ export default function PaperTradingView({ virtualPortfolio, virtualRegret, rank
         <MetricCard label="Valor Total" value={totalValue} prefix="$" color={T.text} glowColor={T.blue} icon="◆" />
         <MetricCard label="P&L Total" value={totalPnl} suffix="%" decimals={2} color={totalPnl >= 0 ? T.green : T.red} glowColor={totalPnl >= 0 ? T.green : T.red} icon="▲" />
         <MetricCard label="Posiciones" value={positions.length} color={T.text} glowColor={T.purple} icon="◈" />
-        <MetricCard label="Costo Base" value={totalCost} prefix="$" color={T.text} glowColor={T.yellow} icon="⟐" />
+        <MetricCard label="Dividendos Est." value={virtualPortfolio?.summary?.totalDividends || 0} prefix="$" color={T.cyan} glowColor={T.cyan} icon="⟐" />
       </div>
+
+      <GlassCard style={{ marginBottom: 20, borderColor: `${T.blue}25`, background: `${T.blue}06` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <PulseDot color={T.blue} size={6} />
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: T.blue }}>Ejecucion Realista Activada</div>
+            <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>
+              Slippage variable · Costos de broker reales · Lotes mínimos BYMA · Partial fills · Dividendos netos
+            </div>
+          </div>
+        </div>
+      </GlassCard>
 
       <GlassCard style={{ marginBottom: 28, padding: 0, overflow: "hidden" }}>
         <div style={{ padding: "24px 28px", borderBottom: `1px solid ${T.border}` }}>
@@ -89,6 +101,7 @@ export default function PaperTradingView({ virtualPortfolio, virtualRegret, rank
                   <th style={S.th}>Precio Promedio</th>
                   <th style={S.th}>Precio Actual</th>
                   <th style={S.th}>Valor</th>
+                  <th style={S.th}>Div Est.</th>
                   <th style={S.th}>P&L</th>
                 </tr>
               </thead>
@@ -104,6 +117,7 @@ export default function PaperTradingView({ virtualPortfolio, virtualRegret, rank
                       <td style={{ ...S.td, fontFamily: T.fontMono }}>${(pos.avgPrice || 0).toLocaleString("es-AR")}</td>
                       <td style={{ ...S.td, fontFamily: T.fontMono, color: T.textMuted }}>${(pos.currentPrice || 0).toLocaleString("es-AR")}</td>
                       <td style={S.td}><span style={{ fontWeight: 700, fontFamily: T.fontMono, color: T.text }}>${value.toLocaleString("es-AR")}</span></td>
+                      <td style={{ ...S.td, fontFamily: T.fontMono, color: T.cyan }}>${(pos.dividendArs || 0).toLocaleString("es-AR")}</td>
                       <td style={S.td}>
                         <span style={{ fontSize: 12, fontFamily: T.fontMono, fontWeight: 800, color: pnl >= 0 ? T.green : T.red, background: pnl >= 0 ? T.greenGlow : T.redGlow, padding: "3px 10px", borderRadius: 8 }}>
                           {pnl >= 0 ? "▲" : "▼"} {Math.abs(pnl).toFixed(1)}%
@@ -120,15 +134,18 @@ export default function PaperTradingView({ virtualPortfolio, virtualRegret, rank
 
       {virtualRegret && (
         <GlassCard glowColor={T.cyan}>
-          <SectionHeader title="Regret Analysis" subtitle="Comparación: ¿Cuánto ganarías si seguías al bot al pie de la letra?" />
+          <SectionHeader title="Regret Analysis" subtitle="Comparación: ¿Cuánto ganarías si seguías al bot al pie de la letra? (incluye dividendos netos)" />
           <div style={{ ...S.grid(240), gap: 16 }}>
             <GlassCard>
               <div style={S.label}>Valor Real</div>
               <div style={{ ...S.value, fontSize: 22 }}><AnimatedNumber value={virtualRegret.realValue || 0} prefix="$" /></div>
             </GlassCard>
             <GlassCard>
-              <div style={S.label}>Valor Virtual</div>
+              <div style={S.label}>Valor Virtual + Div</div>
               <div style={{ ...S.value, fontSize: 22 }}><AnimatedNumber value={virtualRegret.virtualValue || 0} prefix="$" /></div>
+              {virtualRegret.virtualDividends > 0 && (
+                <div style={{ fontSize: 11, color: T.cyan, marginTop: 4 }}>Incluye ${virtualRegret.virtualDividends.toLocaleString("es-AR")} en dividendos</div>
+              )}
             </GlassCard>
             <GlassCard glowColor={(virtualRegret.diff || 0) >= 0 ? T.green : T.red}>
               <div style={S.label}>Diferencia (Regret)</div>
