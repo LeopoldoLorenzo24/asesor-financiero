@@ -135,7 +135,7 @@ const mockCedearDefs = {
 };
 
 test("sanitizePicksWithRiskLimits deja pasar picks dentro de límites", () => {
-  const picks = [{ ticker: "AAPL", cantidad_cedears: 10, precio_aprox_ars: 1000, monto_total_ars: 10_000 }];
+  const picks = [{ ticker: "AAPL", cantidad_cedears: 100, precio_aprox_ars: 1000, monto_total_ars: 100_000 }];
   const summary = [{ ticker: "AAPL", total_shares: 0, weighted_avg_price: 0 }];
   const result = sanitizePicksWithRiskLimits(picks, summary, mockCedearDefs, "moderate");
   assert.equal(result.sanitizedPicks.length, 1);
@@ -143,16 +143,16 @@ test("sanitizePicksWithRiskLimits deja pasar picks dentro de límites", () => {
 });
 
 test("sanitizePicksWithRiskLimits reduce cantidad cuando excede maxPositionPct", () => {
-  // Portfolio de $1M, maxPos moderate = 35% → $350k. Tenemos $300k en AAPL, pick de $100k → $400k (40%)
-  const picks = [{ ticker: "AAPL", cantidad_cedears: 100, precio_aprox_ars: 1000, monto_total_ars: 100_000 }];
+  // Portfolio de $1M, maxPos moderate = 35% → $350k. Tenemos $200k en AAPL, pick de $200k → $400k (40%)
+  const picks = [{ ticker: "AAPL", cantidad_cedears: 200, precio_aprox_ars: 1000, monto_total_ars: 200_000 }];
   const summary = [
-    { ticker: "AAPL", total_shares: 300, weighted_avg_price: 1000 }, // valor = 300k
-    { ticker: "SPY",  total_shares: 140, weighted_avg_price: 5000 }, // valor = 700k → total = 1M
+    { ticker: "AAPL", total_shares: 200, weighted_avg_price: 1000 }, // valor = 200k
+    { ticker: "SPY",  total_shares: 160, weighted_avg_price: 5000 }, // valor = 800k → total = 1M
   ];
   const result = sanitizePicksWithRiskLimits(picks, summary, mockCedearDefs, "moderate");
   assert.equal(result.sanitizedPicks.length, 1);
   assert.ok(result.riskNotes.length > 0);
-  assert.equal(result.sanitizedPicks[0].cantidad_cedears, 50); // 350k max - 300k existente = 50k / 1000 = 50
+  assert.equal(result.sanitizedPicks[0].cantidad_cedears, 100); // 350k max - 200k existente = 150k / 1000 = 150 → lote 100 = 100
 });
 
 test("sanitizePicksWithRiskLimits elimina pick si cantidad ajustada es 0", () => {
@@ -164,27 +164,27 @@ test("sanitizePicksWithRiskLimits elimina pick si cantidad ajustada es 0", () =>
 });
 
 test("sanitizePicksWithRiskLimits reduce cantidad por sector excesivo", () => {
-  // Portfolio $1M, maxSector moderate = 35%. Technology ya tiene $300k, pick de $100k en MSFT → $400k (40%)
-  const picks = [{ ticker: "MSFT", cantidad_cedears: 100, precio_aprox_ars: 1000, monto_total_ars: 100_000 }];
+  // Portfolio $1M, maxSector moderate = 35%. Technology ya tiene $200k, pick de $200k en MSFT → $400k (40%)
+  const picks = [{ ticker: "MSFT", cantidad_cedears: 200, precio_aprox_ars: 1000, monto_total_ars: 200_000 }];
   const summary = [
-    { ticker: "AAPL", total_shares: 300, weighted_avg_price: 1000 }, // $300k tech
-    { ticker: "SPY",  total_shares: 140, weighted_avg_price: 5000 }, // $700k → total = 1M
+    { ticker: "AAPL", total_shares: 200, weighted_avg_price: 1000 }, // $200k tech
+    { ticker: "SPY",  total_shares: 160, weighted_avg_price: 5000 }, // $800k → total = 1M
   ];
   const result = sanitizePicksWithRiskLimits(picks, summary, mockCedearDefs, "moderate");
   assert.equal(result.sanitizedPicks.length, 1);
   assert.ok(result.riskNotes.some((n) => n.includes("sector")));
-  assert.equal(result.sanitizedPicks[0].cantidad_cedears, 50); // 350k max - 300k existente = 50k / 1000 = 50
+  assert.equal(result.sanitizedPicks[0].cantidad_cedears, 100); // 350k max - 200k existente = 150k / 1000 = 150 → lote 100 = 100
 });
 
 test("sanitizePicksWithRiskLimits maneja portfolio vacío sin errores", () => {
-  const picks = [{ ticker: "SPY", cantidad_cedears: 10, precio_aprox_ars: 5000, monto_total_ars: 50_000 }];
+  const picks = [{ ticker: "SPY", cantidad_cedears: 100, precio_aprox_ars: 5000, monto_total_ars: 500_000 }];
   const result = sanitizePicksWithRiskLimits(picks, [], mockCedearDefs, "moderate");
   assert.equal(result.sanitizedPicks.length, 1);
   assert.equal(result.riskNotes.length, 0);
 });
 
 test("sanitizePicksWithRiskLimits maneja cedearDefs nulo", () => {
-  const picks = [{ ticker: "UNKNOWN", cantidad_cedears: 10, precio_aprox_ars: 1000, monto_total_ars: 10_000 }];
+  const picks = [{ ticker: "UNKNOWN", cantidad_cedears: 100, precio_aprox_ars: 1000, monto_total_ars: 100_000 }];
   const result = sanitizePicksWithRiskLimits(picks, [], null, "moderate");
   // Sin defs no puede calcular sector, pero tampoco tiene posiciones existentes, así que debería pasar
   assert.equal(result.sanitizedPicks.length, 1);

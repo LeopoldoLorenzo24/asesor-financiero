@@ -45,7 +45,8 @@ router.post("/analyze", async (req, res) => {
 
     const { capital = 0, profile: profileId = RANKING_CONFIG.defaultProfile } = req.body;
     const ccl = await fetchCCL();
-    const investmentReadiness = await getInvestmentReadiness();
+    const userId = req.user?.userId;
+    const investmentReadiness = await getInvestmentReadiness(userId);
 
     const tickers = CEDEARS.map((c) => c.ticker);
     const quotesMap = await fetchAllQuotes(tickers);

@@ -225,4 +225,34 @@ const CEDEARS = [
   { ticker: "VIG", name: "Vanguard Dividend Appreciation", sector: "ETF - Dividendos", ratio: 39 },
 ];
 
+const DEFAULT_LOT_SIZE = 100;
+
+/**
+ * Retorna el tamaño de lote estándar para un CEDEAR.
+ * La gran mayoría de CEDEARs en BYMA operan en lotes de 100.
+ * Algunos muy caros (ej. BKNG, NOW) pueden operar en lotes reducidos
+ * según regulación de BYMA, pero por seguridad usamos 100 default.
+ */
+export function getCedearLotSize(ticker) {
+  // BYMA permite lotes reducidos para CEDEARs con precio > cierto umbral,
+  // pero en la práctica la mayoría sigue siendo 100.
+  const reducedLotTickers = new Set(["BKNG", "NOW", "ASML", "RACE", "ISRG"]);
+  if (reducedLotTickers.has(ticker)) return 10;
+  return DEFAULT_LOT_SIZE;
+}
+
+/**
+ * Volumen diario estimado en USD (aproximación educativa).
+ * Usado para estimar market impact y liquidez.
+ */
+export function getEstimatedDailyVolumeUsd(ticker) {
+  const volumes = {
+    AAPL: 500_000, MSFT: 400_000, GOOGL: 350_000, AMZN: 300_000,
+    NVDA: 450_000, TSLA: 400_000, META: 250_000, SPY: 800_000, QQQ: 600_000,
+    JPM: 150_000, V: 120_000, JNJ: 100_000, UNH: 80_000,
+    ASML: 30_000, BKNG: 25_000, NOW: 20_000, RACE: 35_000,
+  };
+  return volumes[ticker] || 50_000;
+}
+
 export default CEDEARS;

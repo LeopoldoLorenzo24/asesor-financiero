@@ -154,6 +154,80 @@ export default function InvestmentReadinessView({ readiness }) {
         </GlassCard>
       </div>
 
+      <div style={{ ...S.grid(260), gap: 16, marginBottom: 28 }}>
+        <GlassCard glowColor={readiness.macroCircuitBreakers?.severity === "critical" ? T.red : readiness.macroCircuitBreakers?.severity === "warning" ? T.yellow : T.green}>
+          <div style={S.label}>Circuit Breakers Macro</div>
+          <div style={{ ...S.value, fontSize: 18, marginTop: 8, color: readiness.macroCircuitBreakers?.severity === "critical" ? T.red : readiness.macroCircuitBreakers?.severity === "warning" ? T.yellow : T.green }}>
+            {readiness.macroCircuitBreakers?.severity === "none" ? "OK" : readiness.macroCircuitBreakers?.reason || "Verificando..."}
+          </div>
+          <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
+            CCL spike {pct(readiness.macroCircuitBreakers?.cclSpikePct)} · Brecha {pct(readiness.macroCircuitBreakers?.estimatedGapPct)}
+          </div>
+        </GlassCard>
+
+        <GlassCard glowColor={readiness.stressTests?.allSurvived ? T.green : T.red}>
+          <div style={S.label}>Stress Tests</div>
+          <div style={{ ...S.value, fontSize: 18, marginTop: 8, color: readiness.stressTests?.allSurvived ? T.green : T.red }}>
+            {readiness.stressTests?.allSurvived ? "TODOS SUPERADOS" : "FALLAS DETECTADAS"}
+          </div>
+          <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
+            Peor drawdown simulado: {readiness.stressTests?.worstDrawdown ?? "—"}%
+          </div>
+        </GlassCard>
+
+        <GlassCard glowColor={readiness.transactionCosts?.viable ? T.green : T.red}>
+          <div style={S.label}>Costos de Transaccion (IDA+VUELTA)</div>
+          <div style={{ ...S.value, fontSize: 18, marginTop: 8, color: readiness.transactionCosts?.viable ? T.green : T.red }}>
+            {readiness.transactionCosts?.roundTripCostPct ?? "—"}%
+          </div>
+          <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
+            Break-even: {readiness.transactionCosts?.requiredReturnToBreakEven ?? "—"}% · Muestra $100k ARS
+          </div>
+        </GlassCard>
+
+        <GlassCard glowColor={readiness.rules?.find((r) => r.name === "two_factor_authentication")?.passed ? T.green : T.red}>
+          <div style={S.label}>2FA / Autenticacion</div>
+          <div style={{ ...S.value, fontSize: 18, marginTop: 8, color: readiness.rules?.find((r) => r.name === "two_factor_authentication")?.passed ? T.green : T.red }}>
+            {readiness.rules?.find((r) => r.name === "two_factor_authentication")?.passed ? "HABILITADO" : "REQUERIDO"}
+          </div>
+          <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
+            Obligatorio para capital real
+          </div>
+        </GlassCard>
+      </div>
+
+      {readiness.stressTests?.results && readiness.stressTests.results.length > 0 && (
+        <GlassCard style={{ marginBottom: 28, padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "24px 28px", borderBottom: `1px solid ${T.border}` }}>
+            <div style={{ ...S.label, margin: 0 }}>Escenarios de Stress</div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th style={S.th}>Escenario</th>
+                  <th style={S.th}>Retorno</th>
+                  <th style={S.th}>Max DD</th>
+                  <th style={S.th}>Recuperacion</th>
+                  <th style={S.th}>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {readiness.stressTests.results.map((r, i) => (
+                  <tr key={i}>
+                    <td style={S.td}>{r.scenario}</td>
+                    <td style={{ ...S.td, fontFamily: T.fontMono, color: (r.portfolioReturnPct || 0) >= 0 ? T.green : T.red }}>{r.portfolioReturnPct}%</td>
+                    <td style={{ ...S.td, fontFamily: T.fontMono }}>{r.maxDrawdownPct}%</td>
+                    <td style={{ ...S.td, fontFamily: T.fontMono }}>{r.recoveryMonths ? `${r.recoveryMonths}m` : "—"}</td>
+                    <td style={S.td}><span style={{ ...S.badge(r.survived ? T.green : T.red), fontSize: 9 }}>{r.survived ? "SUPERADO" : "FALLIDO"}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </GlassCard>
+      )}
+
       <GlassCard style={{ marginBottom: 28 }}>
         <SectionHeader title="Reglas de readiness" subtitle="El sistema solo escala cuando pasa todos estos controles" />
         <div style={{ display: "grid", gap: 10 }}>

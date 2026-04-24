@@ -7,6 +7,7 @@
 
 import { RISK_CONFIG } from "./config.js";
 import { toFiniteNumber } from "./utils.js";
+import { getCedearLotSize } from "./cedears.js";
 
 export interface PortfolioPosition {
   ticker: string;
@@ -50,6 +51,35 @@ export interface DrawdownResult {
 export interface SanitizeResult {
   sanitizedPicks: Pick[];
   riskNotes: string[];
+}
+
+export interface LotValidationResult {
+  valid: boolean;
+  adjustedQty: number;
+  note: string | null;
+}
+
+export function validateLotSize(ticker: string, requestedQty: number): LotValidationResult {
+  const lotSize = getCedearLotSize(ticker);
+  if (requestedQty <= 0) {
+    return { valid: false, adjustedQty: 0, note: `${ticker}: cantidad debe ser > 0.` };
+  }
+  const adjustedQty = Math.floor(requestedQty / lotSize) * lotSize;
+  if (adjustedQty <= 0) {
+    return {
+      valid: false,
+      adjustedQty: 0,
+      note: `${ticker}: cantidad ${requestedQty} no alcanza el lote mínimo de ${lotSize}.`,
+    };
+  }
+  if (adjustedQty !== requestedQty) {
+    return {
+      valid: true,
+      adjustedQty,
+      note: `${ticker}: ajustado de ${requestedQty} a ${adjustedQty} (lote ${lotSize}).`,
+    };
+  }
+  return { valid: true, adjustedQty, note: null };
 }
 
 function positionValue(pos: PortfolioPosition | null | undefined): number {
@@ -152,23 +182,35 @@ export function sanitizePicksWithRiskLimits(
     const maxSectorPct = RISK_CONFIG.maxSectorConcentrationPct[profileId as keyof typeof RISK_CONFIG.maxSectorConcentrationPct] ?? RISK_CONFIG.maxSectorConcentrationPct.moderate;
     const projectedSectorPct = totalPortfolioValue > 0 ? ((currentSectorValue + pickValue) / totalPortfolioValue) * 100 : 0;
 
+    let qty = toFiniteNumber(pick.cantidad_cedears, 0);
+    let price = toFiniteNumber(pick.precio_aprox_ars, 0);
+
+    // Validar lotes mínimos primero
+    const lotCheck = validateLotSize(ticker, qty);
+    if (lotCheck.note) notes.push(`Lote: ${lotCheck.note}`);
+    qty = lotCheck.adjustedQty;
+
+    // Aplicar límites de posición
     if (projectedPct > maxPosPct) {
       const maxAllowedValue = Math.max(0, (maxPosPct / 100) * totalPortfolioValue - existingValue);
-      const maxQty = (pick.precio_aprox_ars || 0) > 0 ? Math.floor(maxAllowedValue / (pick.precio_aprox_ars || 1)) : 0;
-      notes.push(`Riesgo: ${ticker} excedería ${maxPosPct}% del portfolio (${projectedPct.toFixed(1)}%). Cantidad ajustada de ${pick.cantidad_cedears} → ${maxQty}.`);
-      pick.cantidad_cedears = maxQty;
-      pick.monto_total_ars = Math.round(maxQty * (pick.precio_aprox_ars || 0));
-      if (maxQty > 0) sanitized.push(pick);
-    } else if (projectedSectorPct > maxSectorPct) {
-      const maxAllowedValue = Math.max(0, (maxSectorPct / 100) * totalPortfolioValue - currentSectorValue);
-      const maxQty = (pick.precio_aprox_ars || 0) > 0 ? Math.floor(maxAllowedValue / (pick.precio_aprox_ars || 1)) : 0;
-      notes.push(`Riesgo: ${ticker} (${sector}) excedería ${maxSectorPct}% del portfolio por sector (${projectedSectorPct.toFixed(1)}%). Cantidad ajustada de ${pick.cantidad_cedears} → ${maxQty}.`);
-      pick.cantidad_cedears = maxQty;
-      pick.monto_total_ars = Math.round(maxQty * (pick.precio_aprox_ars || 0));
-      if (maxQty > 0) sanitized.push(pick);
-    } else {
-      sanitized.push(pick);
+      const maxQty = price > 0 ? Math.floor(maxAllowedValue / price) : 0;
+      const lotAdjustedMax = Math.floor(maxQty / getCedearLotSize(ticker)) * getCedearLotSize(ticker);
+      notes.push(`Riesgo: ${ticker} excedería ${maxPosPct}% del portfolio (${projectedPct.toFixed(1)}%). Cantidad ajustada de ${pick.cantidad_cedears} → ${lotAdjustedMax}.`);
+      qty = lotAdjustedMax;
     }
+
+    // Aplicar límites de sector
+    if (projectedSectorPct > maxSectorPct) {
+      const maxAllowedValue = Math.max(0, (maxSectorPct / 100) * totalPortfolioValue - currentSectorValue);
+      const maxQty = price > 0 ? Math.floor(maxAllowedValue / price) : 0;
+      const lotAdjustedMax = Math.floor(maxQty / getCedearLotSize(ticker)) * getCedearLotSize(ticker);
+      notes.push(`Riesgo: ${ticker} (${sector}) excedería ${maxSectorPct}% del portfolio por sector (${projectedSectorPct.toFixed(1)}%). Cantidad ajustada de ${qty} → ${lotAdjustedMax}.`);
+      qty = lotAdjustedMax;
+    }
+
+    pick.cantidad_cedears = qty;
+    pick.monto_total_ars = Math.round(qty * price);
+    if (qty > 0) sanitized.push(pick);
   }
 
   return { sanitizedPicks: sanitized, riskNotes: notes };

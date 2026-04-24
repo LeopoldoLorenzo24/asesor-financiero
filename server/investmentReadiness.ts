@@ -1,8 +1,13 @@
 import { getCapitalHistory, getTrackRecord } from "./database.js";
 import { calculatePortfolioRiskMetrics } from "./riskMetrics.js";
-import { fetchHistory } from "./marketData.js";
+import { fetchHistory, fetchCCL } from "./marketData.js";
 import { calculateSpyBenchmark, getRealPicksAlpha } from "./performance.js";
 import { toFiniteNumber } from "./utils.js";
+import { checkMacroCircuitBreakers } from "./macroCircuitBreakers.js";
+import { runAllStressTests } from "./stressTest.js";
+import { calculateRoundTripCosts } from "./brokerCosts.js";
+import { requireTotpForRealCapital } from "./auth.js";
+import db from "./database.js";
 
 interface ReadinessRule {
   name: string;
@@ -218,13 +223,39 @@ export function applyDeploymentGovernance({
   return analysis;
 }
 
-export async function getInvestmentReadiness() {
+export async function getInvestmentReadiness(userId?: number) {
   const alphaStats = await getRealPicksAlpha().catch(() => null);
   const trackRecord = await getTrackRecord(365).catch(() => []);
   const typedCapitalHistory = await getCapitalHistory(120).catch(() => []) as CapitalHistoryPoint[];
   const spyHistory = await fetchHistory("SPY.BA", 14).catch(() => fetchHistory("SPY", 14).catch(() => null));
   const marketRegime = await detectMarketRegime();
   const riskMetrics = await calculatePortfolioRiskMetrics(typedCapitalHistory, spyHistory);
+  const macroCB = await checkMacroCircuitBreakers().catch(() => ({ severity: "none" as const, shouldHaltNewCapital: false, reason: null, cclSpikePct: null, estimatedGapPct: null, marketFrozen: false, cclVolatilityHigh: false, exchangeRateGapHigh: false }));
+
+  const cclNow = await fetchCCL().catch(() => null);
+  const currentPortfolioValue = typedCapitalHistory.length > 0 ? toFiniteNumber(typedCapitalHistory[0]?.total_value_ars, 0) : 0;
+
+  // Stress tests
+  const stressResults = await runAllStressTests(currentPortfolioValue, cclNow?.venta || 1000).catch(() => []);
+  const allStressSurvived = stressResults.length > 0 && stressResults.every((r) => r.survived);
+  const worstStressDrawdown = stressResults.length > 0
+    ? Math.min(...stressResults.map((r) => r.maxDrawdownPct))
+    : null;
+
+  // Transaction costs viability
+  const sampleTradeAmount = 100_000; // $100k ARS sample
+  const roundTrip = calculateRoundTripCosts(sampleTradeAmount);
+  const costsViable = roundTrip.totalEffectiveCostPct <= 3.0;
+
+  // 2FA check
+  let has2FA = false;
+  if (userId != null) {
+    try {
+      const userRow = (await db.execute({ sql: "SELECT totp_secret FROM users WHERE id = ?", args: [userId] })).rows[0] as unknown as { totp_secret?: string } | undefined;
+      has2FA = !!userRow?.totp_secret;
+    } catch { /* ignore */ }
+  }
+  const requires2FA = await requireTotpForRealCapital();
 
   const virtualValues = (trackRecord as SeriesPoint[])
     .map((row) => toFiniteNumber(row.virtual_value_ars, 0))
@@ -301,6 +332,38 @@ export async function getInvestmentReadiness() {
       threshold: 0,
       message: `La cartera real no supera todavía al benchmark DCA contra SPY (alpha ARS ${benchmark?.alphaArs ?? 0}).`,
     },
+    {
+      name: "macro_circuit_breakers",
+      passed: macroCB.severity !== "critical",
+      value: macroCB.severity === "critical" ? 1 : 0,
+      threshold: 0,
+      message: macroCB.reason || `Circuit breaker macro activo: ${macroCB.severity}.`,
+    },
+    {
+      name: "stress_tests",
+      passed: allStressSurvived,
+      value: worstStressDrawdown,
+      threshold: -40,
+      message: stressResults.length === 0
+        ? "No se pudieron ejecutar stress tests."
+        : `Stress test fallido: peor drawdown simulado ${worstStressDrawdown}%.`,
+    },
+    {
+      name: "transaction_costs_viable",
+      passed: costsViable,
+      value: roundTrip.totalEffectiveCostPct,
+      threshold: 3.0,
+      message: `Costos de transacción ida y vuelta muy altos (${roundTrip.totalEffectiveCostPct}% para $100k ARS). Operar con montos mayores o reducir frecuencia.`,
+    },
+    {
+      name: "two_factor_authentication",
+      passed: !requires2FA || has2FA,
+      value: has2FA ? 1 : 0,
+      threshold: 1,
+      message: requires2FA && !has2FA
+        ? "2FA requerido para capital real. Habilitá autenticación de dos factores en tu perfil."
+        : "2FA no habilitado.",
+    },
   ];
 
   const passedRules = rules.filter((rule) => rule.passed).length;
@@ -313,20 +376,28 @@ export async function getInvestmentReadiness() {
     alphaStats?.avgAlpha != null && alphaStats.avgAlpha <= 0 ? `alpha_no_positivo:${alphaStats.avgAlpha}%` : null,
     trackAlphaPct != null && trackAlphaPct <= 0 ? `track_record_no_supera_benchmark:${trackAlphaPct}%` : null,
     benchmark?.beatsSpy === false ? `cartera_real_bajo_spy:${benchmark.alphaArs}` : null,
+    macroCB.severity === "critical" ? `macro_crisis:${macroCB.reason}` : null,
+    !allStressSurvived ? `stress_test_failed:${worstStressDrawdown}%` : null,
+    !costsViable ? `costos_alto:${roundTrip.totalEffectiveCostPct}%` : null,
   ].filter(Boolean);
+
+  // Si hay circuit breaker macro crítico, forzar paper_only sin importar score
+  const effectiveReadyForReal = readyForRealCapital && macroCB.severity !== "critical";
+  const effectiveMode = effectiveReadyForReal ? "real_capital_ok" : "paper_only";
+
   const capitalPolicy = computeCapitalPolicy({
-    readyForRealCapital,
+    readyForRealCapital: effectiveReadyForReal,
     scorePct,
     degradationCount: degradationSignals.length,
     marketRegime: marketRegime.regime,
   });
 
   return {
-    mode,
-    readyForRealCapital,
+    mode: effectiveMode,
+    readyForRealCapital: effectiveReadyForReal,
     scorePct,
     grade: gradeFromScore(scorePct),
-    summary: readyForRealCapital
+    summary: effectiveReadyForReal
       ? "El sistema ya muestra evidencia suficiente para considerar capital real incremental."
       : "El sistema todavía debe operar en paper trading o con capital mínimo hasta validar edge y estabilidad.",
     blockers: summarizeRules(rules),
@@ -334,6 +405,23 @@ export async function getInvestmentReadiness() {
     degradationSignals,
     marketRegime,
     capitalPolicy,
+    macroCircuitBreakers: {
+      severity: macroCB.severity,
+      reason: macroCB.reason,
+      cclSpikePct: macroCB.cclSpikePct,
+      estimatedGapPct: macroCB.estimatedGapPct,
+    },
+    stressTests: {
+      allSurvived: allStressSurvived,
+      worstDrawdown: worstStressDrawdown,
+      results: stressResults,
+    },
+    transactionCosts: {
+      sampleAmount: sampleTradeAmount,
+      roundTripCostPct: roundTrip.totalEffectiveCostPct,
+      requiredReturnToBreakEven: roundTrip.requiredReturnToBreakEvenPct,
+      viable: costsViable,
+    },
     evidence: {
       alphaStats,
       trackRecord: {

@@ -7,6 +7,7 @@ import { getAlertingStatus, getRecentAlerts } from "../alerting.js";
 import { getAiBudgetStatus } from "../aiUsage.js";
 import { FLAGS } from "../featureFlags.js";
 import { getInvestmentReadiness } from "../investmentReadiness.js";
+import { authMiddleware } from "../auth.js";
 import CEDEARS from "../cedears.js";
 
 const router = Router();
@@ -94,9 +95,10 @@ router.get("/system/health", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get("/system/readiness", async (req, res) => {
+router.get("/system/readiness", authMiddleware, async (req, res) => {
   try {
-    res.json(await getInvestmentReadiness());
+    const userId = req.user?.userId;
+    res.json(await getInvestmentReadiness(userId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

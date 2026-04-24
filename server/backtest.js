@@ -4,6 +4,8 @@ import { technicalAnalysis, compositeScore } from "./analysis.js";
 import CEDEARS from "./cedears.js";
 import { BACKTEST_CONFIG, SECTOR_CATEGORIES } from "./config.js";
 import { chunkArray, sleep } from "./utils.js";
+import { calculateBrokerCosts } from "./brokerCosts.js";
+import { getCedearLotSize } from "./cedears.js";
 
 function getCategory(sector) {
   for (const [cat, sectors] of Object.entries(SECTOR_CATEGORIES)) {
@@ -141,6 +143,28 @@ const RISK = {
 const COMMISSION = BACKTEST_CONFIG.commissionPct || 0;
 const SLIPPAGE = BACKTEST_CONFIG.slippagePct || 0;
 
+function applyBrokerCosts(grossAmount) {
+  const costs = calculateBrokerCosts(grossAmount);
+  return costs.totalCosts;
+}
+
+function applyLotSize(ticker, rawShares) {
+  const lot = getCedearLotSize(ticker);
+  return Math.floor(rawShares / lot) * lot;
+}
+
+function checkLookAheadBias(historyMap, cutoffStr) {
+  // Validación básica: verifica que no haya datos futuros en el historyMap
+  for (const [ticker, history] of Object.entries(historyMap)) {
+    const futureData = history.filter((p) => p.date > cutoffStr);
+    if (futureData.length > 0) {
+      console.warn(`[backtest] LOOK-AHEAD BIAS detectado en ${ticker}: ${futureData.length} puntos futuros respecto a cutoff ${cutoffStr}`);
+      return false;
+    }
+  }
+  return true;
+}
+
 export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, monthlyDeposit = BACKTEST_CONFIG.defaultMonthlyDeposit, profile = "moderate", picksPerMonth = BACKTEST_CONFIG.defaultPicksPerMonth } = {}) {
   const candidates = selectBacktestCandidates(CEDEARS);
   const { corePct, coreETF } = CORE_ALLOCATION[profile] || CORE_ALLOCATION.moderate;
@@ -218,7 +242,7 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
       if (hitStopLoss) {
         const sellPrice = h.priceAtEntry * (1 + RISK.stopLossPct) * (1 - SLIPPAGE);
         const grossRecovered = h.shares * sellPrice;
-        const commission = grossRecovered * COMMISSION;
+        const commission = applyBrokerCosts(grossRecovered);
         const recovered = grossRecovered - commission;
         stoplossRecoveredCapital += recovered;
         const returnPct = h.invested > 0 ? ((recovered - h.invested) / h.invested) * 100 : 0;
@@ -233,11 +257,12 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
         holdingsToRemove.add(i);
         stopLossEvents.push({ ticker: h.ticker, pct: RISK.stopLossPct * 100 });
       } else if (hitTakeProfit) {
-        const sellShares = Math.floor(h.shares * RISK.takeProfitSellPct);
+        const sellSharesRaw = Math.floor(h.shares * RISK.takeProfitSellPct);
+        const sellShares = applyLotSize(h.ticker, sellSharesRaw);
         if (sellShares > 0) {
           const sellPrice = h.priceAtEntry * (1 + RISK.takeProfitPct) * (1 - SLIPPAGE);
           const grossRecovered = sellShares * sellPrice;
-          const commission = grossRecovered * COMMISSION;
+          const commission = applyBrokerCosts(grossRecovered);
           const recovered = grossRecovered - commission;
           stoplossRecoveredCapital += recovered;
           activeHoldings[i] = { ...h, shares: h.shares - sellShares, tookProfit: true };
@@ -261,10 +286,11 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
       if (coreCut.length > 0) {
         const rawCorePrice = coreCut[coreCut.length - 1].close;
         const corePrice = rawCorePrice * (1 + SLIPPAGE);
-        const coreShares = Math.floor(coreBudget / corePrice);
+        const rawShares = Math.floor(coreBudget / corePrice);
+        const coreShares = applyLotSize(coreETF, rawShares);
         if (coreShares > 0) {
           const invested = coreShares * corePrice;
-          const commission = invested * COMMISSION;
+          const commission = applyBrokerCosts(invested);
           coreHoldings.push({
             ticker: coreETF, name: `${coreETF} ETF`, sector: "ETF - Índices",
             priceAtEntry: Math.round(corePrice * 100) / 100,
@@ -307,13 +333,16 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
         const coreCut = coreHistory.filter((p) => p.date <= cutoffStr);
         if (coreCut.length > 0) {
           const corePrice = coreCut[coreCut.length - 1].close;
-          const extraShares = Math.floor(actualCoreBudget / corePrice);
+          const rawShares = Math.floor(actualCoreBudget / corePrice);
+          const extraShares = applyLotSize(coreETF, rawShares);
           if (extraShares > 0) {
+            const invested = extraShares * corePrice;
+            const commission = applyBrokerCosts(invested);
             coreHoldings.push({
               ticker: coreETF, name: `${coreETF} ETF`, sector: "ETF - Índices",
               priceAtEntry: Math.round(corePrice * 100) / 100,
               shares: extraShares,
-              invested: Math.round(extraShares * corePrice),
+              invested: Math.round(invested + commission),
               boughtMonth: cutoffStr,
             });
           }
@@ -337,10 +366,11 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
         const rawPrice = pick.priceAtEntry || 0;
         if (rawPrice <= 0) continue;
         const priceAtEntry = rawPrice * (1 + SLIPPAGE);
-        const shares = Math.floor(perPick / priceAtEntry);
+        const rawShares = Math.floor(perPick / priceAtEntry);
+        const shares = applyLotSize(ticker, rawShares);
         if (shares <= 0) continue;
         const invested = shares * priceAtEntry;
-        const commission = invested * COMMISSION;
+        const commission = applyBrokerCosts(invested);
 
         activeHoldings.push({
           ticker, name, sector,
@@ -371,6 +401,15 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
       takeProfitEvents: takeProfitEvents.length,
       qualityPicksAvailable: qualityCount,
     });
+  }
+
+  // Look-ahead bias guard
+  const firstMonthCutoff = new Date();
+  firstMonthCutoff.setMonth(firstMonthCutoff.getMonth() - months);
+  const firstCutoffStr = firstMonthCutoff.toISOString().slice(0, 10);
+  const lookAheadClean = checkLookAheadBias(historyMap, firstCutoffStr);
+  if (!lookAheadClean) {
+    console.warn("[backtest] ADVERTENCIA: Posible look-ahead bias detectado. Resultados pueden ser optimistas.");
   }
 
   if (activeHoldings.length === 0 && coreHoldings.length === 0 && closedHoldings.length === 0) {
@@ -419,17 +458,18 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
       cutoffDate.setMonth(cutoffDate.getMonth() - m);
       const cutoffStr = cutoffDate.toISOString().slice(0, 10);
       const spyCut = spyHistory.filter((p) => p.date <= cutoffStr);
-      if (spyCut.length > 0) {
-        const rawPrice = spyCut[spyCut.length - 1].close;
-        const price = rawPrice * (1 + SLIPPAGE);
-        const shares = Math.floor(monthlyDeposit / price);
-        if (shares > 0) {
-          const invested = shares * price;
-          const commission = invested * COMMISSION;
-          spyDcaShares += shares;
-          spyDcaInvested += invested + commission;
+        if (spyCut.length > 0) {
+          const rawPrice = spyCut[spyCut.length - 1].close;
+          const price = rawPrice * (1 + SLIPPAGE);
+          const rawShares = Math.floor(monthlyDeposit / price);
+          const shares = applyLotSize("SPY", rawShares);
+          if (shares > 0) {
+            const invested = shares * price;
+            const commission = applyBrokerCosts(invested);
+            spyDcaShares += shares;
+            spyDcaInvested += invested + commission;
+          }
         }
-      }
     }
     const spyNow = spyHistory[spyHistory.length - 1].close;
     const spyCurrentValue = spyDcaShares * spyNow * (1 - SLIPPAGE) * (1 - COMMISSION);
@@ -448,10 +488,11 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
         if (spyCut.length > 0) {
           const rawPrice = spyCut[spyCut.length - 1].close;
           const price = rawPrice * (1 + SLIPPAGE);
-          const shares = Math.floor(monthlyDeposit / price);
+          const rawShares = Math.floor(monthlyDeposit / price);
+          const shares = applyLotSize("SPY", rawShares);
           if (shares > 0) {
             const invested = shares * price;
-            const commission = invested * COMMISSION;
+            const commission = applyBrokerCosts(invested);
             spyDcaShares += shares;
             spyDcaInvested += invested + commission;
           }

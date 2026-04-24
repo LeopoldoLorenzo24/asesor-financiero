@@ -90,6 +90,11 @@ const MIGRATIONS: Migration[] = [
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
   },
+  {
+    version: 6,
+    name: "add_2fa_to_users",
+    sql: `ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT NULL`,
+  },
 ];
 
 async function runMigrations() {
