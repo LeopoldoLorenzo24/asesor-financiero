@@ -1,6 +1,8 @@
 import React from "react";
 import { T, S, signalColors } from "../theme";
 import { GlassCard, MetricCard, ScoreBar, Skeleton, StatusMsg, SectionHeader, Sparkline, HeatBadge } from "../components/common";
+import Tooltip, { InfoBadge } from "../components/Tooltip";
+import WelcomeView from "./WelcomeView";
 
 function getReadinessColor(readiness) {
   if (!readiness) return T.textDim;
@@ -56,46 +58,54 @@ export default function DashboardView({
     <div style={{ padding: "32px", maxWidth: 1400 }}>
       {/* Hero Stats Row */}
       <div style={{ ...S.grid(240), gap: 16, marginBottom: 28 }}>
-        <MetricCard
-          label="Portfolio"
-          value={portfolioValue}
-          prefix="$"
-          color={T.text}
-          subtext={`${portfolioCount} posiciones`}
-          glowColor={T.blue}
-          icon="P"
-        />
-        <MetricCard
-          label="Capital"
-          value={capital}
-          prefix="$"
-          color={T.green}
-          subtext="Disponible"
-          glowColor={T.green}
-          icon="C"
-        />
-        <MetricCard
-          label="Total"
-          value={totalWealth}
-          prefix="$"
-          color={T.cyan}
-          subtext={`${portfolioPct.toFixed(0)}% invertido`}
-          glowColor={T.cyan}
-          icon="T"
-        />
-        <GlassCard style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={S.label}>Distribucion</span>
-            <Sparkline data={sparkFlat} width={60} height={20} color={T.purple} />
-          </div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-            <span style={{ fontSize: 28, fontWeight: 800, fontFamily: T.fontMono, color: T.text }}>{portfolioCount}</span>
-            <span style={{ fontSize: 12, color: T.textDim }}>CEDEARs</span>
-          </div>
-          <div style={{ height: 5, background: "rgba(148,163,184,0.04)", borderRadius: 5, overflow: "hidden" }}>
-            <div style={{ height: "100%", width: `${Math.min(portfolioPct, 100)}%`, background: `linear-gradient(90deg, ${T.green}, ${T.cyan})`, borderRadius: 5, boxShadow: `0 0 12px ${T.green}30` }} />
-          </div>
-        </GlassCard>
+        <Tooltip content="Valor actual de tus posiciones en CEDEARs. Calculado con precios de mercado en ARS.">
+          <MetricCard
+            label={<>Portfolio <InfoBadge tooltip="Valor actual de tus posiciones en CEDEARs. Calculado con precios de mercado en ARS." /></>}
+            value={portfolioValue}
+            prefix="$"
+            color={T.text}
+            subtext={`${portfolioCount} posiciones`}
+            glowColor={T.blue}
+            icon="P"
+          />
+        </Tooltip>
+        <Tooltip content="Capital disponible en efectivo para nuevas inversiones. No incluye lo ya invertido.">
+          <MetricCard
+            label={<>Capital <InfoBadge tooltip="Capital disponible en efectivo para nuevas inversiones. No incluye lo ya invertido." /></>}
+            value={capital}
+            prefix="$"
+            color={T.green}
+            subtext="Disponible"
+            glowColor={T.green}
+            icon="C"
+          />
+        </Tooltip>
+        <Tooltip content="Suma total de tu patrimonio invertido: portfolio + capital disponible.">
+          <MetricCard
+            label={<>Total <InfoBadge tooltip="Suma total de tu patrimonio invertido: portfolio + capital disponible." /></>}
+            value={totalWealth}
+            prefix="$"
+            color={T.cyan}
+            subtext={`${portfolioPct.toFixed(0)}% invertido`}
+            glowColor={T.cyan}
+            icon="T"
+          />
+        </Tooltip>
+        <Tooltip content="Porcentaje de tu patrimonio total que está invertido en CEDEARs vs. disponible en efectivo.">
+          <GlassCard style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 12, cursor: "help" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={S.label}>Distribucion <InfoBadge tooltip="Porcentaje de tu patrimonio total que está invertido en CEDEARs vs. disponible en efectivo." /></span>
+              <Sparkline data={sparkFlat} width={60} height={20} color={T.purple} />
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+              <span style={{ fontSize: 28, fontWeight: 800, fontFamily: T.fontMono, color: T.text }}>{portfolioCount}</span>
+              <span style={{ fontSize: 12, color: T.textDim }}>CEDEARs</span>
+            </div>
+            <div style={{ height: 5, background: "rgba(148,163,184,0.04)", borderRadius: 5, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${Math.min(portfolioPct, 100)}%`, background: `linear-gradient(90deg, ${T.green}, ${T.cyan})`, borderRadius: 5, boxShadow: `0 0 12px ${T.green}30` }} />
+            </div>
+          </GlassCard>
+        </Tooltip>
       </div>
 
       {/* Governance Banner */}
@@ -144,6 +154,16 @@ export default function DashboardView({
           </div>
         </div>
       </GlassCard>
+
+      {/* Welcome / Quick Start */}
+      {!aiAnalysis && !aiLoading && (
+        <WelcomeView
+          setView={setView}
+          readiness={readiness}
+          portfolioValue={portfolioValue}
+          capital={capital}
+        />
+      )}
 
       {/* AI Analysis Section */}
       <GlassCard glowColor={T.blue} style={{ marginBottom: 28 }}>

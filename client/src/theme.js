@@ -201,6 +201,36 @@ export const globalAnimations = `
     50% { box-shadow: 0 0 40px rgba(0,229,160,0.3); }
   }
   
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.3); }
+  }
+  
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(40px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  
+  @keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.9); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  
+  @keyframes rotate-slow {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  
+  @keyframes border-glow {
+    0%, 100% { border-color: rgba(148,163,184,0.08); }
+    50% { border-color: rgba(6,182,212,0.2); }
+  }
+  
+  @keyframes pulse-glow {
+    0%, 100% { opacity: 0.5; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.1); }
+  }
+  
   body {
     margin: 0;
     background: ${T.bg};

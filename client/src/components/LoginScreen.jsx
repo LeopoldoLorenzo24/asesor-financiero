@@ -2,6 +2,15 @@ import React, { useState, useEffect } from "react";
 import { T, S, gridBg } from "../theme";
 import { auth } from "../api";
 
+const features = [
+  { icon: "◎", title: "Core/Satellite", desc: "ETFs por defecto, picks solo con convicción real" },
+  { icon: "●", title: "Gobernanza", desc: "Sharpe ≥1.0, drawdown <15%, 90 días de evidencia" },
+  { icon: "◈", title: "Paper Realista", desc: "Comisiones argentinas, slippage, lotes BYMA" },
+  { icon: "◉", title: "IA Mensual", desc: "Claude analiza ~226 CEDEARs con datos reales" },
+  { icon: "◐", title: "Seguridad", desc: "2FA obligatorio para capital real" },
+  { icon: "◇", title: "Track Record", desc: "Evidencia exportable a CSV, alpha vs SPY" },
+];
+
 export default function LoginScreen({ onAuth }) {
   const [mode, setMode] = useState(null);
   const [email, setEmail] = useState("");
@@ -9,9 +18,16 @@ export default function LoginScreen({ onAuth }) {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [focused, setFocused] = useState(null);
+  const [animatedIndex, setAnimatedIndex] = useState(0);
 
   useEffect(() => {
     auth.status().then((s) => setMode(s.canRegister ? "register" : "login")).catch(() => setMode("login"));
+  }, []);
+
+  // Rotate feature highlight
+  useEffect(() => {
+    const interval = setInterval(() => setAnimatedIndex((i) => (i + 1) % features.length), 3000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleSubmit = async (e) => {
@@ -67,6 +83,7 @@ export default function LoginScreen({ onAuth }) {
             boxShadow: `0 8px 40px ${T.green}40, 0 0 0 1px rgba(255,255,255,0.1) inset, 0 0 60px ${T.green}20`,
             marginBottom: 24,
             position: "relative", overflow: "hidden",
+            animation: "float 4s ease-in-out infinite",
           }}>
             <span style={{ position: "relative", zIndex: 2 }}>₵</span>
             <div style={{
@@ -83,6 +100,41 @@ export default function LoginScreen({ onAuth }) {
           <p style={{ fontSize: 10, color: T.textDark, letterSpacing: "4px", marginTop: 8, fontWeight: 700, fontFamily: T.fontMono }}>
             MOTOR DE INVERSIÓN IA v3
           </p>
+        </div>
+
+        {/* Feature highlight */}
+        <div style={{ marginBottom: 28, textAlign: "center" }}>
+          <div style={{
+            ...S.card,
+            padding: "16px 20px",
+            background: "rgba(14,18,32,0.6)",
+            border: `1px solid ${T.border}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 12,
+            transition: "all 0.5s ease",
+          }}>
+            <span style={{
+              fontSize: 20,
+              animation: "float 2s ease-in-out infinite",
+            }}>{features[animatedIndex].icon}</span>
+            <div style={{ textAlign: "left" }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: T.text }}>{features[animatedIndex].title}</div>
+              <div style={{ fontSize: 11, color: T.textMuted }}>{features[animatedIndex].desc}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "center", gap: 4, marginTop: 8 }}>
+            {features.map((_, i) => (
+              <div key={i} style={{
+                width: i === animatedIndex ? 16 : 4,
+                height: 4,
+                borderRadius: 2,
+                background: i === animatedIndex ? T.green : "rgba(148,163,184,0.2)",
+                transition: "all 0.3s ease",
+              }} />
+            ))}
+          </div>
         </div>
 
         {/* Form Card */}

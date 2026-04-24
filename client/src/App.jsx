@@ -6,6 +6,7 @@ import api, { auth } from "./api";
 import { T, globalAnimations, gridBg } from "./theme";
 import { ConfirmModal, StatusMsg } from "./components/common";
 import LoginScreen from "./components/LoginScreen";
+import Onboarding from "./components/Onboarding";
 import Header from "./components/Header";
 import DashboardView from "./views/DashboardView";
 import RankingView from "./views/RankingView";
@@ -131,6 +132,7 @@ export default function App() {
   const [evolutionDays, setEvolutionDays] = useState(180);
   const [trackRecord, setTrackRecord] = useState(null);
   const [trackRecordDays, setTrackRecordDays] = useState(365);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   // ── Logout listener ──
   useEffect(() => {
@@ -272,7 +274,7 @@ export default function App() {
     return s + (r?.priceARS ? r.priceARS * p.total_shares : p.weighted_avg_price * p.total_shares);
   }, 0), [portfolioDB.summary, ranking]);
 
-  if (!loggedIn) return <LoginScreen onAuth={() => setLoggedIn(true)} />;
+  if (!loggedIn) return <LoginScreen onAuth={() => { setLoggedIn(true); if (!localStorage.getItem("cedear_onboarding_seen")) setShowOnboarding(true); }} />;
 
   // ─── RENDER VIEWS ───
   const renderDashboard = () => (
@@ -394,6 +396,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <ToastSystem />
+      {showOnboarding && <Onboarding onComplete={() => setShowOnboarding(false)} />}
       <div style={{ minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.text, ...gridBg }}>
         <Header view={view} setView={nav} profile={profile} setProfile={setProfile} ccl={ccl} readiness={systemReadiness} />
         <main style={{ marginLeft: 220, marginTop: 64, minHeight: "calc(100vh - 64px)" }}>
