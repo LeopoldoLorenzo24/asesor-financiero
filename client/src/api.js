@@ -187,6 +187,7 @@ export const api = {
 
   // ── System health & alerts ──
   getSystemHealth: () => request("/system/health"),
+  getSystemReadiness: () => request("/system/readiness"),
   getRecentAlerts: (limit = 20) => request(`/alerts/recent?limit=${encodeURIComponent(limit)}`),
 
   // ── Paper Trading Config ──

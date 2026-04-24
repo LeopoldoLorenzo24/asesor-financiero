@@ -6,6 +6,7 @@ import { getDataProviderStatus } from "../marketData.js";
 import { getAlertingStatus, getRecentAlerts } from "../alerting.js";
 import { getAiBudgetStatus } from "../aiUsage.js";
 import { FLAGS } from "../featureFlags.js";
+import { getInvestmentReadiness } from "../investmentReadiness.js";
 import CEDEARS from "../cedears.js";
 
 const router = Router();
@@ -59,6 +60,7 @@ router.get("/alerts/recent", async (req, res) => {
 router.get("/system/health", async (req, res) => {
   try {
     const aiBudget = await getAiBudgetStatus();
+    const investmentReadiness = await getInvestmentReadiness();
     const obs = getObservabilitySnapshot({ aiBudget, aiUsageTodayUsd: aiBudget.todayCostUsd });
     const mem = process.memoryUsage();
     const uptimeSec = Math.floor(process.uptime());
@@ -86,9 +88,18 @@ router.get("/system/health", async (req, res) => {
       recentWindow: obs.recentWindow,
       selfChecks: obs.selfChecks,
       featureFlags: FLAGS,
+      investmentReadiness,
       timestamp: new Date().toISOString(),
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get("/system/readiness", async (req, res) => {
+  try {
+    res.json(await getInvestmentReadiness());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.get("/backtest", async (req, res) => {

@@ -24,6 +24,7 @@ import AdherenceView from "./views/AdherenceView";
 import ToastSystem, { showToast } from "./components/ToastSystem";
 import SystemHealthView from "./views/SystemHealthView";
 import PortfolioEvolutionView from "./views/PortfolioEvolutionView";
+import InvestmentReadinessView from "./views/InvestmentReadinessView";
 
 /* ─── RESPONSIVE STYLES ─── */
 const responsiveStyles = `
@@ -125,6 +126,7 @@ export default function App() {
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [systemHealth, setSystemHealth] = useState(null);
+  const [systemReadiness, setSystemReadiness] = useState(null);
   const [portfolioEvolution, setPortfolioEvolution] = useState(null);
   const [evolutionDays, setEvolutionDays] = useState(180);
   const [trackRecord, setTrackRecord] = useState(null);
@@ -174,6 +176,7 @@ export default function App() {
   const loadRiskMetrics = useCallback(async () => { setRiskMetricsLoading(true); try { setRiskMetrics(await api.getRiskMetrics()); } catch (e) { console.error(e); } finally { setRiskMetricsLoading(false); } }, []);
   const loadAdherenceStats = useCallback(async () => { setAdherenceLoading(true); try { setAdherenceStats(await api.getAdherenceStats()); } catch (e) { console.error(e); } finally { setAdherenceLoading(false); } }, []);
   const loadSystemHealth = useCallback(async () => { try { setSystemHealth(await api.getSystemHealth()); } catch (e) { console.error(e); } }, []);
+  const loadSystemReadiness = useCallback(async () => { try { setSystemReadiness(await api.getSystemReadiness()); } catch (e) { console.error(e); } }, []);
   const loadPortfolioEvolution = useCallback(async () => { try { setPortfolioEvolution(await api.getPortfolioEvolution(evolutionDays)); } catch (e) { console.error(e); } }, [evolutionDays]);
   const loadTrackRecord = useCallback(async () => { try { setTrackRecord(await api.getTrackRecord(trackRecordDays)); } catch (e) { console.error(e); } }, [trackRecordDays]);
   const loadPaperConfig = useCallback(async () => { try { setPaperConfig(await api.getPaperTradingConfig()); } catch (e) { console.error(e); } }, []);
@@ -195,13 +198,19 @@ export default function App() {
     if (view === "trading") loadTradingSignals();
     if (view === "risk") loadRiskMetrics();
     if (view === "adherence") loadAdherenceStats();
-    if (view === "health") loadSystemHealth();
+    if (view === "health") { loadSystemHealth(); loadSystemReadiness(); }
+    if (view === "readiness") loadSystemReadiness();
     if (view === "evolution") loadPortfolioEvolution();
     if (view === "trackrecord") loadTrackRecord();
-  }, [view, loggedIn, loadTransactions, loadPortfolioDB, loadPredictions, loadPerformance, loadSessions, loadBenchmarks, loadCapitalHistory, loadVirtualPortfolio, loadVirtualRegret, loadPaperConfig, loadTradingSignals, loadRiskMetrics, loadAdherenceStats, loadSystemHealth, loadPortfolioEvolution, loadTrackRecord]);
+  }, [view, loggedIn, loadTransactions, loadPortfolioDB, loadPredictions, loadPerformance, loadSessions, loadBenchmarks, loadCapitalHistory, loadVirtualPortfolio, loadVirtualRegret, loadPaperConfig, loadTradingSignals, loadRiskMetrics, loadAdherenceStats, loadSystemHealth, loadSystemReadiness, loadPortfolioEvolution, loadTrackRecord]);
   useEffect(() => {
     if (loggedIn && view === "dashboard" && portfolioDB.summary.length > 0 && !benchmarks) { loadBenchmarks(); loadCapitalHistory(); }
   }, [view, portfolioDB, loggedIn, benchmarks, loadBenchmarks, loadCapitalHistory]);
+  useEffect(() => {
+    if (loggedIn && (view === "dashboard" || view === "health") && !systemReadiness) {
+      loadSystemReadiness();
+    }
+  }, [loggedIn, view, systemReadiness, loadSystemReadiness]);
 
   // ── Toast alert polling ──
   useEffect(() => {
@@ -226,6 +235,7 @@ export default function App() {
     try {
       const d = await api.aiAnalyze(investCapital, profile);
       setAiAnalysis(d.analysis);
+      if (d.investmentReadiness) setSystemReadiness(d.investmentReadiness);
       const pickCount = d.analysis?.decision_mensual?.picks_activos?.length || 0;
       if (d.analysis?.sin_cambios_necesarios) {
         showToast({ message: "Análisis completado: cartera alineada, no hay cambios necesarios", type: "success" });
@@ -247,8 +257,7 @@ export default function App() {
     finally { setDetailLoading(false); }
   }, [profile]);
 
-  if (!loggedIn) return <LoginScreen onAuth={() => setLoggedIn(true)} />;
-
+  // useMemo hooks must be before any conditional return
   const sectors = useMemo(() => ["Todos", ...new Set(ranking.map((r) => r.cedear?.sector).filter(Boolean))], [ranking]);
   const filtered = useMemo(() => ranking.filter((r) => filterSector === "Todos" || r.cedear?.sector === filterSector).sort((a, b) => {
     if (sortBy === "composite") return b.scores.composite - a.scores.composite;
@@ -262,6 +271,8 @@ export default function App() {
     const r = ranking.find((x) => x.cedear?.ticker === p.ticker);
     return s + (r?.priceARS ? r.priceARS * p.total_shares : p.weighted_avg_price * p.total_shares);
   }, 0), [portfolioDB.summary, ranking]);
+
+  if (!loggedIn) return <LoginScreen onAuth={() => setLoggedIn(true)} />;
 
   // ─── RENDER VIEWS ───
   const renderDashboard = () => (
@@ -277,6 +288,7 @@ export default function App() {
       aiLoading={aiLoading}
       cooldownInfo={cooldownInfo}
       aiAnalysis={aiAnalysis}
+      systemReadiness={systemReadiness}
       topPicks={topPicks}
       setView={setView}
     />
@@ -353,7 +365,8 @@ export default function App() {
     <AdherenceView stats={adherenceStats} loading={adherenceLoading} />
   );
 
-  const renderSystemHealth = () => <SystemHealthView health={systemHealth} />;
+  const renderSystemHealth = () => <SystemHealthView health={systemHealth} readiness={systemReadiness} />;
+  const renderReadiness = () => <InvestmentReadinessView readiness={systemReadiness} />;
   const renderEvolution = () => <PortfolioEvolutionView data={portfolioEvolution} days={evolutionDays} onDaysChange={setEvolutionDays} />;
   const renderTrackRecord = () => <TrackRecordView data={trackRecord} days={trackRecordDays} onDaysChange={setTrackRecordDays} />;
 
@@ -371,6 +384,7 @@ export default function App() {
     historial: renderHistory,
     performance: renderPerformance,
     health: renderSystemHealth,
+    readiness: renderReadiness,
     evolution: renderEvolution,
     trackrecord: renderTrackRecord,
   };
@@ -381,7 +395,7 @@ export default function App() {
     <ErrorBoundary>
       <ToastSystem />
       <div style={{ minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.text, ...gridBg }}>
-        <Header view={view} setView={nav} profile={profile} setProfile={setProfile} ccl={ccl} />
+        <Header view={view} setView={nav} profile={profile} setProfile={setProfile} ccl={ccl} readiness={systemReadiness} />
         {error && <div className="ca-main" style={{ padding: "20px 28px", maxWidth: 1400, margin: "0 auto" }}><StatusMsg type="error">{error}</StatusMsg></div>}
         {selectedTicker && view === "ranking" ? renderDetail() : (views[view] || renderDashboard)()}
         <ConfirmModal state={confirmState} onClose={() => setConfirmState(null)} />

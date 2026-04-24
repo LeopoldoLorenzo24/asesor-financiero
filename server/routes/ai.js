@@ -13,6 +13,7 @@ import {
 import { assertAiBudgetAvailable, recordAnthropicUsage } from "../aiUsage.js";
 import { recordSelfCheckResult } from "../observability.js";
 import { runAutoPaperTrading } from "../jobs.js";
+import { applyDeploymentGovernance, getInvestmentReadiness } from "../investmentReadiness.js";
 import { fetchCCL, fetchFullData, fetchQuote, fetchAllQuotes } from "../marketData.js";
 import {
   technicalAnalysis, fundamentalAnalysis, compositeScore,
@@ -44,6 +45,7 @@ router.post("/analyze", async (req, res) => {
 
     const { capital = 0, profile: profileId = RANKING_CONFIG.defaultProfile } = req.body;
     const ccl = await fetchCCL();
+    const investmentReadiness = await getInvestmentReadiness();
 
     const tickers = CEDEARS.map((c) => c.ticker);
     const quotesMap = await fetchAllQuotes(tickers);
@@ -97,10 +99,42 @@ router.post("/analyze", async (req, res) => {
       }
     }
 
+    analysis._deployment_policy = {
+      mode: investmentReadiness.mode,
+      readyForRealCapital: investmentReadiness.readyForRealCapital,
+      scorePct: investmentReadiness.scorePct,
+      grade: investmentReadiness.grade,
+      blockers: investmentReadiness.blockers,
+      summary: investmentReadiness.summary,
+      capitalPolicy: investmentReadiness.capitalPolicy,
+      marketRegime: investmentReadiness.marketRegime,
+      degradationSignals: investmentReadiness.degradationSignals,
+    };
+
+    applyDeploymentGovernance({
+      analysis,
+      investmentReadiness,
+      availableCapitalArs: capital,
+    });
+
     // Auto paper trading si está habilitado
     runAutoPaperTrading(analysis).catch((e) => console.error("[ai] Auto paper trading falló:", e.message));
 
-    res.json({ analysis, diversification, warnings, ccl, timestamp: new Date().toISOString(), selfCheck: { ok: selfCheck.ok, skipped: selfCheck.skipped, reason: selfCheck.reason || null, failedChecks: selfCheck.failedChecks || [], ranAt: selfCheck.ranAt } });
+    res.json({
+      analysis,
+      diversification,
+      warnings,
+      ccl,
+      investmentReadiness,
+      timestamp: new Date().toISOString(),
+      selfCheck: {
+        ok: selfCheck.ok,
+        skipped: selfCheck.skipped,
+        reason: selfCheck.reason || null,
+        failedChecks: selfCheck.failedChecks || [],
+        ranAt: selfCheck.ranAt,
+      },
+    });
   } catch (err) {
     console.error("AI analyze error:", err);
     res.status(500).json({ error: err.message });
