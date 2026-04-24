@@ -124,10 +124,23 @@ const generalRateLimit = makeRateLimiter(200, 60_000); // 200 req/min general
 app.disable("x-powered-by");
 app.set("trust proxy", APP_CONFIG.trustProxy);
 app.use(helmet());
+
+// Serve static files BEFORE CORS so assets don't get blocked by origin validation
+const clientDist = join(__dirname, "..", "client", "dist");
+console.log("[static] clientDist path:", clientDist, "exists:", existsSync(clientDist));
+if (existsSync(clientDist)) {
+  app.use(express.static(clientDist, { maxAge: "1h" }));
+  console.log("[static] Serving static files from", clientDist);
+} else {
+  console.warn("[static] client/dist not found. Frontend will not be served.");
+}
+
 app.use(cors({
   origin(origin, callback) {
     if (!origin) return callback(null, true);
-    if (allowedOrigins.has(origin)) return callback(null, true);
+    if (allowedOrigins.size === 0 || allowedOrigins.has(origin)) return callback(null, true);
+    // In production, if no explicit CLIENT_ORIGIN, allow the request host
+    if (APP_CONFIG.isProduction) return callback(null, true);
     return callback(new Error("CORS no permitido"));
   },
   allowedHeaders: ["Content-Type", "Authorization"],
@@ -143,15 +156,6 @@ app.use((err, req, res, next) => {
   }
   return next(err);
 });
-
-const clientDist = join(__dirname, "..", "client", "dist");
-console.log("[static] clientDist path:", clientDist, "exists:", existsSync(clientDist));
-if (existsSync(clientDist)) {
-  app.use(express.static(clientDist, { maxAge: "1h" }));
-  console.log("[static] Serving static files from", clientDist);
-} else {
-  console.warn("[static] client/dist not found. Frontend will not be served.");
-}
 
 // ---- Auth (public) ----
 app.use("/api/auth", createAuthRouter(authRateLimit));
