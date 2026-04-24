@@ -1,4 +1,4 @@
-import { getCapitalHistory, getTrackRecord } from "./database.js";
+import { getAdherenceStats, getCapitalHistory, getGovernancePolicySelection, getTrackRecord } from "./database.js";
 import { calculatePortfolioRiskMetrics } from "./riskMetrics.js";
 import { fetchHistory, fetchCCL } from "./marketData.js";
 import { calculateSpyBenchmark, getRealPicksAlpha } from "./performance.js";
@@ -7,6 +7,14 @@ import { checkMacroCircuitBreakers } from "./macroCircuitBreakers.js";
 import { runAllStressTests } from "./stressTest.js";
 import { calculateRoundTripCosts } from "./brokerCosts.js";
 import { requireTotpForRealCapital } from "./auth.js";
+import {
+  applyGovernanceSelectionToCapitalPolicy,
+  buildEffectiveGovernancePolicy,
+  describeGovernanceSelection,
+  getGovernanceCooldownStatus,
+  getGovernancePolicyCatalog,
+  normalizeGovernanceSelection,
+} from "./governancePolicies.js";
 import db from "./database.js";
 
 interface ReadinessRule {
@@ -36,6 +44,20 @@ interface MarketRegime {
   trendStrength: number | null;
 }
 
+interface EvidenceQualitySnapshot {
+  analysisSessions: number;
+  auditedAnalyses: number;
+  auditCoveragePct: number;
+  adherenceTracked: number;
+  adherenceResolved: number;
+  adherencePending: number;
+  adherencePaperOnly: number;
+  adherenceResolutionPct: number;
+  strictExecutionPct: number;
+  effectiveExecutionPct: number;
+  avgDiscrepancyPct: number;
+}
+
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -58,6 +80,54 @@ function gradeFromScore(scorePct: number): string {
 
 function summarizeRules(rules: ReadinessRule[]): string[] {
   return rules.filter((rule) => !rule.passed).map((rule) => rule.message);
+}
+
+async function getEvidenceQualitySnapshot(days = 365): Promise<EvidenceQualitySnapshot> {
+  const [analysisRows, auditRows, adherence] = await Promise.all([
+    db.execute({
+      sql: `SELECT COUNT(*) as total
+            FROM analysis_sessions
+            WHERE created_at >= datetime('now', '-' || ? || ' days')`,
+      args: [days],
+    }).catch(() => ({ rows: [{ total: 0 }] })),
+    db.execute({
+      sql: `SELECT COUNT(*) as total
+            FROM decision_audit_logs
+            WHERE route = '/api/ai/analyze'
+              AND created_at >= datetime('now', '-' || ? || ' days')`,
+      args: [days],
+    }).catch(() => ({ rows: [{ total: 0 }] })),
+    getAdherenceStats(days).catch(() => ({
+      total: 0,
+      resolved: 0,
+      pending: 0,
+      paperOnly: 0,
+      resolutionPct: 0,
+      executionPct: 0,
+      effectiveExecutionPct: 0,
+      avgDiscrepancyPct: 0,
+    })),
+  ]);
+
+  const analysisSessions = Number((analysisRows.rows[0] as any)?.total || 0);
+  const auditedAnalyses = Number((auditRows.rows[0] as any)?.total || 0);
+  const auditCoveragePct = analysisSessions > 0
+    ? Math.min(100, Math.round((auditedAnalyses / analysisSessions) * 10000) / 100)
+    : 0;
+
+  return {
+    analysisSessions,
+    auditedAnalyses,
+    auditCoveragePct,
+    adherenceTracked: Number((adherence as any).total || 0),
+    adherenceResolved: Number((adherence as any).resolved || 0),
+    adherencePending: Number((adherence as any).pending || 0),
+    adherencePaperOnly: Number((adherence as any).paperOnly || 0),
+    adherenceResolutionPct: Number((adherence as any).resolutionPct || 0),
+    strictExecutionPct: Number((adherence as any).executionPct || 0),
+    effectiveExecutionPct: Number((adherence as any).effectiveExecutionPct || 0),
+    avgDiscrepancyPct: Number((adherence as any).avgDiscrepancyPct || 0),
+  };
 }
 
 async function detectMarketRegime(): Promise<MarketRegime> {
@@ -223,10 +293,31 @@ export function applyDeploymentGovernance({
   return analysis;
 }
 
-export async function getInvestmentReadiness(userId?: number) {
+export async function getInvestmentReadiness(
+  userId?: number,
+  options: {
+    policySelectionOverride?: {
+      overlayKey?: string;
+      deploymentMode?: string;
+    } | null;
+  } = {}
+) {
   const alphaStats = await getRealPicksAlpha().catch(() => null);
   const trackRecord = await getTrackRecord(365).catch(() => []);
   const typedCapitalHistory = await getCapitalHistory(120).catch(() => []) as CapitalHistoryPoint[];
+  const evidenceQuality = await getEvidenceQualitySnapshot(365);
+  const storedPolicySelection = await getGovernancePolicySelection(userId ?? null).catch(() => ({
+    ...normalizeGovernanceSelection(),
+    reason: null,
+    updatedAt: null,
+  }));
+  const normalizedPolicySelection = normalizeGovernanceSelection({
+    overlayKey: options.policySelectionOverride?.overlayKey ?? storedPolicySelection.overlayKey,
+    deploymentMode: options.policySelectionOverride?.deploymentMode ?? storedPolicySelection.deploymentMode,
+  });
+  const effectiveGovernancePolicy = buildEffectiveGovernancePolicy(normalizedPolicySelection);
+  const governanceCooldown = getGovernanceCooldownStatus(storedPolicySelection.updatedAt);
+  const governanceCatalog = getGovernancePolicyCatalog();
   const spyHistory = await fetchHistory("SPY.BA", 14).catch(() => fetchHistory("SPY", 14).catch(() => null));
   const marketRegime = await detectMarketRegime();
   const riskMetrics = await calculatePortfolioRiskMetrics(typedCapitalHistory, spyHistory);
@@ -274,56 +365,57 @@ export async function getInvestmentReadiness(userId?: number) {
   const benchmark = typedCapitalHistory.length >= 2
     ? await calculateSpyBenchmark(typedCapitalHistory[0]?.ccl_rate || null).catch(() => null)
     : null;
+  const thresholds = effectiveGovernancePolicy.thresholds;
 
   const rules: ReadinessRule[] = [
     {
       name: "evaluated_predictions",
-      passed: (alphaStats?.count || 0) >= 50,
+      passed: (alphaStats?.count || 0) >= thresholds.evaluatedPredictions,
       value: alphaStats?.count || 0,
-      threshold: 50,
-      message: `Muy pocas predicciones evaluadas (${alphaStats?.count || 0}/50). Necesitás al menos 50 picks evaluados para considerar edge estadístico.`,
+      threshold: thresholds.evaluatedPredictions,
+      message: `Muy pocas predicciones evaluadas (${alphaStats?.count || 0}/${thresholds.evaluatedPredictions}). Necesitás al menos ${thresholds.evaluatedPredictions} picks evaluados para considerar edge estadístico.`,
     },
     {
       name: "win_rate_vs_spy",
-      passed: (alphaStats?.winRateVsSpy || 0) >= 60,
+      passed: (alphaStats?.winRateVsSpy || 0) >= thresholds.winRateVsSpyPct,
       value: alphaStats?.winRateVsSpy ?? null,
-      threshold: 60,
-      message: `La tasa de acierto vs SPY es baja (${alphaStats?.winRateVsSpy ?? 0}% < 60%). Con costos de broker realistas necesitás >60%.`,
+      threshold: thresholds.winRateVsSpyPct,
+      message: `La tasa de acierto vs SPY es baja (${alphaStats?.winRateVsSpy ?? 0}% < ${thresholds.winRateVsSpyPct}%). Con costos de broker realistas necesitás >${thresholds.winRateVsSpyPct}%.`,
     },
     {
       name: "average_alpha",
-      passed: (alphaStats?.avgAlpha || 0) > 2,
+      passed: (alphaStats?.avgAlpha || 0) > thresholds.averageAlphaPct,
       value: alphaStats?.avgAlpha ?? null,
-      threshold: 2,
-      message: `El alpha promedio no cubre costos (${alphaStats?.avgAlpha ?? 0}% <= 2%). Con comisiones reales necesitás >2% de alpha promedio.`,
+      threshold: thresholds.averageAlphaPct,
+      message: `El alpha promedio no cubre costos (${alphaStats?.avgAlpha ?? 0}% <= ${thresholds.averageAlphaPct}%). Con comisiones reales necesitás >${thresholds.averageAlphaPct}% de alpha promedio.`,
     },
     {
       name: "track_record_days",
-      passed: trackRecord.length >= 90,
+      passed: trackRecord.length >= thresholds.trackRecordDays,
       value: trackRecord.length,
-      threshold: 90,
-      message: `El track record es corto (${trackRecord.length}/90 días). Mínimo 3 meses de operación consistente.`,
+      threshold: thresholds.trackRecordDays,
+      message: `El track record es corto (${trackRecord.length}/${thresholds.trackRecordDays} días). Necesitás al menos ${thresholds.trackRecordDays} días de operación consistente.`,
     },
     {
       name: "track_record_alpha",
-      passed: (trackAlphaPct || 0) > 3,
+      passed: (trackAlphaPct || 0) > thresholds.trackRecordAlphaPct,
       value: trackAlphaPct,
-      threshold: 3,
-      message: `El portfolio virtual no supera al benchmark por margen suficiente (${trackAlphaPct ?? 0}% <= 3%).`,
+      threshold: thresholds.trackRecordAlphaPct,
+      message: `El portfolio virtual no supera al benchmark por margen suficiente (${trackAlphaPct ?? 0}% <= ${thresholds.trackRecordAlphaPct}%).`,
     },
     {
       name: "max_drawdown",
-      passed: riskMetrics.maxDrawdownPct == null || riskMetrics.maxDrawdownPct <= 15,
+      passed: riskMetrics.maxDrawdownPct == null || riskMetrics.maxDrawdownPct <= thresholds.maxDrawdownPct,
       value: riskMetrics.maxDrawdownPct,
-      threshold: 15,
-      message: `El drawdown máximo es demasiado alto (${riskMetrics.maxDrawdownPct ?? "N/A"}% > 15%). Para capital grande no toleramos más de 15%.`,
+      threshold: thresholds.maxDrawdownPct,
+      message: `El drawdown máximo es demasiado alto (${riskMetrics.maxDrawdownPct ?? "N/A"}% > ${thresholds.maxDrawdownPct}%). Para este overlay no toleramos más de ${thresholds.maxDrawdownPct}%.`,
     },
     {
       name: "sharpe_ratio",
-      passed: riskMetrics.sharpeRatio == null || riskMetrics.sharpeRatio >= 1.0,
+      passed: riskMetrics.sharpeRatio == null || riskMetrics.sharpeRatio >= thresholds.sharpeRatio,
       value: riskMetrics.sharpeRatio,
-      threshold: 1.0,
-      message: `El Sharpe ratio no es convincente (${riskMetrics.sharpeRatio ?? "N/A"} < 1.0). Con costos reales necesitás ≥1.0.`,
+      threshold: thresholds.sharpeRatio,
+      message: `El Sharpe ratio no es convincente (${riskMetrics.sharpeRatio ?? "N/A"} < ${thresholds.sharpeRatio}). Con costos reales necesitás ≥${thresholds.sharpeRatio}.`,
     },
     {
       name: "real_vs_spy_dca",
@@ -364,6 +456,41 @@ export async function getInvestmentReadiness(userId?: number) {
         ? "2FA requerido para capital real. Habilitá autenticación de dos factores en tu perfil."
         : "2FA no habilitado.",
     },
+    {
+      name: "analysis_session_cadence",
+      passed: evidenceQuality.analysisSessions >= 12,
+      value: evidenceQuality.analysisSessions,
+      threshold: 12,
+      message: `Todavía hay pocas sesiones de análisis auditables (${evidenceQuality.analysisSessions}/12 en 12 meses). Necesitás al menos un ciclo mensual sostenido.`,
+    },
+    {
+      name: "decision_audit_coverage",
+      passed: evidenceQuality.auditCoveragePct >= thresholds.auditCoveragePct,
+      value: evidenceQuality.auditCoveragePct,
+      threshold: thresholds.auditCoveragePct,
+      message: `La cobertura de auditoría de decisiones es insuficiente (${evidenceQuality.auditCoveragePct}% < ${thresholds.auditCoveragePct}%). Sin trazabilidad no hay evidencia confiable.`,
+    },
+    {
+      name: "adherence_sample_size",
+      passed: evidenceQuality.adherenceTracked >= thresholds.adherenceSampleSize,
+      value: evidenceQuality.adherenceTracked,
+      threshold: thresholds.adherenceSampleSize,
+      message: `Hay muy poca evidencia de adherencia ejecutable (${evidenceQuality.adherenceTracked}/${thresholds.adherenceSampleSize}). Antes de escalar necesitás ver si las recomendaciones realmente se ejecutan.`,
+    },
+    {
+      name: "adherence_resolution",
+      passed: evidenceQuality.adherenceResolutionPct >= thresholds.adherenceResolutionPct,
+      value: evidenceQuality.adherenceResolutionPct,
+      threshold: thresholds.adherenceResolutionPct,
+      message: `La resolución de recomendaciones ejecutables es baja (${evidenceQuality.adherenceResolutionPct}% < ${thresholds.adherenceResolutionPct}%). Hay demasiado plan sin cerrar.`,
+    },
+    {
+      name: "adherence_discipline",
+      passed: evidenceQuality.adherenceTracked < 5 || evidenceQuality.avgDiscrepancyPct <= thresholds.adherenceMaxDiscrepancyPct,
+      value: evidenceQuality.avgDiscrepancyPct,
+      threshold: thresholds.adherenceMaxDiscrepancyPct,
+      message: `La ejecución real se desvía demasiado del plan (${evidenceQuality.avgDiscrepancyPct}% > ${thresholds.adherenceMaxDiscrepancyPct}%). Con esa fricción no podés validar edge de forma limpia.`,
+    },
   ];
 
   const passedRules = rules.filter((rule) => rule.passed).length;
@@ -371,40 +498,59 @@ export async function getInvestmentReadiness(userId?: number) {
   const readyForRealCapital = rules.every((rule) => rule.passed);
   const mode = readyForRealCapital ? "real_capital_ok" : "paper_only";
   const degradationSignals = [
-    riskMetrics.maxDrawdownPct != null && riskMetrics.maxDrawdownPct > 15 ? `drawdown_alto:${riskMetrics.maxDrawdownPct}%` : null,
-    riskMetrics.sharpeRatio != null && riskMetrics.sharpeRatio < 0.75 ? `sharpe_bajo:${riskMetrics.sharpeRatio}` : null,
+    riskMetrics.maxDrawdownPct != null && riskMetrics.maxDrawdownPct > thresholds.maxDrawdownPct ? `drawdown_alto:${riskMetrics.maxDrawdownPct}%` : null,
+    riskMetrics.sharpeRatio != null && riskMetrics.sharpeRatio < thresholds.sharpeRatio ? `sharpe_bajo:${riskMetrics.sharpeRatio}` : null,
     alphaStats?.avgAlpha != null && alphaStats.avgAlpha <= 0 ? `alpha_no_positivo:${alphaStats.avgAlpha}%` : null,
     trackAlphaPct != null && trackAlphaPct <= 0 ? `track_record_no_supera_benchmark:${trackAlphaPct}%` : null,
     benchmark?.beatsSpy === false ? `cartera_real_bajo_spy:${benchmark.alphaArs}` : null,
     macroCB.severity === "critical" ? `macro_crisis:${macroCB.reason}` : null,
     !allStressSurvived ? `stress_test_failed:${worstStressDrawdown}%` : null,
     !costsViable ? `costos_alto:${roundTrip.totalEffectiveCostPct}%` : null,
+    evidenceQuality.analysisSessions < 12 ? `pocas_sesiones_auditables:${evidenceQuality.analysisSessions}` : null,
+    evidenceQuality.auditCoveragePct < thresholds.auditCoveragePct ? `audit_trail_incompleto:${evidenceQuality.auditCoveragePct}%` : null,
+    evidenceQuality.adherenceTracked < thresholds.adherenceSampleSize ? `poca_evidencia_de_adherencia:${evidenceQuality.adherenceTracked}` : null,
+    evidenceQuality.adherenceResolutionPct < thresholds.adherenceResolutionPct ? `adherencia_sin_cerrar:${evidenceQuality.adherenceResolutionPct}%` : null,
+    evidenceQuality.avgDiscrepancyPct > thresholds.adherenceMaxDiscrepancyPct ? `ejecucion_desviada:${evidenceQuality.avgDiscrepancyPct}%` : null,
   ].filter(Boolean);
 
   // Si hay circuit breaker macro crítico, forzar paper_only sin importar score
-  const effectiveReadyForReal = readyForRealCapital && macroCB.severity !== "critical";
-  const effectiveMode = effectiveReadyForReal ? "real_capital_ok" : "paper_only";
+  const systemReadyForRealCapital = readyForRealCapital && macroCB.severity !== "critical";
 
-  const capitalPolicy = computeCapitalPolicy({
-    readyForRealCapital: effectiveReadyForReal,
+  const baseCapitalPolicy = computeCapitalPolicy({
+    readyForRealCapital: systemReadyForRealCapital,
     scorePct,
     degradationCount: degradationSignals.length,
     marketRegime: marketRegime.regime,
   });
+  const capitalPolicy = applyGovernanceSelectionToCapitalPolicy(baseCapitalPolicy, effectiveGovernancePolicy);
+  const effectiveReadyForReal = systemReadyForRealCapital && !capitalPolicy.paperTradingOnly;
+  const effectiveMode = effectiveReadyForReal ? "real_capital_ok" : "paper_only";
+  const policySelection = describeGovernanceSelection(
+    normalizedPolicySelection,
+    options.policySelectionOverride ? null : storedPolicySelection.updatedAt
+  );
+  const summary = systemReadyForRealCapital && capitalPolicy.paperTradingOnly
+    ? "El sistema ya pasó sus controles, pero la política seleccionada todavía mantiene el despliegue en paper trading o con un cap más bajo."
+    : effectiveReadyForReal
+      ? "El sistema ya muestra evidencia suficiente para considerar capital real incremental."
+      : "El sistema todavía debe operar en paper trading o con capital mínimo hasta validar edge y estabilidad.";
 
   return {
     mode: effectiveMode,
     readyForRealCapital: effectiveReadyForReal,
+    systemReadyForRealCapital,
     scorePct,
     grade: gradeFromScore(scorePct),
-    summary: effectiveReadyForReal
-      ? "El sistema ya muestra evidencia suficiente para considerar capital real incremental."
-      : "El sistema todavía debe operar en paper trading o con capital mínimo hasta validar edge y estabilidad.",
+    summary,
     blockers: summarizeRules(rules),
     rules,
     degradationSignals,
     marketRegime,
     capitalPolicy,
+    policySelection,
+    policyCatalog: governanceCatalog,
+    policyCooldown: governanceCooldown,
+    policyThresholds: thresholds,
     macroCircuitBreakers: {
       severity: macroCB.severity,
       reason: macroCB.reason,
@@ -432,6 +578,7 @@ export async function getInvestmentReadiness(userId?: number) {
       },
       benchmark,
       riskMetrics,
+      evidenceQuality,
     },
     generatedAt: new Date().toISOString(),
   };

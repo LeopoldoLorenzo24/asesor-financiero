@@ -79,12 +79,17 @@ export const auth = {
     sessionStorage.setItem("cedear_email", data.email);
     return data;
   },
-  login: async (email, password) => {
-    const data = await request("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+  login: async (email, password, totpCode = "") => {
+    const payload = { email, password };
+    if (totpCode) payload.totpCode = totpCode;
+    const data = await request("/auth/login", { method: "POST", body: JSON.stringify(payload) });
     setToken(data.token);
     sessionStorage.setItem("cedear_email", data.email);
     return data;
   },
+  get2FAStatus: () => request("/auth/2fa/status"),
+  enable2FA: () => request("/auth/2fa/enable", { method: "POST", body: JSON.stringify({}) }),
+  disable2FA: (totpCode) => request("/auth/2fa/disable", { method: "POST", body: JSON.stringify({ totpCode }) }),
   logout: () => { clearToken(); window.dispatchEvent(new Event("cedear:logout")); },
   isLoggedIn: () => !!getToken(),
   getEmail: () => sessionStorage.getItem("cedear_email"),
@@ -129,6 +134,18 @@ export const api = {
     request("/portfolio/sync", { method: "POST", body: JSON.stringify({ positions }) }),
   resetPortfolio: (positions) =>
     request("/portfolio/reset", { method: "POST", body: JSON.stringify({ positions }) }),
+  previewBrokerReconciliation: ({ broker, positions, csv, cclRate, snapshotDate, sourceName }) =>
+    request("/portfolio/reconcile/preview", {
+      method: "POST",
+      body: JSON.stringify({ broker, positions, csv, cclRate, snapshotDate, sourceName }),
+    }),
+  applyBrokerReconciliation: ({ broker, positions, csv, cclRate, snapshotDate, note, sourceName }) =>
+    request("/portfolio/reconcile/apply", {
+      method: "POST",
+      body: JSON.stringify({ broker, positions, csv, cclRate, snapshotDate, note, sourceName }),
+    }),
+  getBrokerReconciliationAudit: (limit = 10) =>
+    request(`/portfolio/reconcile/audit?limit=${encodeURIComponent(limit)}`),
 
   getTransactions: (ticker = null, limit = 50) =>
     request(`/transactions?${new URLSearchParams({ ...(ticker && { ticker }), limit })}`),
@@ -188,6 +205,11 @@ export const api = {
   // ── System health & alerts ──
   getSystemHealth: () => request("/system/health"),
   getSystemReadiness: () => request("/system/readiness"),
+  getPolicySettings: () => request("/system/policies"),
+  previewPolicySettings: (overlayKey, deploymentMode) =>
+    request("/system/policies/preview", { method: "POST", body: JSON.stringify({ overlayKey, deploymentMode }) }),
+  applyPolicySettings: (overlayKey, deploymentMode, reason) =>
+    request("/system/policies/apply", { method: "POST", body: JSON.stringify({ overlayKey, deploymentMode, reason }) }),
   getRecentAlerts: (limit = 20) => request(`/alerts/recent?limit=${encodeURIComponent(limit)}`),
 
   // ── Paper Trading Config ──
@@ -196,6 +218,7 @@ export const api = {
 
   // ── Track Record ──
   getTrackRecord: (days = 365) => request(`/track-record?days=${encodeURIComponent(days)}`),
+  getRealTrackRecord: () => request("/track-record/real"),
 };
 
 export default api;

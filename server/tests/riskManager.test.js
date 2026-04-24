@@ -152,7 +152,7 @@ test("sanitizePicksWithRiskLimits reduce cantidad cuando excede maxPositionPct",
   const result = sanitizePicksWithRiskLimits(picks, summary, mockCedearDefs, "moderate");
   assert.equal(result.sanitizedPicks.length, 1);
   assert.ok(result.riskNotes.length > 0);
-  assert.equal(result.sanitizedPicks[0].cantidad_cedears, 100); // 350k max - 200k existente = 150k / 1000 = 150 → lote 100 = 100
+  assert.equal(result.sanitizedPicks[0].cantidad_cedears, 150); // 350k max - 200k existente = 150k / 1000 = 150
 });
 
 test("sanitizePicksWithRiskLimits elimina pick si cantidad ajustada es 0", () => {
@@ -173,7 +173,7 @@ test("sanitizePicksWithRiskLimits reduce cantidad por sector excesivo", () => {
   const result = sanitizePicksWithRiskLimits(picks, summary, mockCedearDefs, "moderate");
   assert.equal(result.sanitizedPicks.length, 1);
   assert.ok(result.riskNotes.some((n) => n.includes("sector")));
-  assert.equal(result.sanitizedPicks[0].cantidad_cedears, 100); // 350k max - 200k existente = 150k / 1000 = 150 → lote 100 = 100
+  assert.equal(result.sanitizedPicks[0].cantidad_cedears, 150); // 350k max - 200k existente = 150k / 1000 = 150
 });
 
 test("sanitizePicksWithRiskLimits maneja portfolio vacío sin errores", () => {

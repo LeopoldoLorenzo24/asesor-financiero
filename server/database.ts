@@ -4,10 +4,13 @@
 // ============================================================
 
 import { createClient } from "@libsql/client";
+import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { mkdirSync } from "fs";
 import { sanitizePromptString } from "./utils.js";
+import { calcSharpeRatio, inferPeriodsPerYearFromDates } from "./riskMetrics.js";
+import { normalizeGovernanceSelection } from "./governancePolicies.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -161,6 +164,50 @@ const MIGRATIONS: Migration[] = [
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
   },
+  {
+    version: 11,
+    name: "create_governance_policy_tables",
+    sql: `CREATE TABLE IF NOT EXISTS governance_policy_settings (
+      user_id INTEGER PRIMARY KEY,
+      overlay_key TEXT NOT NULL DEFAULT 'system_default',
+      deployment_mode TEXT NOT NULL DEFAULT 'system_auto',
+      reason TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS governance_policy_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      previous_overlay_key TEXT,
+      previous_deployment_mode TEXT,
+      next_overlay_key TEXT NOT NULL,
+      next_deployment_mode TEXT NOT NULL,
+      reason TEXT,
+      impact_preview TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_governance_audit_user_created ON governance_policy_audit_logs(user_id, created_at DESC);`,
+  },
+  {
+    version: 12,
+    name: "create_broker_import_audit_logs",
+    sql: `CREATE TABLE IF NOT EXISTS broker_import_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      broker_key TEXT NOT NULL DEFAULT 'generic',
+      source_type TEXT NOT NULL DEFAULT 'csv',
+      source_name TEXT,
+      snapshot_date TEXT,
+      ccl_rate REAL,
+      input_hash TEXT NOT NULL,
+      raw_input TEXT,
+      imported_positions_json TEXT,
+      reconciliation_json TEXT,
+      applied INTEGER NOT NULL DEFAULT 0,
+      applied_transaction_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_broker_import_audit_user_created ON broker_import_audit_logs(user_id, created_at DESC);`,
+  },
 ];
 
 async function runMigrations() {
@@ -300,12 +347,51 @@ export async function initDb() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS governance_policy_settings (
+      user_id INTEGER PRIMARY KEY,
+      overlay_key TEXT NOT NULL DEFAULT 'system_default',
+      deployment_mode TEXT NOT NULL DEFAULT 'system_auto',
+      reason TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS governance_policy_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      previous_overlay_key TEXT,
+      previous_deployment_mode TEXT,
+      next_overlay_key TEXT NOT NULL,
+      next_deployment_mode TEXT NOT NULL,
+      reason TEXT,
+      impact_preview TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS broker_import_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      broker_key TEXT NOT NULL DEFAULT 'generic',
+      source_type TEXT NOT NULL DEFAULT 'csv',
+      source_name TEXT,
+      snapshot_date TEXT,
+      ccl_rate REAL,
+      input_hash TEXT NOT NULL,
+      raw_input TEXT,
+      imported_positions_json TEXT,
+      reconciliation_json TEXT,
+      applied INTEGER NOT NULL DEFAULT 0,
+      applied_transaction_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_portfolio_ticker ON portfolio(ticker);
     CREATE INDEX IF NOT EXISTS idx_transactions_ticker ON transactions(ticker);
     CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date_executed);
     CREATE INDEX IF NOT EXISTS idx_predictions_ticker ON predictions(ticker);
     CREATE INDEX IF NOT EXISTS idx_predictions_date ON predictions(prediction_date);
     CREATE INDEX IF NOT EXISTS idx_predictions_evaluated ON predictions(evaluated);
+    CREATE INDEX IF NOT EXISTS idx_governance_audit_user_created ON governance_policy_audit_logs(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_broker_import_audit_user_created ON broker_import_audit_logs(user_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS monthly_postmortems (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -523,8 +609,96 @@ export async function resetPortfolio(positions: { ticker: string; shares: number
   return positions.length;
 }
 
-export async function syncPortfolio(positions: { ticker: string; shares: number; priceArs: number; priceUsd?: number | null }[]) {
+export async function previewPortfolioSync(positions: { ticker: string; shares: number; priceArs: number; priceUsd?: number | null }[]) {
+  const summaryRows = await getPortfolioSummary() as unknown as { ticker: string; total_shares: number; weighted_avg_price: number }[];
+  const currentMap = new Map(
+    summaryRows.map((row) => [row.ticker, {
+      shares: Number(row.total_shares || 0),
+      avgPriceArs: Number(row.weighted_avg_price || 0),
+    }])
+  );
+
+  const targetMap = new Map(
+    positions.map((row) => [row.ticker.toUpperCase(), {
+      shares: Number(row.shares || 0),
+      priceArs: Number(row.priceArs || 0),
+      priceUsd: row.priceUsd != null ? Number(row.priceUsd) : null,
+    }])
+  );
+
+  const actions: {
+    ticker: string;
+    type: "BUY" | "SELL";
+    shares: number;
+    priceArs: number;
+    priceUsd: number | null;
+    reason: string;
+  }[] = [];
+
+  for (const [ticker, target] of targetMap.entries()) {
+    const current = currentMap.get(ticker) || { shares: 0, avgPriceArs: 0 };
+    const diff = target.shares - current.shares;
+    if (diff > 0) {
+      actions.push({
+        ticker,
+        type: "BUY",
+        shares: diff,
+        priceArs: target.priceArs,
+        priceUsd: target.priceUsd,
+        reason: current.shares > 0 ? "increase_to_match_broker" : "new_position_from_broker",
+      });
+    } else if (diff < 0) {
+      actions.push({
+        ticker,
+        type: "SELL",
+        shares: Math.abs(diff),
+        priceArs: target.priceArs > 0 ? target.priceArs : current.avgPriceArs,
+        priceUsd: target.priceUsd,
+        reason: target.shares > 0 ? "reduce_to_match_broker" : "close_position_missing_in_broker",
+      });
+    }
+  }
+
+  for (const [ticker, current] of currentMap.entries()) {
+    if (targetMap.has(ticker)) continue;
+    if (current.shares <= 0) continue;
+    actions.push({
+      ticker,
+      type: "SELL",
+      shares: current.shares,
+      priceArs: current.avgPriceArs,
+      priceUsd: null,
+      reason: "close_position_missing_in_broker",
+    });
+  }
+
+  const buyActions = actions.filter((action) => action.type === "BUY");
+  const sellActions = actions.filter((action) => action.type === "SELL");
+
+  return {
+    actions,
+    summary: {
+      currentPositions: currentMap.size,
+      brokerPositions: targetMap.size,
+      tickersWithChanges: new Set(actions.map((action) => action.ticker)).size,
+      totalActions: actions.length,
+      buyActions: buyActions.length,
+      sellActions: sellActions.length,
+      sharesToBuy: buyActions.reduce((sum, action) => sum + action.shares, 0),
+      sharesToSell: sellActions.reduce((sum, action) => sum + action.shares, 0),
+      grossBuyArs: Math.round(buyActions.reduce((sum, action) => sum + action.shares * action.priceArs, 0) * 100) / 100,
+      grossSellArs: Math.round(sellActions.reduce((sum, action) => sum + action.shares * action.priceArs, 0) * 100) / 100,
+    },
+  };
+}
+
+export async function syncPortfolio(
+  positions: { ticker: string; shares: number; priceArs: number; priceUsd?: number | null }[],
+  options: { note?: string; executedAt?: string | null } = {}
+) {
   const allLots = (await db.execute("SELECT * FROM portfolio ORDER BY ticker, date_bought ASC")).rows as unknown as { ticker: string; id: number; shares: number; avg_price_ars: number }[];
+  const note = options.note || "sincronización";
+  const executedAt = options.executedAt || null;
 
   const lotsByTicker: Record<string, typeof allLots> = {};
   for (const lot of allLots) {
@@ -554,11 +728,11 @@ export async function syncPortfolio(positions: { ticker: string; shares: number;
     if (diff > 0) {
       ops.push({
         sql: `INSERT INTO portfolio (ticker, shares, avg_price_ars, notes) VALUES (?, ?, ?, ?)`,
-        args: [ticker, diff, broker.priceArs, "sincronización"],
+        args: [ticker, diff, broker.priceArs, note],
       });
       ops.push({
-        sql: `INSERT INTO transactions (ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, notes) VALUES (?, 'BUY', ?, ?, ?, NULL, ?, ?)`,
-        args: [ticker, diff, broker.priceArs, broker.priceUsd, diff * broker.priceArs, "sincronización"],
+        sql: `INSERT INTO transactions (ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, notes, date_executed) VALUES (?, 'BUY', ?, ?, ?, NULL, ?, ?, COALESCE(?, date('now')))`,
+        args: [ticker, diff, broker.priceArs, broker.priceUsd, diff * broker.priceArs, note, executedAt],
       });
       created.push({ ticker, type: "BUY", shares: diff, priceArs: broker.priceArs });
     } else if (diff < 0) {
@@ -579,8 +753,8 @@ export async function syncPortfolio(positions: { ticker: string; shares: number;
         }
       }
       ops.push({
-        sql: `INSERT INTO transactions (ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, notes) VALUES (?, 'SELL', ?, ?, ?, NULL, ?, ?)`,
-        args: [ticker, sharesToSell, broker.priceArs, broker.priceUsd, sharesToSell * broker.priceArs, "sincronización"],
+        sql: `INSERT INTO transactions (ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, notes, date_executed) VALUES (?, 'SELL', ?, ?, ?, NULL, ?, ?, COALESCE(?, date('now')))`,
+        args: [ticker, sharesToSell, broker.priceArs, broker.priceUsd, sharesToSell * broker.priceArs, note, executedAt],
       });
       created.push({ ticker, type: "SELL", shares: sharesToSell, priceArs: broker.priceArs });
     }
@@ -592,8 +766,8 @@ export async function syncPortfolio(positions: { ticker: string; shares: number;
       const avgPrice = lots.reduce((s, l) => s + l.shares * l.avg_price_ars, 0) / dbShares;
       ops.push({ sql: "DELETE FROM portfolio WHERE ticker = ?", args: [ticker] });
       ops.push({
-        sql: `INSERT INTO transactions (ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, notes) VALUES (?, 'SELL', ?, ?, NULL, NULL, ?, ?)`,
-        args: [ticker, dbShares, avgPrice, dbShares * avgPrice, "sincronización — posición cerrada"],
+        sql: `INSERT INTO transactions (ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, notes, date_executed) VALUES (?, 'SELL', ?, ?, NULL, NULL, ?, ?, COALESCE(?, date('now')))`,
+        args: [ticker, dbShares, avgPrice, dbShares * avgPrice, `${note} — posición cerrada`, executedAt],
       });
       created.push({ ticker, type: "SELL", shares: dbShares, priceArs: Math.round(avgPrice), note: "cerrada" });
     }
@@ -1404,26 +1578,90 @@ export async function updateAdherenceExecution(sessionId: number, ticker: string
   return { state, discrepancyPct };
 }
 
+export async function autoUpdateAdherenceFromTransaction(ticker: string, executedShares: number, executedAmount: number) {
+  const rows = (await db.execute({
+    sql: `SELECT * FROM adherence_log
+          WHERE ticker = ? AND estado = 'pendiente'
+          ORDER BY created_at DESC, session_id DESC, plan_step ASC
+          LIMIT 1`,
+    args: [ticker.toUpperCase()],
+  })).rows;
+  if (rows.length === 0) return null;
+
+  const row = rows[0] as any;
+  const planQty = Math.max(1, Number(row.cantidad_plan || 1));
+  const discrepancyPct = Math.round((Math.abs(executedShares - planQty) / planQty) * 10000) / 100;
+  const state = discrepancyPct <= 5 ? "ejecutado" : discrepancyPct <= 20 ? "parcial" : "desviado";
+
+  await db.execute({
+    sql: `UPDATE adherence_log
+          SET cantidad_ejecutada = ?, monto_ejecutado = ?, estado = ?, discrepancy_pct = ?
+          WHERE id = ?`,
+    args: [executedShares, executedAmount, state, discrepancyPct, row.id],
+  });
+
+  return {
+    sessionId: row.session_id,
+    state,
+    discrepancyPct,
+  };
+}
+
+export async function markAdherenceSessionPaperOnly(sessionId: number) {
+  await db.execute({
+    sql: `UPDATE adherence_log
+          SET estado = 'paper_only'
+          WHERE session_id = ? AND estado = 'pendiente'`,
+    args: [sessionId],
+  });
+  return true;
+}
+
 export async function getAdherenceStats(days = 90) {
   const rows = (await db.execute({
     sql: `SELECT
-            COUNT(*) as total,
+            COUNT(*) as total_all,
+            SUM(CASE WHEN estado != 'paper_only' THEN 1 ELSE 0 END) as total,
             SUM(CASE WHEN estado = 'ejecutado' THEN 1 ELSE 0 END) as ejecutados,
             SUM(CASE WHEN estado = 'parcial' THEN 1 ELSE 0 END) as parciales,
             SUM(CASE WHEN estado = 'desviado' THEN 1 ELSE 0 END) as desviados,
             SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END) as pendientes,
-            AVG(discrepancy_pct) as avg_discrepancy
+            SUM(CASE WHEN estado = 'paper_only' THEN 1 ELSE 0 END) as paper_only,
+            AVG(CASE WHEN estado IN ('ejecutado', 'parcial', 'desviado') THEN discrepancy_pct END) as avg_discrepancy
           FROM adherence_log
           WHERE created_at >= datetime('now', '-' || ? || ' days')`,
     args: [days],
   })).rows[0] as any;
+  const totalTracked = Number(rows.total || 0);
+  const executed = Number(rows.ejecutados || 0);
+  const partial = Number(rows.parciales || 0);
+  const deviated = Number(rows.desviados || 0);
+  const pending = Number(rows.pendientes || 0);
+  const paperOnly = Number(rows.paper_only || 0);
+  const resolved = executed + partial + deviated;
+  const resolutionPct = totalTracked > 0 ? Math.round((resolved / totalTracked) * 10000) / 100 : 0;
+  const executionPct = totalTracked > 0 ? Math.round((executed / totalTracked) * 10000) / 100 : 0;
+  const effectiveExecutionPct = totalTracked > 0 ? Math.round(((executed + partial) / totalTracked) * 10000) / 100 : 0;
+  const avgDiscrepancyPct = Math.round((rows.avg_discrepancy || 0) * 100) / 100;
   return {
-    total: rows.total || 0,
-    ejecutados: rows.ejecutados || 0,
-    parciales: rows.parciales || 0,
-    desviados: rows.desviados || 0,
-    pendientes: rows.pendientes || 0,
-    avgDiscrepancyPct: Math.round((rows.avg_discrepancy || 0) * 100) / 100,
+    total: totalTracked,
+    ejecutados: executed,
+    parciales: partial,
+    desviados: deviated,
+    pendientes: pending,
+    paperOnly,
+    resolved,
+    resolutionPct,
+    executionPct,
+    effectiveExecutionPct,
+    totalAll: Number(rows.total_all || totalTracked + paperOnly),
+    avgDiscrepancyPct,
+    totalRecommendations: totalTracked,
+    executed,
+    partial,
+    deviated,
+    pending,
+    avgDiscrepancyPercentage: avgDiscrepancyPct,
   };
 }
 
@@ -1479,6 +1717,208 @@ export async function setPaperTradingConfig(autoSyncEnabled: boolean) {
           ON CONFLICT(id) DO UPDATE SET auto_sync_enabled = excluded.auto_sync_enabled, updated_at = excluded.updated_at`,
     args: [autoSyncEnabled ? 1 : 0],
   });
+}
+
+// ============================================================
+// GOVERNANCE POLICY SETTINGS
+// ============================================================
+
+export async function getGovernancePolicySelection(userId: number | null | undefined) {
+  const defaults = normalizeGovernanceSelection();
+  if (userId == null) {
+    return {
+      ...defaults,
+      reason: null,
+      updatedAt: null,
+    };
+  }
+
+  const row = (await db.execute({
+    sql: `SELECT overlay_key, deployment_mode, reason, updated_at
+          FROM governance_policy_settings
+          WHERE user_id = ?`,
+    args: [userId],
+  })).rows[0] as any;
+
+  if (!row) {
+    return {
+      ...defaults,
+      reason: null,
+      updatedAt: null,
+    };
+  }
+
+  const normalized = normalizeGovernanceSelection({
+    overlayKey: row.overlay_key,
+    deploymentMode: row.deployment_mode,
+  });
+  return {
+    ...normalized,
+    reason: row.reason || null,
+    updatedAt: row.updated_at || null,
+  };
+}
+
+export async function getGovernancePolicyAuditLog(userId: number, limit = 10) {
+  return (await db.execute({
+    sql: `SELECT *
+          FROM governance_policy_audit_logs
+          WHERE user_id = ?
+          ORDER BY created_at DESC
+          LIMIT ?`,
+    args: [userId, limit],
+  })).rows;
+}
+
+export async function saveGovernancePolicySelection({
+  userId,
+  overlayKey,
+  deploymentMode,
+  reason = null,
+  impactPreview = null,
+}: {
+  userId: number;
+  overlayKey: string;
+  deploymentMode: string;
+  reason?: string | null;
+  impactPreview?: unknown;
+}) {
+  const previous = await getGovernancePolicySelection(userId);
+  const normalized = normalizeGovernanceSelection({ overlayKey, deploymentMode });
+
+  await db.batch([
+    {
+      sql: `INSERT INTO governance_policy_settings (user_id, overlay_key, deployment_mode, reason, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(user_id) DO UPDATE SET
+              overlay_key = excluded.overlay_key,
+              deployment_mode = excluded.deployment_mode,
+              reason = excluded.reason,
+              updated_at = excluded.updated_at`,
+      args: [userId, normalized.overlayKey, normalized.deploymentMode, reason],
+    },
+    {
+      sql: `INSERT INTO governance_policy_audit_logs (
+              user_id, previous_overlay_key, previous_deployment_mode,
+              next_overlay_key, next_deployment_mode, reason, impact_preview
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        userId,
+        previous.overlayKey || null,
+        previous.deploymentMode || null,
+        normalized.overlayKey,
+        normalized.deploymentMode,
+        reason,
+        impactPreview ? JSON.stringify(impactPreview) : null,
+      ],
+    },
+  ], "write");
+
+  return getGovernancePolicySelection(userId);
+}
+
+// ============================================================
+// BROKER IMPORT AUDIT
+// ============================================================
+
+function buildBrokerImportInputHash({
+  brokerKey,
+  sourceType,
+  sourceName,
+  snapshotDate,
+  cclRate,
+  rawInput,
+}: {
+  brokerKey: string;
+  sourceType: string;
+  sourceName?: string | null;
+  snapshotDate?: string | null;
+  cclRate?: number | null;
+  rawInput?: string | null;
+}) {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    brokerKey,
+    sourceType,
+    sourceName: sourceName || null,
+    snapshotDate: snapshotDate || null,
+    cclRate: cclRate ?? null,
+    rawInput: rawInput || null,
+  })).digest("hex");
+}
+
+export async function logBrokerImportAudit({
+  userId = null,
+  brokerKey,
+  sourceType = "csv",
+  sourceName = null,
+  snapshotDate = null,
+  cclRate = null,
+  rawInput = null,
+  importedPositions = [],
+  reconciliation = null,
+  applied = false,
+  appliedTransactionCount = 0,
+}: {
+  userId?: number | null;
+  brokerKey: string;
+  sourceType?: string;
+  sourceName?: string | null;
+  snapshotDate?: string | null;
+  cclRate?: number | null;
+  rawInput?: string | null;
+  importedPositions?: unknown[];
+  reconciliation?: unknown;
+  applied?: boolean;
+  appliedTransactionCount?: number;
+}) {
+  const normalizedRawInput = rawInput == null ? null : String(rawInput).slice(0, 100000);
+  const inputHash = buildBrokerImportInputHash({
+    brokerKey,
+    sourceType,
+    sourceName,
+    snapshotDate,
+    cclRate,
+    rawInput: normalizedRawInput,
+  });
+
+  const result = await db.execute({
+    sql: `INSERT INTO broker_import_audit_logs (
+            user_id, broker_key, source_type, source_name, snapshot_date, ccl_rate,
+            input_hash, raw_input, imported_positions_json, reconciliation_json,
+            applied, applied_transaction_count
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          RETURNING id, user_id, broker_key, source_type, source_name, snapshot_date, ccl_rate, input_hash, applied, applied_transaction_count, created_at`,
+    args: [
+      userId,
+      brokerKey,
+      sourceType,
+      sourceName,
+      snapshotDate,
+      cclRate,
+      inputHash,
+      normalizedRawInput,
+      JSON.stringify(importedPositions || []),
+      reconciliation ? JSON.stringify(reconciliation) : null,
+      applied ? 1 : 0,
+      Number(appliedTransactionCount || 0),
+    ],
+  });
+
+  return result.rows[0];
+}
+
+export async function getBrokerImportAuditLogs(userId: number | null | undefined, limit = 10) {
+  return (await db.execute({
+    sql: `SELECT id, user_id, broker_key, source_type, source_name, snapshot_date, ccl_rate,
+                 input_hash, applied, applied_transaction_count, created_at
+          FROM broker_import_audit_logs
+          WHERE (? IS NULL OR user_id = ?)
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?`,
+    args: [userId ?? null, userId ?? null, limit],
+  })).rows;
 }
 
 // ============================================================
@@ -1554,6 +1994,7 @@ export async function getTrackRecordWithMetrics(days = 365) {
 
   const first = values[0];
   const last = values[values.length - 1];
+  const periodsPerYear = inferPeriodsPerYearFromDates(values.map((row) => row.date));
 
   // Calculate metrics
   const virtualReturn = first.virtual > 0 ? ((last.virtual - first.virtual) / first.virtual) * 100 : 0;
@@ -1579,9 +2020,8 @@ export async function getTrackRecordWithMetrics(days = 365) {
   const variance = dailyReturns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / dailyReturns.length;
   const volatility = Math.sqrt(variance);
 
-  // Sharpe (using 0% risk-free for simplicity, or 8% annual = ~0.021% daily)
-  const riskFreeDaily = 0.021; // ~8% annual
-  const sharpe = volatility > 0 ? ((avgReturn - riskFreeDaily) / volatility) * Math.sqrt(252) : 0;
+  const normalizedReturns = dailyReturns.map((value) => value / 100);
+  const sharpe = calcSharpeRatio(normalizedReturns, 0.45, periodsPerYear);
 
   // Win rate (days beating SPY)
   const spyDailyReturns = values.slice(1).map((v, i) => {
@@ -1602,10 +2042,11 @@ export async function getTrackRecordWithMetrics(days = 365) {
       spyReturnPct: Math.round(spyReturn * 100) / 100,
       alphaPct: Math.round(alpha * 100) / 100,
       maxDrawdownPct: Math.round(maxDrawdown * 100) / 100,
-      volatilityAnnualPct: Math.round(volatility * Math.sqrt(252) * 100) / 100,
-      sharpeRatio: Math.round(sharpe * 100) / 100,
+      volatilityAnnualPct: Math.round(volatility * Math.sqrt(periodsPerYear) * 100) / 100,
+      sharpeRatio: sharpe != null ? Math.round(sharpe * 100) / 100 : null,
       winRateVsSpyPct: Math.round(winRate * 100) / 100,
       avgDailyReturnPct: Math.round(avgReturn * 100) / 100,
+      periodsPerYear,
     },
   };
 }

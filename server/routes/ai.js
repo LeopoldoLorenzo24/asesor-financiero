@@ -8,7 +8,7 @@ import { runAiAnalyzeSelfCheck } from "../selfCheck.js";
 import {
   getPredictions, evaluatePredictionsForTicker, getPredictionById,
   getPortfolioSummary, savePostMortem, getPostMortems, getLatestLessons,
-  getAnalysisSessions,
+  getAnalysisSessions, markAdherenceSessionPaperOnly,
 } from "../database.js";
 import { assertAiBudgetAvailable, recordAnthropicUsage } from "../aiUsage.js";
 import { recordSelfCheckResult } from "../observability.js";
@@ -117,6 +117,12 @@ router.post("/analyze", async (req, res) => {
       investmentReadiness,
       availableCapitalArs: capital,
     });
+
+    if (investmentReadiness.mode === "paper_only" && Number(analysis?._session_id) > 0) {
+      await markAdherenceSessionPaperOnly(Number(analysis._session_id)).catch((err) => {
+        console.error("[adherence] Error marcando sesión como paper_only:", err.message);
+      });
+    }
 
     // Auto paper trading si está habilitado
     runAutoPaperTrading(analysis).catch((e) => console.error("[ai] Auto paper trading falló:", e.message));

@@ -20,6 +20,8 @@ import { dispatchAlerts } from "./alerting.js";
 import { runBacktest } from "./backtest.js";
 import { getClient, extractJSON } from "./aiAdvisor.js";
 import { assertAiBudgetAvailable, recordAnthropicUsage } from "./aiUsage.js";
+import { calculateSpyBenchmark } from "./performance.js";
+import { calcSharpeRatio, inferPeriodsPerYearFromDates } from "./riskMetrics.js";
 import CEDEARS from "./cedears.js";
 
 // ── AUTO SEED ──
@@ -489,23 +491,8 @@ export async function runTrackRecordLog() {
     // SPY benchmark más preciso: simular cartera equivalente en SPY
     let spyValue = 0;
     try {
-      const spyQuote = await fetchQuote("SPY").catch(() => null);
-      const cclRate = ccl.venta || 1;
-      if (spyQuote?.price && cclRate > 0) {
-        const spyPriceArs = spyQuote.price * cclRate;
-        const totalPortfolio = realValue + capital;
-        // Asumimos que desde el inicio se hubiera comprado SPY con todo
-        const spyHistory = await getTrackRecord(365);
-        if (spyHistory.length > 0 && spyHistory[0].spy_value_ars > 0) {
-          // Ya tenemos SPY acumulado, solo actualizamos precio
-          const firstSpyShares = (spyHistory[0].spy_value_ars || 0) / (spyPriceArs || 1);
-          spyValue = firstSpyShares * spyPriceArs;
-        } else {
-          // Primera vez: calcular shares iniciales
-          const initialShares = totalPortfolio / spyPriceArs;
-          spyValue = initialShares * spyPriceArs;
-        }
-      }
+      const spyBenchmark = await calculateSpyBenchmark(ccl.venta || null).catch(() => null);
+      spyValue = Math.round(spyBenchmark?.spyPortfolioArs || 0);
     } catch { /* ignore spy calc errors */ }
 
     // Calcular métricas diarias vs el registro anterior
@@ -536,7 +523,7 @@ export async function runTrackRecordLog() {
       }
       drawdown = peak > 0 ? ((virtualTotal - peak) / peak) * 100 : 0;
 
-      // Rolling Sharpe (últimos 30 días)
+      // Rolling Sharpe con frecuencia inferida de la serie real
       const recent30 = allHistory.slice(-30);
       if (recent30.length >= 10) {
         const returns = [];
@@ -548,10 +535,9 @@ export async function runTrackRecordLog() {
           if (p > 0) returns.push(((c - p) / p) * 100);
         }
         if (returns.length > 5) {
-          const avg = returns.reduce((a, b) => a + b, 0) / returns.length;
-          const varianza = returns.reduce((s, r) => s + Math.pow(r - avg, 2), 0) / returns.length;
-          const vol = Math.sqrt(varianza);
-          rollingSharpe = vol > 0 ? (avg / vol) * Math.sqrt(252) : 0;
+          const periodsPerYear = inferPeriodsPerYearFromDates(recent30.map((row) => String(row.date || "")));
+          const normalizedReturns = returns.map((value) => value / 100);
+          rollingSharpe = calcSharpeRatio(normalizedReturns, 0.45, periodsPerYear);
         }
       }
     } catch (e) { /* ignore calc errors */ }

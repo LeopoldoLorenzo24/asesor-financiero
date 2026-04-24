@@ -10,6 +10,7 @@ import { fetchQuote, fetchAllQuotes, fetchBymaPrices, fetchCCL } from "../market
 import { calcPriceARS } from "../utils.js";
 import { simulateBuyExecution, simulateSellExecution } from "../executionSimulator.js";
 import { calculateVirtualDividends } from "../corporateActions.js";
+import { calculateSpyBenchmarkFromBuys } from "../performance.js";
 import CEDEARS from "../cedears.js";
 
 const router = Router();
@@ -260,23 +261,12 @@ router.get("/track-record/real", async (req, res) => {
 
     const unrealizedPnl = realInvested > 0 ? ((realValue - realInvested) / realInvested) * 100 : 0;
 
-    // SPY benchmark: simular DCA con las mismas fechas
-    const buyTxs = transactions.filter((t) => t.type === "BUY");
-    const totalInvested = buyTxs.reduce((sum, t) => sum + t.total_ars, 0);
-
-    let spyValue = 0;
-    try {
-      const spyQuote = await fetchQuote("SPY");
-      if (spyQuote?.price && ccl.venta) {
-        const spyPriceArs = spyQuote.price * ccl.venta;
-        const firstTx = buyTxs[0];
-        const lastTx = buyTxs[buyTxs.length - 1];
-        if (firstTx && lastTx) {
-          const daysHeld = Math.max(1, Math.floor((new Date(lastTx.date_executed).getTime() - new Date(firstTx.date_executed).getTime()) / 86400000));
-          spyValue = totalInvested * (1 + (Math.random() * 0.1 - 0.02));
-        }
-      }
-    } catch { /* ignore */ }
+    const benchmark = await calculateSpyBenchmarkFromBuys(transactions, ccl.venta).catch(() => null);
+    const totalInvested = transactions
+      .filter((t) => t.type === "BUY")
+      .reduce((sum, t) => sum + Number(t.total_ars || 0), 0);
+    const spyValue = benchmark?.spyPortfolioArs || 0;
+    const alphaPct = totalInvested > 0 ? ((realValue - spyValue) / totalInvested) * 100 : null;
 
     res.json({
       series: [{
@@ -285,6 +275,7 @@ router.get("/track-record/real", async (req, res) => {
         real_invested_ars: realInvested,
         unrealized_pnl_pct: Math.round(unrealizedPnl * 100) / 100,
         spy_value_ars: spyValue,
+        alpha_vs_spy_pct: alphaPct != null ? Math.round(alphaPct * 100) / 100 : null,
         total_transactions: transactions.length,
         active_positions: Object.values(positions).filter((p) => p.shares > 0).length,
       }],
@@ -292,9 +283,12 @@ router.get("/track-record/real", async (req, res) => {
         totalInvested: Math.round(realInvested),
         currentValue: Math.round(realValue),
         unrealizedPnlPct: Math.round(unrealizedPnl * 100) / 100,
+        spyBenchmarkValue: Math.round(spyValue),
+        alphaVsSpyPct: alphaPct != null ? Math.round(alphaPct * 100) / 100 : null,
         totalTransactions: transactions.length,
         activePositions: Object.values(positions).filter((p) => p.shares > 0).length,
       },
+      benchmark,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

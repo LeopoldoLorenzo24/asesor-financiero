@@ -36,6 +36,71 @@ function getPriceOn(idx, sortedDates, targetDate) {
   return result ? idx[result] : null;
 }
 
+function estimateMonthsBetween(startDate, endDate = new Date()) {
+  const start = new Date(startDate);
+  if (Number.isNaN(start.getTime())) return 12;
+  const months = (endDate.getFullYear() - start.getFullYear()) * 12 + (endDate.getMonth() - start.getMonth());
+  return Math.max(3, months + 2);
+}
+
+async function fetchSpyReferenceHistory(startDate) {
+  const months = estimateMonthsBetween(startDate);
+  return await fetchHistory("SPY.BA", months)
+    .catch(() => fetchHistory("SPY", months).catch(() => null));
+}
+
+export async function calculateSpyBenchmarkFromBuys(transactions = [], currentCclVenta = null) {
+  const buyTxs = transactions
+    .filter((tx) => tx.type === "BUY" && Number(tx.total_ars) > 0 && tx.date_executed)
+    .sort((a, b) => String(a.date_executed).localeCompare(String(b.date_executed)));
+  if (buyTxs.length === 0) return null;
+
+  const spyHistory = await fetchSpyReferenceHistory(buyTxs[0].date_executed);
+  if (!spyHistory || spyHistory.length < 5) return null;
+
+  const spyIdx = buildDateIndex(spyHistory);
+  const sortedSpyDates = Object.keys(spyIdx).sort();
+  const currentDate = new Date().toISOString().slice(0, 10);
+  const currentSpyPriceArs = getPriceOn(spyIdx, sortedSpyDates, currentDate);
+  if (!currentSpyPriceArs) return null;
+
+  let spyCedears = 0;
+  let investedArs = 0;
+  const monthlyLog = [];
+
+  for (const tx of buyTxs) {
+    const amount = Number(tx.total_ars || 0);
+    const txDate = String(tx.date_executed).slice(0, 10);
+    const spyPriceArs = getPriceOn(spyIdx, sortedSpyDates, txDate);
+    if (!spyPriceArs || spyPriceArs <= 0) continue;
+    const cedearsBought = amount / spyPriceArs;
+    spyCedears += cedearsBought;
+    investedArs += amount;
+    monthlyLog.push({
+      date: txDate,
+      depositArs: Math.round(amount),
+      spyPriceArs: Math.round(spyPriceArs * 100) / 100,
+      cedearsBought: Math.round(cedearsBought * 10000) / 10000,
+    });
+  }
+
+  if (investedArs <= 0 || spyCedears <= 0) return null;
+
+  const spyPortfolioArs = Math.round(spyCedears * currentSpyPriceArs);
+  const spyPortfolioUsd = currentCclVenta > 0 ? Math.round((spyPortfolioArs / currentCclVenta) * 100) / 100 : null;
+  const spyReturnPct = Math.round((((spyPortfolioArs - investedArs) / investedArs) * 100) * 100) / 100;
+
+  return {
+    months: new Set(monthlyLog.map((row) => row.date.slice(0, 7))).size,
+    totalArsInvested: Math.round(investedArs),
+    spyPortfolioArs,
+    spyPortfolioUsd,
+    spyReturnPct,
+    currentSpyPriceArs: Math.round(currentSpyPriceArs * 100) / 100,
+    monthlyLog,
+  };
+}
+
 // ── getRealPicksAlpha ─────────────────────────────────────────
 
 /**

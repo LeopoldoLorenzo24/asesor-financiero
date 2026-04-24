@@ -159,6 +159,43 @@ test("GET /api/analysis-sessions returns array", async () => {
   assert.ok(Array.isArray(res.body));
 });
 
+test("GET /api/system/policies returns catalog and current selection", async () => {
+  const res = await request(app).get("/api/system/policies").set(await authHeader());
+  assert.equal(res.status, 200);
+  assert.ok(res.body.currentSelection);
+  assert.ok(Array.isArray(res.body.catalog?.overlays));
+  assert.ok(Array.isArray(res.body.catalog?.deploymentModes));
+});
+
+test("POST /api/system/policies/preview returns impact preview", async () => {
+  const res = await request(app)
+    .post("/api/system/policies/preview")
+    .set(await authHeader())
+    .send({ overlayKey: "capital_preservation", deploymentMode: "pilot" });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.proposedSelection.overlayKey, "capital_preservation");
+  assert.equal(res.body.proposedSelection.deploymentMode, "pilot");
+  assert.ok(res.body.previewReadiness);
+  assert.ok(res.body.impact);
+});
+
+test("POST /api/system/policies/apply saves selection and audit log", async () => {
+  const res = await request(app)
+    .post("/api/system/policies/apply")
+    .set(await authHeader())
+    .send({
+      overlayKey: "capital_preservation",
+      deploymentMode: "pilot",
+      reason: "test governance apply",
+    });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.success, true);
+  assert.equal(res.body.selection.overlayKey, "capital_preservation");
+  assert.equal(res.body.selection.deploymentMode, "pilot");
+  assert.ok(Array.isArray(res.body.auditLog));
+  assert.ok(res.body.auditLog.length > 0);
+});
+
 // ── Auth / Security ──
 
 test("Protected endpoint without token returns 401", async () => {

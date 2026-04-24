@@ -7,7 +7,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import NodeCache from "node-cache";
 import {
-  logPrediction, logAnalysisSession, buildAIContext, getLatestLessons, logDecisionAudit, logCapital,
+  logPrediction, logAnalysisSession, buildAIContext, getLatestLessons, logDecisionAudit, logCapital, logAdherenceEntries,
 } from "./database.js";
 import { buildMonthlyCycleContext } from "./investmentCycle.js";
 import { runBacktest } from "./backtest.js";
@@ -790,7 +790,16 @@ REGLA CRÍTICA DEL CICLO MENSUAL: El inversor ejecuta HOY y no toca la cartera h
       }
 
       console.log(`📊 Predictions saved: ${savedCount}`);
-      await logAnalysisSession({ capitalArs: capital, portfolioValueArs: cycleData?.portfolioValueARS || 0, cclRate: ccl.venta, marketSummary: result.resumen_mercado, strategyMonthly: result.decision_mensual?.resumen || result.distribucion_capital?.estrategia, risks: result.riesgos, fullResponse: result });
+      const sessionInsert = await logAnalysisSession({ capitalArs: capital, portfolioValueArs: cycleData?.portfolioValueARS || 0, cclRate: ccl.venta, marketSummary: result.resumen_mercado, strategyMonthly: result.decision_mensual?.resumen || result.distribucion_capital?.estrategia, risks: result.riesgos, fullResponse: result });
+      const sessionId = Number(sessionInsert?.lastInsertRowid || 0);
+      if (sessionId > 0) {
+        result._session_id = sessionId;
+      }
+      if (sessionId > 0 && Array.isArray(result.plan_ejecucion) && result.plan_ejecucion.length > 0) {
+        await logAdherenceEntries(sessionId, result.plan_ejecucion).catch((err) => {
+          console.error("[adherence] Error creando plan de seguimiento:", err.message);
+        });
+      }
       if (cycleData?.portfolioValueARS > 0 || capital > 0) {
         await logCapital(capital, cycleData?.portfolioValueARS || 0, ccl.venta).catch(() => {});
       }

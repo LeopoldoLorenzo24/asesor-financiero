@@ -225,19 +225,24 @@ const CEDEARS = [
   { ticker: "VIG", name: "Vanguard Dividend Appreciation", sector: "ETF - Dividendos", ratio: 39 },
 ];
 
-const DEFAULT_LOT_SIZE = 100;
+const DEFAULT_LOT_SIZE = 1;
 
 /**
- * Retorna el tamaño de lote estándar para un CEDEAR.
- * La gran mayoría de CEDEARs en BYMA operan en lotes de 100.
- * Algunos muy caros (ej. BKNG, NOW) pueden operar en lotes reducidos
- * según regulación de BYMA, pero por seguridad usamos 100 default.
+ * Retorna el tamaño de lote operativo para un CEDEAR.
+ * Para no contaminar recomendaciones ni paper trading con supuestos erróneos,
+ * usamos lote 1 por defecto y dejamos overrides explícitos solo cuando hagan falta.
+ * Esto refleja mejor la operatoria minorista real observada en la cartera del usuario
+ * y evita anular picks válidos por un supuesto de lote 100 demasiado agresivo.
  */
 export function getCedearLotSize(ticker) {
-  // BYMA permite lotes reducidos para CEDEARs con precio > cierto umbral,
-  // pero en la práctica la mayoría sigue siendo 100.
-  const reducedLotTickers = new Set(["BKNG", "NOW", "ASML", "RACE", "ISRG"]);
-  if (reducedLotTickers.has(ticker)) return 10;
+  const explicitLotSizes = new Map([
+    ["BKNG", 1],
+    ["NOW", 1],
+    ["ASML", 1],
+    ["RACE", 1],
+    ["ISRG", 1],
+  ]);
+  if (explicitLotSizes.has(ticker)) return explicitLotSizes.get(ticker);
   return DEFAULT_LOT_SIZE;
 }
 

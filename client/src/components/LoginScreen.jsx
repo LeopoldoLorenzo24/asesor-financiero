@@ -15,6 +15,8 @@ export default function LoginScreen({ onAuth }) {
   const [mode, setMode] = useState(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [requireTotp, setRequireTotp] = useState(false);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [focused, setFocused] = useState(null);
@@ -35,9 +37,17 @@ export default function LoginScreen({ onAuth }) {
     setLoading(true); setError(null);
     try {
       if (mode === "register") await auth.register(email, password);
-      else await auth.login(email, password);
+      else await auth.login(email, password, requireTotp ? totpCode : "");
       onAuth();
-    } catch (err) { setError(err.message); }
+    } catch (err) {
+      const message = err.message || "Error de autenticación";
+      if (mode === "login" && /2FA|Código 2FA/i.test(message)) {
+        setRequireTotp(true);
+        setError("Ingresá tu código de autenticación de 6 dígitos para completar el login.");
+      } else {
+        setError(message);
+      }
+    }
     finally { setLoading(false); }
   };
 
@@ -200,6 +210,28 @@ export default function LoginScreen({ onAuth }) {
               }}
             />
           </div>
+
+          {mode === "login" && requireTotp && (
+            <div style={{ marginBottom: 28 }}>
+              <label style={{ ...S.label, display: "block", marginBottom: 8, fontSize: 11 }}>Código 2FA</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder="123456"
+                required
+                style={{
+                  ...S.input,
+                  letterSpacing: "4px",
+                  textAlign: "center",
+                  fontSize: 18,
+                  borderColor: `${T.cyan}40`,
+                  boxShadow: `0 0 0 3px ${T.cyan}10`,
+                }}
+              />
+            </div>
+          )}
 
           <button
             type="submit"

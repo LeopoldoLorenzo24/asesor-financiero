@@ -314,7 +314,19 @@ export default function App() {
   );
 
   const renderOperations = () => (
-    <OperationsView portfolioDB={portfolioDB} ranking={ranking} transactions={transactions} />
+    <OperationsView
+      portfolioDB={portfolioDB}
+      ranking={ranking}
+      transactions={transactions}
+      onReconciled={async () => {
+        await Promise.all([
+          loadPortfolioDB(),
+          loadTransactions(),
+          loadSystemReadiness(),
+          loadAdherenceStats(),
+        ]);
+      }}
+    />
   );
 
   const renderPredictions = () => (
@@ -368,7 +380,7 @@ export default function App() {
   );
 
   const renderSystemHealth = () => <SystemHealthView health={systemHealth} readiness={systemReadiness} />;
-  const renderReadiness = () => <InvestmentReadinessView readiness={systemReadiness} />;
+  const renderReadiness = () => <InvestmentReadinessView readiness={systemReadiness} onRefresh={loadSystemReadiness} />;
   const renderEvolution = () => <PortfolioEvolutionView data={portfolioEvolution} days={evolutionDays} onDaysChange={setEvolutionDays} />;
   const renderTrackRecord = () => <TrackRecordView data={trackRecord} days={trackRecordDays} onDaysChange={setTrackRecordDays} />;
 

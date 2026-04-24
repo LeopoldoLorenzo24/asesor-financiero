@@ -7,8 +7,8 @@
   "scripts": {
     "start": "tsx index.js",
     "dev": "tsx watch index.js",
-    "test": "node --import tsx --test --test-isolation=none tests/*.test.js tests/**/*.test.js",
-    "test:watch": "node --import tsx --test --test-isolation=none --watch tests/*.test.js",
+    "test": "node --import ./tests/setup-env.js --import tsx --test --test-concurrency=1 tests/*.test.js tests/**/*.test.js",
+    "test:watch": "node --import ./tests/setup-env.js --import tsx --test --test-concurrency=1 --watch tests/*.test.js",
     "smoke": "node --import tsx scripts/smoke.js",
     "typecheck": "tsc --noEmit"
   },
