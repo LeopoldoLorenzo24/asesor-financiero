@@ -303,10 +303,10 @@ function verifyToken(token: string): VerifiedToken | null {
 }
 
 export async function canRegister(): Promise<boolean> {
-  if (!envBool("ALLOW_INITIAL_REGISTER", false)) return false;
   if (process.env.AUTH_PASSWORD) return false;
   const count = (await db.execute("SELECT COUNT(*) as count FROM users")).rows[0] as unknown as { count: number } | undefined;
-  return count?.count === 0;
+  if ((count?.count || 0) === 0) return true;
+  return envBool("ALLOW_INITIAL_REGISTER", false);
 }
 
 export async function register(email: string, password: string): Promise<string> {
@@ -367,7 +367,12 @@ export async function login(email: string, password: string, totpCode?: string):
   const user = (
     await db.execute({ sql: "SELECT * FROM users WHERE email = ?", args: [normalizedEmail] })
   ).rows[0] as unknown as { id: number; email: string; password_hash: string; salt?: string; totp_secret?: string } | undefined;
-  if (!user) throw new Error("Usuario no encontrado.");
+  if (!user) {
+    if (await canRegister()) {
+      throw new Error("No hay usuario creado todavía. Registrate primero.");
+    }
+    throw new Error("Usuario no encontrado.");
+  }
 
   const salt = user.salt || getJwtSecret();
   const hash = await hashPassword(normalizedPassword, salt);

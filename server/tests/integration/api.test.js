@@ -19,6 +19,7 @@ test("GET /api/auth/status returns canRegister boolean", async () => {
   const res = await request(app).get("/api/auth/status");
   assert.equal(res.status, 200);
   assert.ok(typeof res.body.canRegister === "boolean");
+  assert.equal(res.body.canRegister, true);
 });
 
 // ── Authenticated endpoints ──
