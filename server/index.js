@@ -145,7 +145,13 @@ app.use((err, req, res, next) => {
 });
 
 const clientDist = join(__dirname, "..", "client", "dist");
-if (existsSync(clientDist)) app.use(express.static(clientDist));
+console.log("[static] clientDist path:", clientDist, "exists:", existsSync(clientDist));
+if (existsSync(clientDist)) {
+  app.use(express.static(clientDist, { maxAge: "1h" }));
+  console.log("[static] Serving static files from", clientDist);
+} else {
+  console.warn("[static] client/dist not found. Frontend will not be served.");
+}
 
 // ---- Auth (public) ----
 app.use("/api/auth", createAuthRouter(authRateLimit));
@@ -176,6 +182,16 @@ app.use("/api", chartsRouter);                         // /charts/portfolio-evol
 app.get("/api/transactions", async (req, res) => {
   try { res.json(await getTransactions(req.query.ticker || null, parseInt(req.query.limit) || 50)); }
   catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// SPA fallback: serve index.html for any non-API route
+app.get("*", (req, res) => {
+  const indexPath = join(clientDist, "index.html");
+  if (existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).json({ error: "Not found" });
+  }
 });
 
 // ── START SERVER ──
