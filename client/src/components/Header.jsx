@@ -3,7 +3,7 @@ import {
   LayoutDashboard, ShieldCheck, BarChart2, Wallet, FlaskConical,
   Trophy, TrendingUp, Target, LineChart, Activity, History,
   Zap, Brain, CheckSquare, AlertTriangle, Menu, X,
-  LogOut, ChevronRight, Layers,
+  LogOut, ChevronRight, Layers, Command,
 } from "lucide-react";
 import { T, PROFILES } from "../theme";
 import { auth } from "../api";
@@ -47,6 +47,7 @@ const NAV_GROUPS = [
   {
     label: "Sistema",
     items: [
+      { id: "monitor",    label: "Monitor",           Icon: Activity },
       { id: "health",     label: "Salud",             Icon: Activity },
       { id: "historial",  label: "Historial",         Icon: History },
     ],
@@ -167,26 +168,52 @@ function Sidebar({ view, setView, readiness, onClose }) {
         </div>
       ))}
 
-      {/* Footer */}
+      {/* Footer — Readiness mini gauge */}
       <div style={{
         marginTop: "auto",
-        padding: "16px 14px 0",
+        padding: "14px 12px 0",
         borderTop: `1px solid ${T.border}`,
       }}>
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          marginBottom: 8,
-        }}>
-          <span style={{ fontSize: 10, color: T.textDark, fontFamily: T.fontMono }}>
-            READINESS
-          </span>
-          <span style={{ fontSize: 12, fontWeight: 800, color: readinessTone.color, fontFamily: T.fontMono }}>
-            {readinessTone.label}
-          </span>
-        </div>
-        <div style={{ fontSize: 10, color: T.textDark, fontFamily: T.fontMono }}>
-          v3.0 · {new Date().getFullYear()}
-        </div>
+        {readiness ? (() => {
+          const score = readiness.scorePct || 0;
+          const color = score >= 85 ? T.green : score >= 70 ? T.yellow : T.red;
+          const isReal = readiness.mode === "real_capital_ok";
+          const sz = 52;
+          const r = (sz - 8) / 2;
+          const circ = 2 * Math.PI * r;
+          const dashoff = circ - (score / 100) * circ;
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {/* Mini ring */}
+              <div style={{ position: "relative", flexShrink: 0 }}>
+                <svg width={sz} height={sz} style={{ transform: "rotate(-90deg)" }}>
+                  <circle cx={sz/2} cy={sz/2} r={r} fill="none" stroke="rgba(148,163,184,0.07)" strokeWidth={7} />
+                  <circle cx={sz/2} cy={sz/2} r={r} fill="none" stroke={color} strokeWidth={7}
+                    strokeDasharray={circ} strokeDashoffset={dashoff}
+                    strokeLinecap="round"
+                    style={{ transition: "stroke-dashoffset 1.2s cubic-bezier(0.4,0,0.2,1)", filter: `drop-shadow(0 0 4px ${color}80)` }}
+                  />
+                </svg>
+                <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ fontSize: 11, fontWeight: 900, color, fontFamily: T.fontMono, lineHeight: 1 }}>{Math.round(score)}</span>
+                  <span style={{ fontSize: 8, color: T.textDark, fontFamily: T.fontMono, lineHeight: 1, marginTop: 1 }}>{readiness.grade || "—"}</span>
+                </div>
+              </div>
+              {/* Labels */}
+              <div>
+                <div style={{ fontSize: 9, color: T.textDark, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 3 }}>Readiness</div>
+                <div style={{ fontSize: 11, fontWeight: 800, color, lineHeight: 1.3, maxWidth: 100 }}>
+                  {isReal ? "Capital Real OK" : "Paper Only"}
+                </div>
+                <div style={{ fontSize: 9, color: T.textDark, fontFamily: T.fontMono, marginTop: 3 }}>v3.0 · {new Date().getFullYear()}</div>
+              </div>
+            </div>
+          );
+        })() : (
+          <div style={{ fontSize: 10, color: T.textDark, fontFamily: T.fontMono }}>
+            CEDEAR ADVISOR v3.0 · {new Date().getFullYear()}
+          </div>
+        )}
       </div>
     </aside>
   );
@@ -319,30 +346,45 @@ export default function Header({ view, setView, profile, setProfile, ccl, readin
           </div>
         </div>
 
-        {/* Center: Active View Label */}
+        {/* Center: Cmd+K search trigger */}
         <div
           className="ca-header-center"
+          onClick={() => {
+            const event = new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true });
+            window.dispatchEvent(event);
+          }}
           style={{
             position: "absolute", left: "50%", transform: "translateX(-50%)",
             display: "flex", alignItems: "center", gap: 8,
+            padding: "7px 16px",
+            borderRadius: 11,
+            border: `1px solid rgba(148,163,184,0.09)`,
+            background: "rgba(148,163,184,0.04)",
+            cursor: "pointer",
+            transition: "all 0.2s",
+            minWidth: 220,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = `${T.green}30`;
+            e.currentTarget.style.background = `${T.green}06`;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = "rgba(148,163,184,0.09)";
+            e.currentTarget.style.background = "rgba(148,163,184,0.04)";
           }}
         >
-          {activeItem && (
+          {activeItem ? (
             <>
-              <activeItem.Icon
-                size={14}
-                strokeWidth={2}
-                color={T.textDim}
-              />
-              <span style={{
-                fontSize: 12, color: T.textDim,
-                fontWeight: 600, letterSpacing: "1.5px",
-                textTransform: "uppercase",
-              }}>
-                {activeItem.label}
-              </span>
+              <activeItem.Icon size={13} strokeWidth={1.8} color={T.textDim} />
+              <span style={{ fontSize: 12, color: T.textDim, fontWeight: 500, flex: 1 }}>{activeItem.label}</span>
             </>
+          ) : (
+            <span style={{ fontSize: 12, color: T.textDark, flex: 1 }}>Buscar...</span>
           )}
+          <div style={{ display: "flex", alignItems: "center", gap: 3, flexShrink: 0 }}>
+            <Command size={10} color={T.textDark} />
+            <span style={{ fontSize: 10, color: T.textDark, fontFamily: T.fontMono }}>K</span>
+          </div>
         </div>
 
         {/* Right controls */}

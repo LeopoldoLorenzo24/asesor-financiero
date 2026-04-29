@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { ShieldCheck, Brain, Trophy, TrendingUp, Activity, CalendarCheck, FileCheck, CheckCircle, Gauge, Target, CheckCircle2, XCircle, AlertTriangle, Lock, Unlock } from "lucide-react";
 import { T, S } from "../theme";
 import { GlassCard, MetricCard, PulseDot, ScoreBar, SectionHeader, Skeleton, StatusMsg } from "../components/common";
 import api, { auth } from "../api";
@@ -171,6 +172,14 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
     }
   };
 
+  const ringSize = 180;
+  const ringStroke = 13;
+  const ringR = (ringSize - ringStroke) / 2;
+  const ringCircumference = 2 * Math.PI * ringR;
+  const ringOffset = ringCircumference - ((scorePct || 0) / 100) * ringCircumference;
+  const readinessColor = scorePct >= 85 ? T.green : scorePct >= 70 ? T.yellow : T.red;
+  const isRealCapital = mode === "real_capital_ok";
+
   return (
     <div className="ca-main" style={{ padding: "32px", maxWidth: 1240, margin: "0 auto", animation: "fadeUp 0.5s ease" }}>
       <SectionHeader
@@ -178,29 +187,105 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
         subtitle={`Ultima evaluacion: ${generatedAt ? new Date(generatedAt).toLocaleString("es-AR") : "—"}`}
       />
 
-      <div style={{ ...S.grid(250), gap: 16, marginBottom: 28 }}>
-        <MetricCard label="Readiness Score" value={scorePct || 0} suffix="%" decimals={2} color={scorePct >= 85 ? T.green : scorePct >= 70 ? T.yellow : T.red} glowColor={scorePct >= 85 ? T.green : scorePct >= 70 ? T.yellow : T.red} icon="R" />
-        <GlassCard glowColor={policyColor}>
-          <div style={S.label}>Modo Actual</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
-            <PulseDot color={policyColor} size={8} />
-            <span style={{ ...S.value, fontSize: 22, color: policyColor }}>{mode === "real_capital_ok" ? "REAL CAPITAL OK" : "PAPER ONLY"}</span>
+      {/* Hero: ring gauge + status pills */}
+      <GlassCard style={{ marginBottom: 24, padding: "32px 28px" }} glowColor={readinessColor}>
+        <div style={{ display: "flex", alignItems: "center", gap: 40, flexWrap: "wrap" }}>
+
+          {/* Ring gauge */}
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            <svg width={ringSize} height={ringSize} style={{ transform: "rotate(-90deg)", display: "block" }}>
+              {/* Track */}
+              <circle cx={ringSize/2} cy={ringSize/2} r={ringR} fill="none" stroke="rgba(148,163,184,0.08)" strokeWidth={ringStroke} />
+              {/* Glow layer */}
+              <circle cx={ringSize/2} cy={ringSize/2} r={ringR} fill="none"
+                stroke={readinessColor} strokeWidth={ringStroke + 6}
+                strokeDasharray={ringCircumference} strokeDashoffset={ringOffset}
+                strokeLinecap="round" opacity={0.12}
+              />
+              {/* Main arc */}
+              <circle cx={ringSize/2} cy={ringSize/2} r={ringR} fill="none"
+                stroke={readinessColor} strokeWidth={ringStroke}
+                strokeDasharray={ringCircumference} strokeDashoffset={ringOffset}
+                strokeLinecap="round"
+                style={{ transition: "stroke-dashoffset 1.4s cubic-bezier(0.4,0,0.2,1), stroke 0.4s ease" }}
+              />
+            </svg>
+            {/* Center content */}
+            <div style={{
+              position: "absolute", inset: 0,
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+              gap: 2,
+            }}>
+              <div style={{ fontSize: 36, fontWeight: 900, color: readinessColor, fontFamily: T.fontMono, lineHeight: 1, letterSpacing: "-2px" }}>
+                {Math.round(scorePct || 0)}
+              </div>
+              <div style={{ fontSize: 10, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "2px" }}>Score</div>
+              <div style={{ fontSize: 22, fontWeight: 900, color: T.text, fontFamily: T.fontMono, marginTop: 2 }}>{grade || "—"}</div>
+            </div>
           </div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 10 }}>Etapa: {capitalPolicy?.stage || "paper_only"} · Max {capitalPolicy?.maxCapitalPct ?? 0}%</div>
-        </GlassCard>
-        <GlassCard glowColor={T.blue}>
-          <div style={S.label}>Grade</div>
-          <div style={{ ...S.value, fontSize: 28, marginTop: 8 }}>{grade || "—"}</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 10 }}>Calificación integral del sistema</div>
-        </GlassCard>
-        <GlassCard glowColor={regimeColor}>
-          <div style={S.label}>Regimen de Mercado</div>
-          <div style={{ ...S.value, fontSize: 22, marginTop: 8, color: regimeColor }}>{regimeLabel(marketRegime?.regime)}</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 10 }}>
-            SPY 1m {pct(marketRegime?.spy1mPct)} · SPY 3m {pct(marketRegime?.spy3mPct)}
+
+          {/* Status column */}
+          <div style={{ flex: 1, minWidth: 200, display: "flex", flexDirection: "column", gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 10, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "2px", marginBottom: 10 }}>Estado del sistema</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: 14,
+                  background: isRealCapital ? `linear-gradient(135deg, ${T.green}, ${T.teal})` : `linear-gradient(135deg, ${T.blue}60, ${T.purple}60)`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  boxShadow: isRealCapital ? `0 4px 20px ${T.green}30` : "none",
+                  flexShrink: 0,
+                }}>
+                  {isRealCapital ? <Unlock size={20} color="#000" strokeWidth={2} /> : <Lock size={20} color={T.textMuted} strokeWidth={2} />}
+                </div>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: isRealCapital ? T.green : T.textMuted }}>
+                    {isRealCapital ? "Capital Real Habilitado" : "Paper Trading Activo"}
+                  </div>
+                  <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>
+                    Etapa: <span style={{ color: policyColor, fontWeight: 700 }}>{capitalPolicy?.stage || "paper_only"}</span>
+                    {" · "}Máx capital: <span style={{ color: policyColor, fontWeight: 700 }}>{capitalPolicy?.maxCapitalPct ?? 0}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Pills row */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ ...S.badge(policyColor), fontSize: 10 }}>
+                <PulseDot color={policyColor} size={5} />
+                {capitalPolicy?.stage || "paper_only"}
+              </div>
+              <div style={{ ...S.badge(regimeColor), fontSize: 10 }}>
+                {regimeLabel(marketRegime?.regime)} · SPY 1m {pct(marketRegime?.spy1mPct)}
+              </div>
+              {blockers.length > 0 && (
+                <div style={{ ...S.badge(T.red), fontSize: 10 }}>
+                  <AlertTriangle size={10} />
+                  {blockers.length} blocker{blockers.length !== 1 ? "s" : ""}
+                </div>
+              )}
+            </div>
+
+            {summary && <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.7, borderLeft: `2px solid ${readinessColor}40`, paddingLeft: 12 }}>{summary}</div>}
           </div>
-        </GlassCard>
-      </div>
+
+          {/* Mini stats */}
+          <div style={{ display: "grid", gap: 10, minWidth: 160 }}>
+            {[
+              { label: "Sharpe", value: fmt(risk?.sharpeRatio), color: (risk?.sharpeRatio ?? 0) >= 1 ? T.green : T.yellow },
+              { label: "Max DD", value: pct(risk?.maxDrawdownPct), color: Math.abs(risk?.maxDrawdownPct ?? 100) <= 15 ? T.green : T.red },
+              { label: "Win Rate", value: pct(alphaStats?.winRateVsSpy), color: (alphaStats?.winRateVsSpy ?? 0) >= 55 ? T.green : T.red },
+              { label: "Alpha Prom", value: pct(alphaStats?.avgAlpha), color: (alphaStats?.avgAlpha ?? 0) > 0 ? T.green : T.red },
+            ].map(({ label, value, color }) => (
+              <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderRadius: 10, background: "rgba(148,163,184,0.04)", border: `1px solid rgba(148,163,184,0.06)` }}>
+                <span style={{ fontSize: 11, color: T.textDim }}>{label}</span>
+                <span style={{ fontSize: 12, fontWeight: 800, color, fontFamily: T.fontMono }}>{value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </GlassCard>
 
       <GlassCard glowColor={policyColor} style={{ marginBottom: 24 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
@@ -334,10 +419,10 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
       )}
 
       <div style={{ ...S.grid(260), gap: 16, marginBottom: 28 }}>
-        <MetricCard label="Predicciones Evaluadas" value={alphaStats?.count || 0} color={T.text} glowColor={T.blue} icon="P" />
-        <MetricCard label="Win Rate vs SPY" value={alphaStats?.winRateVsSpy || 0} suffix="%" decimals={2} color={(alphaStats?.winRateVsSpy || 0) >= 55 ? T.green : T.red} glowColor={(alphaStats?.winRateVsSpy || 0) >= 55 ? T.green : T.red} icon="W" />
-        <MetricCard label="Alpha Promedio" value={alphaStats?.avgAlpha || 0} suffix="%" decimals={2} color={(alphaStats?.avgAlpha || 0) > 0 ? T.green : T.red} glowColor={(alphaStats?.avgAlpha || 0) > 0 ? T.green : T.red} icon="A" />
-        <MetricCard label="Track Alpha" value={trackRecord?.alphaPct || 0} suffix="%" decimals={2} color={(trackRecord?.alphaPct || 0) > 0 ? T.green : T.red} glowColor={(trackRecord?.alphaPct || 0) > 0 ? T.green : T.red} icon="T" />
+        <MetricCard label="Predicciones Evaluadas" value={alphaStats?.count || 0} color={T.text} glowColor={T.blue} icon={Brain} />
+        <MetricCard label="Win Rate vs SPY" value={alphaStats?.winRateVsSpy || 0} suffix="%" decimals={2} color={(alphaStats?.winRateVsSpy || 0) >= 55 ? T.green : T.red} glowColor={(alphaStats?.winRateVsSpy || 0) >= 55 ? T.green : T.red} icon={Trophy} />
+        <MetricCard label="Alpha Promedio" value={alphaStats?.avgAlpha || 0} suffix="%" decimals={2} color={(alphaStats?.avgAlpha || 0) > 0 ? T.green : T.red} glowColor={(alphaStats?.avgAlpha || 0) > 0 ? T.green : T.red} icon={TrendingUp} />
+        <MetricCard label="Track Alpha" value={trackRecord?.alphaPct || 0} suffix="%" decimals={2} color={(trackRecord?.alphaPct || 0) > 0 ? T.green : T.red} glowColor={(trackRecord?.alphaPct || 0) > 0 ? T.green : T.red} icon={Activity} />
       </div>
 
       <div style={{ ...S.grid(260), gap: 16, marginBottom: 28 }}>
@@ -383,10 +468,10 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
       </div>
 
       <div style={{ ...S.grid(260), gap: 16, marginBottom: 28 }}>
-        <MetricCard label="Sesiones Auditables" value={evidenceQuality?.analysisSessions || 0} color={(evidenceQuality?.analysisSessions || 0) >= 12 ? T.green : T.red} glowColor={(evidenceQuality?.analysisSessions || 0) >= 12 ? T.green : T.red} icon="S" />
-        <MetricCard label="Cobertura de Audit Trail" value={evidenceQuality?.auditCoveragePct || 0} suffix="%" decimals={2} color={(evidenceQuality?.auditCoveragePct || 0) >= 90 ? T.green : T.red} glowColor={(evidenceQuality?.auditCoveragePct || 0) >= 90 ? T.green : T.red} icon="L" />
-        <MetricCard label="Resolucion Adherencia" value={evidenceQuality?.adherenceResolutionPct || 0} suffix="%" decimals={2} color={(evidenceQuality?.adherenceResolutionPct || 0) >= 80 ? T.green : T.red} glowColor={(evidenceQuality?.adherenceResolutionPct || 0) >= 80 ? T.green : T.red} icon="H" />
-        <MetricCard label="Desvio Medio" value={evidenceQuality?.avgDiscrepancyPct || 0} suffix="%" decimals={2} color={(evidenceQuality?.avgDiscrepancyPct || 0) <= 20 ? T.green : T.red} glowColor={(evidenceQuality?.avgDiscrepancyPct || 0) <= 20 ? T.green : T.red} icon="D" />
+        <MetricCard label="Sesiones Auditables" value={evidenceQuality?.analysisSessions || 0} color={(evidenceQuality?.analysisSessions || 0) >= 12 ? T.green : T.red} glowColor={(evidenceQuality?.analysisSessions || 0) >= 12 ? T.green : T.red} icon={CalendarCheck} />
+        <MetricCard label="Cobertura de Audit Trail" value={evidenceQuality?.auditCoveragePct || 0} suffix="%" decimals={2} color={(evidenceQuality?.auditCoveragePct || 0) >= 90 ? T.green : T.red} glowColor={(evidenceQuality?.auditCoveragePct || 0) >= 90 ? T.green : T.red} icon={FileCheck} />
+        <MetricCard label="Resolucion Adherencia" value={evidenceQuality?.adherenceResolutionPct || 0} suffix="%" decimals={2} color={(evidenceQuality?.adherenceResolutionPct || 0) >= 80 ? T.green : T.red} glowColor={(evidenceQuality?.adherenceResolutionPct || 0) >= 80 ? T.green : T.red} icon={CheckCircle} />
+        <MetricCard label="Desvio Medio" value={evidenceQuality?.avgDiscrepancyPct || 0} suffix="%" decimals={2} color={(evidenceQuality?.avgDiscrepancyPct || 0) <= 20 ? T.green : T.red} glowColor={(evidenceQuality?.avgDiscrepancyPct || 0) <= 20 ? T.green : T.red} icon={Gauge} />
       </div>
 
       <div style={{ ...S.grid(260), gap: 16, marginBottom: 28 }}>
@@ -523,20 +608,61 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
       )}
 
       <GlassCard style={{ marginBottom: 28 }}>
-        <SectionHeader title="Reglas de readiness" subtitle="El sistema solo escala cuando pasa todos estos controles" />
-        <div style={{ display: "grid", gap: 10 }}>
-          {rules.map((rule) => (
-            <div key={rule.name} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "12px 14px", borderRadius: 12, border: `1px solid ${rule.passed ? `${T.green}25` : `${T.red}25`}`, background: rule.passed ? `${T.green}06` : `${T.red}06` }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: rule.passed ? T.green : T.red }}>{rule.name}</div>
-                <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>{rule.message}</div>
+        <SectionHeader
+          title="Reglas de Readiness"
+          subtitle={`${rules.filter(r => r.passed).length} / ${rules.length} reglas activas`}
+          action={
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 20, fontWeight: 900, color: T.green, fontFamily: T.fontMono, lineHeight: 1 }}>{rules.filter(r => r.passed).length}</div>
+                <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px" }}>OK</div>
               </div>
-              <div style={{ textAlign: "right", fontFamily: T.fontMono, fontSize: 12, color: T.textMuted }}>
-                <div>valor {rule.value ?? "—"}</div>
-                <div>umbral {rule.threshold ?? "—"}</div>
+              <div style={{ width: 1, height: 28, background: T.border }} />
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 20, fontWeight: 900, color: T.red, fontFamily: T.fontMono, lineHeight: 1 }}>{rules.filter(r => !r.passed).length}</div>
+                <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px" }}>Fail</div>
               </div>
             </div>
-          ))}
+          }
+        />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
+          {rules.map((rule) => {
+            const c = rule.passed ? T.green : T.red;
+            return (
+              <div key={rule.name} style={{
+                padding: "14px 16px",
+                borderRadius: 14,
+                border: `1px solid ${c}22`,
+                background: `${c}05`,
+                position: "relative",
+                overflow: "hidden",
+                transition: "border-color 0.2s, background 0.2s",
+              }}>
+                {/* Left accent */}
+                <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: c, borderRadius: "3px 0 0 3px" }} />
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                  <div style={{ marginTop: 1, flexShrink: 0 }}>
+                    {rule.passed
+                      ? <CheckCircle2 size={16} color={T.green} strokeWidth={2} />
+                      : <XCircle size={16} color={T.red} strokeWidth={2} />
+                    }
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: c, fontFamily: T.fontMono, marginBottom: 3, letterSpacing: "0.3px" }}>
+                      {rule.name.replace(/_/g, " ")}
+                    </div>
+                    <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.5 }}>{rule.message}</div>
+                    {(rule.value != null || rule.threshold != null) && (
+                      <div style={{ display: "flex", gap: 12, marginTop: 7 }}>
+                        {rule.value != null && <span style={{ fontSize: 10, color: T.textDim, fontFamily: T.fontMono }}>val: <span style={{ color: c }}>{rule.value}</span></span>}
+                        {rule.threshold != null && <span style={{ fontSize: 10, color: T.textDim, fontFamily: T.fontMono }}>umbral: <span style={{ color: T.textMuted }}>{rule.threshold}</span></span>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </GlassCard>
     </div>

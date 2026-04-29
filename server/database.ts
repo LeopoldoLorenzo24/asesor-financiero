@@ -8,7 +8,7 @@ import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { mkdirSync } from "fs";
-import { sanitizePromptString } from "./utils.js";
+import { safeJsonParse, sanitizePromptString } from "./utils.js";
 import { calcSharpeRatio, inferPeriodsPerYearFromDates } from "./riskMetrics.js";
 import { normalizeGovernanceSelection } from "./governancePolicies.js";
 
@@ -207,6 +207,96 @@ const MIGRATIONS: Migration[] = [
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_broker_import_audit_user_created ON broker_import_audit_logs(user_id, created_at DESC);`,
+  },
+  {
+    version: 13,
+    name: "create_intraday_monitor_tables",
+    sql: `CREATE TABLE IF NOT EXISTS intraday_monitor_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled INTEGER NOT NULL DEFAULT 0,
+      interval_minutes INTEGER NOT NULL DEFAULT 15,
+      market_open_local TEXT NOT NULL DEFAULT '10:30',
+      market_close_local TEXT NOT NULL DEFAULT '17:00',
+      timezone TEXT NOT NULL DEFAULT 'America/Argentina/Cordoba',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT OR IGNORE INTO intraday_monitor_settings (
+      id, enabled, interval_minutes, market_open_local, market_close_local, timezone
+    ) VALUES (1, 0, 15, '10:30', '17:00', 'America/Argentina/Cordoba');
+
+    CREATE TABLE IF NOT EXISTS intraday_monitor_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      stopped_at TEXT,
+      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','stopped','crashed')),
+      started_by TEXT,
+      stop_reason TEXT,
+      interval_minutes INTEGER NOT NULL,
+      market_open_local TEXT NOT NULL,
+      market_close_local TEXT NOT NULL,
+      timezone TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS intraday_monitor_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER,
+      snapshot_at TEXT NOT NULL,
+      market_state TEXT NOT NULL DEFAULT 'open',
+      source TEXT NOT NULL DEFAULT 'scheduled',
+      ccl_rate REAL,
+      vix_value REAL,
+      vix_change_pct REAL,
+      vix_regime TEXT,
+      spy_price_usd REAL,
+      spy_change_pct REAL,
+      qqq_price_usd REAL,
+      qqq_change_pct REAL,
+      portfolio_value_ars REAL,
+      capital_available_ars REAL,
+      total_value_ars REAL,
+      tracked_tickers_count INTEGER NOT NULL DEFAULT 0,
+      position_count INTEGER NOT NULL DEFAULT 0,
+      event_count INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_intraday_snapshots_snapshot_at ON intraday_monitor_snapshots(snapshot_at DESC);
+
+    CREATE TABLE IF NOT EXISTS intraday_monitor_ticker_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_id INTEGER NOT NULL,
+      ticker TEXT NOT NULL,
+      shares REAL NOT NULL DEFAULT 0,
+      avg_cost_ars REAL,
+      price_usd REAL,
+      price_ars REAL,
+      byma_price_ars REAL,
+      day_change_pct REAL,
+      pnl_pct REAL,
+      value_ars REAL,
+      position_weight_pct REAL,
+      active_prediction_action TEXT,
+      prediction_confidence INTEGER,
+      stop_loss_breach INTEGER NOT NULL DEFAULT 0,
+      take_profit_breach INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_intraday_ticker_snapshots_snapshot_id ON intraday_monitor_ticker_snapshots(snapshot_id);
+    CREATE INDEX IF NOT EXISTS idx_intraday_ticker_snapshots_ticker ON intraday_monitor_ticker_snapshots(ticker, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS intraday_monitor_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER,
+      snapshot_id INTEGER,
+      event_key TEXT UNIQUE,
+      event_type TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'info' CHECK(severity IN ('info','warning','critical')),
+      ticker TEXT,
+      message TEXT NOT NULL,
+      payload_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_intraday_monitor_events_created_at ON intraday_monitor_events(created_at DESC);`,
   },
 ];
 
@@ -2110,6 +2200,373 @@ export async function getBrokerImportAuditLogs(userId: number | null | undefined
           LIMIT ?`,
     args: [userId ?? null, userId ?? null, limit],
   })).rows;
+}
+
+// ============================================================
+// INTRADAY MONITOR
+// ============================================================
+
+function normalizeIntradayMonitorSettingsRow(row: any) {
+  return {
+    enabled: Boolean(row?.enabled),
+    intervalMinutes: Number(row?.interval_minutes || 15),
+    marketOpenLocal: row?.market_open_local || "10:30",
+    marketCloseLocal: row?.market_close_local || "17:00",
+    timezone: row?.timezone || "America/Argentina/Cordoba",
+    updatedAt: row?.updated_at || null,
+  };
+}
+
+function normalizeIntradayMonitorSessionRow(row: any) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    startedAt: row.started_at || null,
+    stoppedAt: row.stopped_at || null,
+    status: row.status || "stopped",
+    startedBy: row.started_by || null,
+    stopReason: row.stop_reason || null,
+    intervalMinutes: Number(row.interval_minutes || 15),
+    marketOpenLocal: row.market_open_local || "10:30",
+    marketCloseLocal: row.market_close_local || "17:00",
+    timezone: row.timezone || "America/Argentina/Cordoba",
+  };
+}
+
+function normalizeIntradayMonitorSnapshotRow(row: any) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    sessionId: row.session_id == null ? null : Number(row.session_id),
+    snapshotAt: row.snapshot_at || null,
+    marketState: row.market_state || "closed",
+    source: row.source || "scheduled",
+    cclRate: row.ccl_rate == null ? null : Number(row.ccl_rate),
+    vixValue: row.vix_value == null ? null : Number(row.vix_value),
+    vixChangePct: row.vix_change_pct == null ? null : Number(row.vix_change_pct),
+    vixRegime: row.vix_regime || null,
+    spyPriceUsd: row.spy_price_usd == null ? null : Number(row.spy_price_usd),
+    spyChangePct: row.spy_change_pct == null ? null : Number(row.spy_change_pct),
+    qqqPriceUsd: row.qqq_price_usd == null ? null : Number(row.qqq_price_usd),
+    qqqChangePct: row.qqq_change_pct == null ? null : Number(row.qqq_change_pct),
+    portfolioValueArs: row.portfolio_value_ars == null ? null : Number(row.portfolio_value_ars),
+    capitalAvailableArs: row.capital_available_ars == null ? null : Number(row.capital_available_ars),
+    totalValueArs: row.total_value_ars == null ? null : Number(row.total_value_ars),
+    trackedTickersCount: Number(row.tracked_tickers_count || 0),
+    positionCount: Number(row.position_count || 0),
+    eventCount: Number(row.event_count || 0),
+    notes: row.notes || null,
+    createdAt: row.created_at || null,
+  };
+}
+
+function normalizeIntradayMonitorTickerSnapshotRow(row: any) {
+  return {
+    id: Number(row.id),
+    snapshotId: Number(row.snapshot_id),
+    ticker: row.ticker,
+    shares: Number(row.shares || 0),
+    avgCostArs: row.avg_cost_ars == null ? null : Number(row.avg_cost_ars),
+    priceUsd: row.price_usd == null ? null : Number(row.price_usd),
+    priceArs: row.price_ars == null ? null : Number(row.price_ars),
+    bymaPriceArs: row.byma_price_ars == null ? null : Number(row.byma_price_ars),
+    dayChangePct: row.day_change_pct == null ? null : Number(row.day_change_pct),
+    pnlPct: row.pnl_pct == null ? null : Number(row.pnl_pct),
+    valueArs: row.value_ars == null ? null : Number(row.value_ars),
+    positionWeightPct: row.position_weight_pct == null ? null : Number(row.position_weight_pct),
+    activePredictionAction: row.active_prediction_action || null,
+    predictionConfidence: row.prediction_confidence == null ? null : Number(row.prediction_confidence),
+    stopLossBreach: Boolean(row.stop_loss_breach),
+    takeProfitBreach: Boolean(row.take_profit_breach),
+    createdAt: row.created_at || null,
+  };
+}
+
+function normalizeIntradayMonitorEventRow(row: any) {
+  return {
+    id: Number(row.id),
+    sessionId: row.session_id == null ? null : Number(row.session_id),
+    snapshotId: row.snapshot_id == null ? null : Number(row.snapshot_id),
+    eventKey: row.event_key || null,
+    eventType: row.event_type,
+    severity: row.severity || "info",
+    ticker: row.ticker || null,
+    message: row.message || "",
+    payload: safeJsonParse(row.payload_json, null),
+    createdAt: row.created_at || null,
+  };
+}
+
+export async function getIntradayMonitorSettings() {
+  const row = (await db.execute("SELECT * FROM intraday_monitor_settings WHERE id = 1")).rows[0] as any;
+  return normalizeIntradayMonitorSettingsRow(row);
+}
+
+export async function updateIntradayMonitorSettings({
+  enabled,
+  intervalMinutes,
+  marketOpenLocal,
+  marketCloseLocal,
+  timezone,
+}: {
+  enabled?: boolean;
+  intervalMinutes?: number;
+  marketOpenLocal?: string;
+  marketCloseLocal?: string;
+  timezone?: string;
+}) {
+  const current = await getIntradayMonitorSettings();
+  const next = {
+    enabled: enabled ?? current.enabled,
+    intervalMinutes: Math.max(5, Math.min(60, Math.round(intervalMinutes ?? current.intervalMinutes))),
+    marketOpenLocal: marketOpenLocal || current.marketOpenLocal,
+    marketCloseLocal: marketCloseLocal || current.marketCloseLocal,
+    timezone: timezone || current.timezone,
+  };
+
+  const hhmmPattern = /^\d{2}:\d{2}$/;
+  if (!hhmmPattern.test(next.marketOpenLocal) || !hhmmPattern.test(next.marketCloseLocal)) {
+    throw new Error("La ventana del monitor debe tener formato HH:MM.");
+  }
+  if (next.marketOpenLocal >= next.marketCloseLocal) {
+    throw new Error("La hora de apertura debe ser menor a la de cierre.");
+  }
+
+  await db.execute({
+    sql: `INSERT INTO intraday_monitor_settings (
+            id, enabled, interval_minutes, market_open_local, market_close_local, timezone, updated_at
+          ) VALUES (1, ?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(id) DO UPDATE SET
+            enabled = excluded.enabled,
+            interval_minutes = excluded.interval_minutes,
+            market_open_local = excluded.market_open_local,
+            market_close_local = excluded.market_close_local,
+            timezone = excluded.timezone,
+            updated_at = excluded.updated_at`,
+    args: [next.enabled ? 1 : 0, next.intervalMinutes, next.marketOpenLocal, next.marketCloseLocal, next.timezone],
+  });
+
+  return getIntradayMonitorSettings();
+}
+
+export async function closeOpenIntradayMonitorSessions(stopReason = "superseded") {
+  await db.execute({
+    sql: `UPDATE intraday_monitor_sessions
+          SET status = 'stopped',
+              stopped_at = COALESCE(stopped_at, datetime('now')),
+              stop_reason = COALESCE(stop_reason, ?)
+          WHERE status = 'running'`,
+    args: [stopReason],
+  });
+}
+
+export async function createIntradayMonitorSession({
+  startedBy = "system",
+  intervalMinutes,
+  marketOpenLocal,
+  marketCloseLocal,
+  timezone,
+}: {
+  startedBy?: string | null;
+  intervalMinutes: number;
+  marketOpenLocal: string;
+  marketCloseLocal: string;
+  timezone: string;
+}) {
+  const result = await db.execute({
+    sql: `INSERT INTO intraday_monitor_sessions (
+            started_by, interval_minutes, market_open_local, market_close_local, timezone
+          ) VALUES (?, ?, ?, ?, ?)`,
+    args: [startedBy, intervalMinutes, marketOpenLocal, marketCloseLocal, timezone],
+  });
+  return getIntradayMonitorSessionById(Number(result.lastInsertRowid));
+}
+
+export async function getIntradayMonitorSessionById(sessionId: number) {
+  const row = (await db.execute({
+    sql: `SELECT * FROM intraday_monitor_sessions WHERE id = ?`,
+    args: [sessionId],
+  })).rows[0] as any;
+  return normalizeIntradayMonitorSessionRow(row);
+}
+
+export async function getLatestRunningIntradayMonitorSession() {
+  const row = (await db.execute({
+    sql: `SELECT * FROM intraday_monitor_sessions WHERE status = 'running' ORDER BY id DESC LIMIT 1`,
+    args: [],
+  })).rows[0] as any;
+  return normalizeIntradayMonitorSessionRow(row);
+}
+
+export async function stopIntradayMonitorSession(
+  sessionId: number,
+  { status = "stopped", stopReason = null }: { status?: "stopped" | "crashed"; stopReason?: string | null } = {}
+) {
+  await db.execute({
+    sql: `UPDATE intraday_monitor_sessions
+          SET status = ?, stopped_at = datetime('now'), stop_reason = ?
+          WHERE id = ?`,
+    args: [status, stopReason, sessionId],
+  });
+  return getIntradayMonitorSessionById(sessionId);
+}
+
+export async function saveIntradayMonitorSnapshot({
+  sessionId = null,
+  snapshotAt,
+  marketState,
+  source = "scheduled",
+  cclRate = null,
+  vixValue = null,
+  vixChangePct = null,
+  vixRegime = null,
+  spyPriceUsd = null,
+  spyChangePct = null,
+  qqqPriceUsd = null,
+  qqqChangePct = null,
+  portfolioValueArs = null,
+  capitalAvailableArs = null,
+  totalValueArs = null,
+  trackedTickersCount = 0,
+  positionCount = 0,
+  notes = null,
+  tickerSnapshots = [],
+  events = [],
+}: {
+  sessionId?: number | null;
+  snapshotAt: string;
+  marketState: string;
+  source?: string;
+  cclRate?: number | null;
+  vixValue?: number | null;
+  vixChangePct?: number | null;
+  vixRegime?: string | null;
+  spyPriceUsd?: number | null;
+  spyChangePct?: number | null;
+  qqqPriceUsd?: number | null;
+  qqqChangePct?: number | null;
+  portfolioValueArs?: number | null;
+  capitalAvailableArs?: number | null;
+  totalValueArs?: number | null;
+  trackedTickersCount?: number;
+  positionCount?: number;
+  notes?: string | null;
+  tickerSnapshots?: Record<string, any>[];
+  events?: Record<string, any>[];
+}) {
+  const snapshotResult = await db.execute({
+    sql: `INSERT INTO intraday_monitor_snapshots (
+            session_id, snapshot_at, market_state, source, ccl_rate,
+            vix_value, vix_change_pct, vix_regime,
+            spy_price_usd, spy_change_pct, qqq_price_usd, qqq_change_pct,
+            portfolio_value_ars, capital_available_ars, total_value_ars,
+            tracked_tickers_count, position_count, event_count, notes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      sessionId, snapshotAt, marketState, source, cclRate,
+      vixValue, vixChangePct, vixRegime,
+      spyPriceUsd, spyChangePct, qqqPriceUsd, qqqChangePct,
+      portfolioValueArs, capitalAvailableArs, totalValueArs,
+      trackedTickersCount, positionCount, events.length, notes,
+    ] as DbScalar[],
+  });
+
+  const snapshotId = Number(snapshotResult.lastInsertRowid);
+  const ops: { sql: string; args?: DbScalar[] }[] = [];
+
+  for (const tickerSnapshot of tickerSnapshots.slice(0, 250)) {
+    ops.push({
+      sql: `INSERT INTO intraday_monitor_ticker_snapshots (
+              snapshot_id, ticker, shares, avg_cost_ars, price_usd, price_ars, byma_price_ars,
+              day_change_pct, pnl_pct, value_ars, position_weight_pct,
+              active_prediction_action, prediction_confidence, stop_loss_breach, take_profit_breach
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        snapshotId,
+        tickerSnapshot.ticker,
+        tickerSnapshot.shares ?? 0,
+        tickerSnapshot.avgCostArs ?? null,
+        tickerSnapshot.priceUsd ?? null,
+        tickerSnapshot.priceArs ?? null,
+        tickerSnapshot.bymaPriceArs ?? null,
+        tickerSnapshot.dayChangePct ?? null,
+        tickerSnapshot.pnlPct ?? null,
+        tickerSnapshot.valueArs ?? null,
+        tickerSnapshot.positionWeightPct ?? null,
+        tickerSnapshot.activePredictionAction ?? null,
+        tickerSnapshot.predictionConfidence ?? null,
+        tickerSnapshot.stopLossBreach ? 1 : 0,
+        tickerSnapshot.takeProfitBreach ? 1 : 0,
+      ] as DbScalar[],
+    });
+  }
+
+  for (const event of events.slice(0, 80)) {
+    ops.push({
+      sql: `INSERT OR IGNORE INTO intraday_monitor_events (
+              session_id, snapshot_id, event_key, event_type, severity, ticker, message, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        sessionId,
+        snapshotId,
+        event.eventKey || null,
+        event.eventType,
+        event.severity || "info",
+        event.ticker || null,
+        event.message,
+        event.payload ? JSON.stringify(event.payload) : null,
+      ] as DbScalar[],
+    });
+  }
+
+  if (ops.length > 0) {
+    await db.batch(ops, "write");
+  }
+
+  return getIntradayMonitorSnapshotById(snapshotId);
+}
+
+export async function getIntradayMonitorSnapshotById(snapshotId: number) {
+  const row = (await db.execute({
+    sql: `SELECT * FROM intraday_monitor_snapshots WHERE id = ?`,
+    args: [snapshotId],
+  })).rows[0] as any;
+  return normalizeIntradayMonitorSnapshotRow(row);
+}
+
+export async function getIntradayMonitorRecentSnapshots(limit = 20) {
+  const rows = (await db.execute({
+    sql: `SELECT * FROM intraday_monitor_snapshots ORDER BY snapshot_at DESC LIMIT ?`,
+    args: [limit],
+  })).rows as any[];
+  return rows.map(normalizeIntradayMonitorSnapshotRow);
+}
+
+export async function getIntradayMonitorTickerSnapshots(snapshotId: number, limit = 25) {
+  const rows = (await db.execute({
+    sql: `SELECT * FROM intraday_monitor_ticker_snapshots
+          WHERE snapshot_id = ?
+          ORDER BY value_ars DESC, ticker ASC
+          LIMIT ?`,
+    args: [snapshotId, limit],
+  })).rows as any[];
+  return rows.map(normalizeIntradayMonitorTickerSnapshotRow);
+}
+
+export async function getIntradayMonitorRecentEvents(limit = 50) {
+  const rows = (await db.execute({
+    sql: `SELECT * FROM intraday_monitor_events ORDER BY created_at DESC LIMIT ?`,
+    args: [limit],
+  })).rows as any[];
+  return rows.map(normalizeIntradayMonitorEventRow);
+}
+
+export async function getIntradayMonitorRecentSessions(limit = 10) {
+  const rows = (await db.execute({
+    sql: `SELECT * FROM intraday_monitor_sessions ORDER BY started_at DESC LIMIT ?`,
+    args: [limit],
+  })).rows as any[];
+  return rows.map(normalizeIntradayMonitorSessionRow);
 }
 
 // ============================================================

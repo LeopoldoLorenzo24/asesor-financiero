@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from "react";
+import { ShieldCheck, Zap, Radio } from "lucide-react";
 import { T, S } from "../theme";
 import { GlassCard, Skeleton, StatusMsg, SectionHeader, HeatBadge } from "../components/common";
 import api from "../api";
@@ -32,8 +33,8 @@ export default function TradingSignalsView({ signals, loading }) {
             width: 40, height: 40, borderRadius: 14,
             background: `linear-gradient(135deg, ${T.blue}, ${T.purple})`,
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 18, boxShadow: `0 4px 20px ${T.blue}30`,
-          }}>▲</div>
+            boxShadow: `0 4px 20px ${T.blue}30`,
+          }}><ShieldCheck size={18} color="#000" strokeWidth={2} /></div>
           <div>
             <div style={{ fontSize: 15, fontWeight: 800, color: T.text }}>Validar Trade</div>
             <div style={{ fontSize: 12, color: T.textDim, marginTop: 2 }}>Verificá si una operación cumple las reglas de riesgo antes de ejecutarla</div>
@@ -49,7 +50,7 @@ export default function TradingSignalsView({ signals, loading }) {
             <input value={validateAmount} onChange={(e) => setValidateAmount(e.target.value)} placeholder="50000" type="number" style={{ ...S.input, fontFamily: T.fontMono }} />
           </div>
           <button onClick={handleValidate} disabled={validating} style={{ ...S.btn("blue"), opacity: validating ? 0.7 : 1, display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 14 }}>◈</span> {validating ? "Validando..." : "Validar"}
+            <Zap size={14} /> {validating ? "Validando..." : "Validar"}
           </button>
         </div>
         {validateResult && (
@@ -69,7 +70,7 @@ export default function TradingSignalsView({ signals, loading }) {
           </div>
         ) : list.length === 0 ? (
           <div style={{ padding: 48, textAlign: "center", color: T.textDim }}>
-            <div style={{ fontSize: 32, marginBottom: 12, opacity: 0.3 }}>◎</div>
+            <Radio size={36} color={T.textDark} style={{ marginBottom: 12 }} />
             <div style={{ fontSize: 14, fontWeight: 600 }}>No hay señales activas</div>
             <div style={{ fontSize: 12, marginTop: 6 }}>Las señales se generan automáticamente según condiciones de mercado</div>
           </div>

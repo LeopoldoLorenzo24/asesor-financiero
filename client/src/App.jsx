@@ -2,6 +2,7 @@
 // CEDEAR ADVISOR v3 — Refactored
 // ============================================================
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { AlertTriangle } from "lucide-react";
 import api, { auth } from "./api";
 import { T, globalAnimations, gridBg } from "./theme";
 import { ConfirmModal, StatusMsg } from "./components/common";
@@ -23,9 +24,11 @@ import TradingSignalsView from "./views/TradingSignalsView";
 import RiskMetricsView from "./views/RiskMetricsView";
 import AdherenceView from "./views/AdherenceView";
 import ToastSystem, { showToast } from "./components/ToastSystem";
+import CommandPalette from "./components/CommandPalette";
 import SystemHealthView from "./views/SystemHealthView";
 import PortfolioEvolutionView from "./views/PortfolioEvolutionView";
 import InvestmentReadinessView from "./views/InvestmentReadinessView";
+import IntradayMonitorView from "./views/IntradayMonitorView";
 
 /* ─── RESPONSIVE STYLES ─── */
 const responsiveStyles = `
@@ -72,7 +75,7 @@ export class ErrorBoundary extends React.Component {
             display: "inline-flex", alignItems: "center", justifyContent: "center",
             marginBottom: 20,
           }}>
-            <span style={{ fontSize: 28 }}>⚠</span>
+            <AlertTriangle size={28} color={T.red} strokeWidth={1.8} />
           </div>
           <div style={{ fontWeight: 800, fontSize: 20, color: T.red, marginBottom: 10, letterSpacing: "-0.3px" }}>Algo salió mal</div>
           <div style={{ fontSize: 13, color: T.textMuted, marginBottom: 28, background: "rgba(255,51,102,0.05)", padding: "12px 16px", borderRadius: 12, border: "1px solid rgba(255,51,102,0.18)", textAlign: "left", wordBreak: "break-word", fontFamily: "monospace", lineHeight: 1.6 }}>
@@ -134,6 +137,8 @@ export default function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [systemHealth, setSystemHealth] = useState(null);
   const [systemReadiness, setSystemReadiness] = useState(null);
+  const [intradayMonitor, setIntradayMonitor] = useState(null);
+  const [intradayMonitorLoading, setIntradayMonitorLoading] = useState(false);
   const [portfolioEvolution, setPortfolioEvolution] = useState(null);
   const [evolutionDays, setEvolutionDays] = useState(180);
   const [trackRecord, setTrackRecord] = useState(null);
@@ -185,6 +190,10 @@ export default function App() {
   const loadAdherenceStats = useCallback(async () => { setAdherenceLoading(true); try { setAdherenceStats(await api.getAdherenceStats()); } catch (e) { console.error(e); } finally { setAdherenceLoading(false); } }, []);
   const loadSystemHealth = useCallback(async () => { try { setSystemHealth(await api.getSystemHealth()); } catch (e) { console.error(e); } }, []);
   const loadSystemReadiness = useCallback(async () => { try { setSystemReadiness(await api.getSystemReadiness()); } catch (e) { console.error(e); } }, []);
+  const loadIntradayMonitor = useCallback(async () => {
+    setIntradayMonitorLoading(true);
+    try { setIntradayMonitor(await api.getIntradayMonitorStatus()); } catch (e) { console.error(e); } finally { setIntradayMonitorLoading(false); }
+  }, []);
   const loadPortfolioEvolution = useCallback(async () => { try { setPortfolioEvolution(await api.getPortfolioEvolution(evolutionDays)); } catch (e) { console.error(e); } }, [evolutionDays]);
   const loadTrackRecord = useCallback(async () => { try { setTrackRecord(await api.getTrackRecord(trackRecordDays)); } catch (e) { console.error(e); } }, [trackRecordDays]);
   const loadPaperConfig = useCallback(async () => { try { setPaperConfig(await api.getPaperTradingConfig()); } catch (e) { console.error(e); } }, []);
@@ -207,10 +216,11 @@ export default function App() {
     if (view === "risk") loadRiskMetrics();
     if (view === "adherence") loadAdherenceStats();
     if (view === "health") { loadSystemHealth(); loadSystemReadiness(); }
+    if (view === "monitor") loadIntradayMonitor();
     if (view === "readiness") loadSystemReadiness();
     if (view === "evolution") loadPortfolioEvolution();
     if (view === "trackrecord") loadTrackRecord();
-  }, [view, loggedIn, loadTransactions, loadPortfolioDB, loadPredictions, loadPerformance, loadSessions, loadBenchmarks, loadCapitalHistory, loadVirtualPortfolio, loadVirtualRegret, loadPaperConfig, loadTradingSignals, loadRiskMetrics, loadAdherenceStats, loadSystemHealth, loadSystemReadiness, loadPortfolioEvolution, loadTrackRecord]);
+  }, [view, loggedIn, loadTransactions, loadPortfolioDB, loadPredictions, loadPerformance, loadSessions, loadBenchmarks, loadCapitalHistory, loadVirtualPortfolio, loadVirtualRegret, loadPaperConfig, loadTradingSignals, loadRiskMetrics, loadAdherenceStats, loadSystemHealth, loadSystemReadiness, loadIntradayMonitor, loadPortfolioEvolution, loadTrackRecord]);
   useEffect(() => {
     if (loggedIn && view === "dashboard" && portfolioDB.summary.length > 0 && !benchmarks) { loadBenchmarks(); loadCapitalHistory(); }
   }, [view, portfolioDB, loggedIn, benchmarks, loadBenchmarks, loadCapitalHistory]);
@@ -219,6 +229,11 @@ export default function App() {
       loadSystemReadiness();
     }
   }, [loggedIn, view, systemReadiness, loadSystemReadiness]);
+  useEffect(() => {
+    if (!loggedIn || view !== "monitor") return;
+    const interval = setInterval(loadIntradayMonitor, 20000);
+    return () => clearInterval(interval);
+  }, [loggedIn, view, loadIntradayMonitor]);
 
   // ── Toast alert polling ──
   useEffect(() => {
@@ -386,6 +401,7 @@ export default function App() {
   );
 
   const renderSystemHealth = () => <SystemHealthView health={systemHealth} readiness={systemReadiness} />;
+  const renderIntradayMonitor = () => <IntradayMonitorView data={intradayMonitor} loading={intradayMonitorLoading} onRefresh={loadIntradayMonitor} />;
   const renderReadiness = () => <InvestmentReadinessView readiness={systemReadiness} onRefresh={loadSystemReadiness} />;
   const renderEvolution = () => <PortfolioEvolutionView data={portfolioEvolution} days={evolutionDays} onDaysChange={setEvolutionDays} />;
   const renderTrackRecord = () => <TrackRecordView data={trackRecord} days={trackRecordDays} onDaysChange={setTrackRecordDays} />;
@@ -404,6 +420,7 @@ export default function App() {
     historial: renderHistory,
     performance: renderPerformance,
     health: renderSystemHealth,
+    monitor: renderIntradayMonitor,
     readiness: renderReadiness,
     evolution: renderEvolution,
     trackrecord: renderTrackRecord,
@@ -414,6 +431,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <ToastSystem />
+      <CommandPalette onNavigate={nav} ranking={ranking} />
       {showOnboarding && <Onboarding onComplete={() => setShowOnboarding(false)} />}
       <div style={{ minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.text, ...gridBg }}>
         <Header view={view} setView={nav} profile={profile} setProfile={setProfile} ccl={ccl} readiness={systemReadiness} />

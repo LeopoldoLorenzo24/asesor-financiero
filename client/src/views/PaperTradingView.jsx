@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { DollarSign, TrendingUp, TrendingDown, Layers, Banknote, RefreshCw, Trash2, ToggleLeft, ToggleRight } from "lucide-react";
+import { DollarSign, TrendingUp, TrendingDown, Layers, Banknote, RefreshCw, Trash2, ToggleLeft, ToggleRight, Zap, FlaskConical } from "lucide-react";
 import { T, S } from "../theme";
 import { GlassCard, MetricCard, SectionHeader, StatusMsg, AnimatedNumber, HeatBadge, PulseDot } from "../components/common";
 import api from "../api";
@@ -34,7 +34,7 @@ export default function PaperTradingView({ virtualPortfolio, virtualRegret, rank
         action={
           <div style={{ display: "flex", gap: 10 }}>
             <button onClick={handleSync} disabled={syncing} style={{ ...S.btn("primary"), opacity: syncing ? 0.7 : 1, display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 14 }}>◈</span> {syncing ? "Sincronizando..." : "Sincronizar con IA"}
+              <Zap size={14} /> {syncing ? "Sincronizando..." : "Sincronizar con IA"}
             </button>
             {onReset && <button onClick={onReset} style={{ ...S.btn("ghost") }}>Resetear</button>}
           </div>
@@ -88,7 +88,7 @@ export default function PaperTradingView({ virtualPortfolio, virtualRegret, rank
         </div>
         {positions.length === 0 ? (
           <div style={{ padding: 48, textAlign: "center", color: T.textDim }}>
-            <div style={{ fontSize: 32, marginBottom: 12, opacity: 0.3 }}>◊</div>
+            <FlaskConical size={36} color={T.textDark} style={{ marginBottom: 12 }} />
             <div style={{ fontSize: 14, fontWeight: 600 }}>No hay posiciones en el portfolio virtual</div>
             <div style={{ fontSize: 12, marginTop: 6 }}>Sincronizá con el análisis de IA para empezar</div>
           </div>
@@ -120,8 +120,8 @@ export default function PaperTradingView({ virtualPortfolio, virtualRegret, rank
                       <td style={S.td}><span style={{ fontWeight: 700, fontFamily: T.fontMono, color: T.text }}>${value.toLocaleString("es-AR")}</span></td>
                       <td style={{ ...S.td, fontFamily: T.fontMono, color: T.cyan }}>${(pos.dividendArs || 0).toLocaleString("es-AR")}</td>
                       <td style={S.td}>
-                        <span style={{ fontSize: 12, fontFamily: T.fontMono, fontWeight: 800, color: pnl >= 0 ? T.green : T.red, background: pnl >= 0 ? T.greenGlow : T.redGlow, padding: "3px 10px", borderRadius: 8 }}>
-                          {pnl >= 0 ? "▲" : "▼"} {Math.abs(pnl).toFixed(1)}%
+                        <span style={{ fontSize: 12, fontFamily: T.fontMono, fontWeight: 800, color: pnl >= 0 ? T.green : T.red, background: pnl >= 0 ? T.greenGlow : T.redGlow, padding: "3px 10px", borderRadius: 8, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          {pnl >= 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />} {Math.abs(pnl).toFixed(1)}%
                         </span>
                       </td>
                     </tr>

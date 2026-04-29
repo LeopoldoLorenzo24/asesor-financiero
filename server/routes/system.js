@@ -9,6 +9,13 @@ import { FLAGS } from "../featureFlags.js";
 import { getInvestmentReadiness } from "../investmentReadiness.js";
 import { authMiddleware } from "../auth.js";
 import { getGovernancePolicyAuditLog, saveGovernancePolicySelection } from "../database.js";
+import {
+  getIntradayMonitorStatusPayload,
+  runIntradayMonitorOnce,
+  startIntradayMonitor,
+  stopIntradayMonitor,
+} from "../intradayMonitor.js";
+import { updateIntradayMonitorSettings } from "../database.js";
 import CEDEARS from "../cedears.js";
 
 const router = Router();
@@ -232,6 +239,80 @@ router.post("/system/policies/apply", authMiddleware, async (req, res) => {
     });
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+router.get("/system/monitor/status", authMiddleware, async (req, res) => {
+  try {
+    res.json(await getIntradayMonitorStatusPayload());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/system/monitor/settings", authMiddleware, async (req, res) => {
+  try {
+    const statusBefore = await getIntradayMonitorStatusPayload();
+    const nextSettings = await updateIntradayMonitorSettings({
+      enabled: typeof req.body?.enabled === "boolean" ? req.body.enabled : undefined,
+      intervalMinutes: req.body?.intervalMinutes,
+      marketOpenLocal: req.body?.marketOpenLocal,
+      marketCloseLocal: req.body?.marketCloseLocal,
+      timezone: req.body?.timezone,
+    });
+
+    if (statusBefore.runtime.running && nextSettings.enabled) {
+      await stopIntradayMonitor({ reason: "settings_updated", disable: false });
+      await startIntradayMonitor({ startedBy: "settings_update", runImmediately: false, persistEnabled: false });
+    } else if (statusBefore.runtime.running && !nextSettings.enabled) {
+      await stopIntradayMonitor({ reason: "settings_disabled", disable: false });
+    }
+
+    res.json({
+      success: true,
+      settings: nextSettings,
+      status: await getIntradayMonitorStatusPayload(),
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/system/monitor/start", authMiddleware, async (req, res) => {
+  try {
+    const status = await startIntradayMonitor({
+      startedBy: req.user?.email || `user:${req.user?.userId || "unknown"}`,
+      runImmediately: req.body?.runImmediately !== false,
+      persistEnabled: true,
+    });
+    res.json({ success: true, ...status });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/system/monitor/stop", authMiddleware, async (req, res) => {
+  try {
+    const status = await stopIntradayMonitor({
+      reason: String(req.body?.reason || "user_stop"),
+      disable: req.body?.disable !== false,
+    });
+    res.json({ success: true, ...status });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/system/monitor/run-now", authMiddleware, async (req, res) => {
+  try {
+    const run = await runIntradayMonitorOnce({ source: "manual" });
+    res.json({
+      success: true,
+      run,
+      status: await getIntradayMonitorStatusPayload(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

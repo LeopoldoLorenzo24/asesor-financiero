@@ -215,6 +215,15 @@ export const api = {
   // ── System health & alerts ──
   getSystemHealth: () => request("/system/health"),
   getSystemReadiness: () => request("/system/readiness"),
+  getIntradayMonitorStatus: () => request("/system/monitor/status"),
+  updateIntradayMonitorSettings: (payload) =>
+    request("/system/monitor/settings", { method: "POST", body: JSON.stringify(payload || {}) }),
+  startIntradayMonitor: (runImmediately = true) =>
+    request("/system/monitor/start", { method: "POST", body: JSON.stringify({ runImmediately }) }),
+  stopIntradayMonitor: (reason = "user_stop", disable = true) =>
+    request("/system/monitor/stop", { method: "POST", body: JSON.stringify({ reason, disable }) }),
+  runIntradayMonitorNow: () =>
+    request("/system/monitor/run-now", { method: "POST", body: JSON.stringify({}) }),
   getPolicySettings: () => request("/system/policies"),
   previewPolicySettings: (overlayKey, deploymentMode) =>
     request("/system/policies/preview", { method: "POST", body: JSON.stringify({ overlayKey, deploymentMode }) }),

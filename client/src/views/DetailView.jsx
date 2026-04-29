@@ -1,4 +1,5 @@
 import React from "react";
+import { Search } from "lucide-react";
 import { T, S, signalColors } from "../theme";
 import { GlassCard, SectionHeader, ScoreBar, Skeleton, HeatBadge } from "../components/common";
 
@@ -6,7 +7,7 @@ export default function DetailView({ selectedTicker, detailLoading, detail, setS
   if (!selectedTicker) return (
     <div className="ca-main" style={{ padding: "28px", maxWidth: 1400, margin: "0 auto", animation: "fadeUp 0.5s ease" }}>
       <div style={{ textAlign: "center", padding: 60, color: T.textDim }}>
-        <div style={{ fontSize: 32, marginBottom: 12, opacity: 0.4 }}>◈</div>
+        <Search size={36} color={T.textDark} style={{ marginBottom: 12 }} />
         <div>Seleccioná un CEDEAR del ranking para ver el detalle.</div>
       </div>
     </div>

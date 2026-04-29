@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { FlaskConical, Play, Loader2, TrendingUp, TrendingDown } from "lucide-react";
 import { T, S } from "../theme";
 import { GlassCard, SectionHeader, MetricCard, Skeleton, StatusMsg } from "../components/common";
 
@@ -27,8 +28,11 @@ export default function BacktestView({
               <option value="moderate">Moderado</option>
               <option value="aggressive">Agresivo</option>
             </select>
-            <button onClick={runBacktestSim} disabled={backtestLoading} style={{ ...S.btn(), opacity: backtestLoading ? 0.6 : 1 }}>
-              {backtestLoading ? "Calculando..." : "▶ Correr Backtest"}
+            <button onClick={runBacktestSim} disabled={backtestLoading} style={{ ...S.btn("primary"), opacity: backtestLoading ? 0.6 : 1, display: "inline-flex", alignItems: "center", gap: 7 }}>
+              {backtestLoading
+                ? <><Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> Calculando...</>
+                : <><Play size={14} /> Correr Backtest</>
+              }
             </button>
           </div>
         }
@@ -137,7 +141,7 @@ export default function BacktestView({
           </div>
         ) : (
           <div style={{ textAlign: "center", padding: 60, color: T.textDim }}>
-            <div style={{ fontSize: 32, marginBottom: 12, opacity: 0.4 }}>◈</div>
+            <FlaskConical size={36} color={T.textDark} style={{ marginBottom: 12 }} />
             <div>Configurá los parámetros y corré el backtest para ver resultados.</div>
           </div>
         )}

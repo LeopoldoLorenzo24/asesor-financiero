@@ -43,6 +43,7 @@ import {
   runTrackRecordLog,
 } from "./jobs.js";
 import { initTelegramBot } from "./telegramBot.js";
+import { resumeIntradayMonitorIfEnabled, stopIntradayMonitor } from "./intradayMonitor.js";
 
 // ── Validate required environment variables ──
 function validateEnv() {
@@ -204,6 +205,7 @@ export async function startServer() {
   await seedIfEmpty();
   autoSeedHistoricalLessons().catch((err) => console.warn("[seed] No se pudo generar experiencia histórica:", err.message));
   initTelegramBot();
+  await resumeIntradayMonitorIfEnabled().catch((err) => console.warn("[intraday-monitor] No se pudo reanudar:", err.message));
 
   if (FLAGS.ENABLE_INTERNAL_SCHEDULER) {
     setTimeout(() => {
@@ -245,10 +247,12 @@ export async function startServer() {
 
   function shutdown(signal) {
     console.log(`[shutdown] Recibida señal ${signal}. Cerrando servidor...`);
-    server.close(() => {
+    stopIntradayMonitor({ reason: `process_${signal.toLowerCase()}`, disable: false }).catch(() => {}).finally(() => {
+      server.close(() => {
       console.log("[shutdown] Servidor HTTP cerrado. Limpiando intervals...");
       intervals.forEach(clearInterval);
       process.exit(0);
+    });
     });
   }
   process.on("SIGTERM", () => shutdown("SIGTERM"));

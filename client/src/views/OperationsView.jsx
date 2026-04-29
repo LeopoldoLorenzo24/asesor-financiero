@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
+import { LayoutList, TrendingUp, TrendingDown, DollarSign, RefreshCw, ArrowRight, XCircle, Layers, Download, Upload } from "lucide-react";
 import { T, S } from "../theme";
 import api from "../api";
 import { AnimatedNumber, GlassCard, MetricCard, SectionHeader, StatusMsg } from "../components/common";
@@ -245,8 +246,8 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
       </div>
 
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        <button onClick={api.exportPortfolio} style={{ ...S.btn("ghost"), fontSize: 11, padding: "8px 14px" }}>◆ Exportar Portfolio CSV</button>
-        <button onClick={api.exportTransactions} style={{ ...S.btn("ghost"), fontSize: 11, padding: "8px 14px" }}>◆ Exportar Transacciones CSV</button>
+        <button onClick={api.exportPortfolio} style={{ ...S.btn("ghost"), fontSize: 11, padding: "8px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}><Download size={12} /> Exportar Portfolio CSV</button>
+        <button onClick={api.exportTransactions} style={{ ...S.btn("ghost"), fontSize: 11, padding: "8px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}><Download size={12} /> Exportar Transacciones CSV</button>
       </div>
 
       <GlassCard glowColor={T.cyan} style={{ marginBottom: 28 }}>
@@ -319,8 +320,8 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
             onChange={handleCsvFile}
             style={{ display: "none" }}
           />
-          <button onClick={() => fileInputRef.current?.click()} style={S.btn("secondary")}>
-            ◈ Cargar CSV o Excel
+          <button onClick={() => fileInputRef.current?.click()} style={{ ...S.btn("secondary"), display: "inline-flex", alignItems: "center", gap: 7 }}>
+            <Upload size={14} /> Cargar CSV o Excel
           </button>
           <button
             onClick={() => {
@@ -383,11 +384,11 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
         {previewSummary && (
           <>
             <div style={{ ...S.grid(220), gap: 16, marginBottom: 20 }}>
-              <MetricCard label="Acciones" value={previewSummary.totalActions || 0} color={T.cyan} glowColor={T.cyan} icon="≋" />
-              <MetricCard label="Compras" value={previewSummary.buyActions || 0} color={T.green} glowColor={T.green} icon="▲" />
-              <MetricCard label="Ventas" value={previewSummary.sellActions || 0} color={T.red} glowColor={T.red} icon="▼" />
-              <MetricCard label="Bruto Compra" value={previewSummary.grossBuyArs || 0} prefix="$" color={T.blue} glowColor={T.blue} icon="$" />
-              <MetricCard label="Bruto Venta" value={previewSummary.grossSellArs || 0} prefix="$" color={T.yellow} glowColor={T.yellow} icon="$" />
+              <MetricCard label="Acciones" value={previewSummary.totalActions || 0} color={T.cyan} glowColor={T.cyan} icon={LayoutList} />
+              <MetricCard label="Compras" value={previewSummary.buyActions || 0} color={T.green} glowColor={T.green} icon={TrendingUp} />
+              <MetricCard label="Ventas" value={previewSummary.sellActions || 0} color={T.red} glowColor={T.red} icon={TrendingDown} />
+              <MetricCard label="Bruto Compra" value={previewSummary.grossBuyArs || 0} prefix="$" color={T.blue} glowColor={T.blue} icon={DollarSign} />
+              <MetricCard label="Bruto Venta" value={previewSummary.grossSellArs || 0} prefix="$" color={T.yellow} glowColor={T.yellow} icon={DollarSign} />
             </div>
 
             <div style={{ fontSize: 12, color: T.textDim, marginBottom: 14 }}>
@@ -473,12 +474,12 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
         {historySummary && (
           <>
             <div style={{ ...S.grid(220), gap: 16, marginBottom: 20 }}>
-              <MetricCard label="Trades Ledger" value={historySummary.tradeRows || 0} color={T.yellow} glowColor={T.yellow} icon="↺" />
-              <MetricCard label="Delta A Importar" value={historyCandidateSummary?.tradeRows || 0} color={T.cyan} glowColor={T.cyan} icon="⇢" />
-              <MetricCard label="Compras" value={historyCandidateSummary?.buyRows || 0} color={T.green} glowColor={T.green} icon="▲" />
-              <MetricCard label="Ventas" value={historyCandidateSummary?.sellRows || 0} color={T.red} glowColor={T.red} icon="▼" />
-              <MetricCard label="Ignoradas" value={historySummary.ignoredRows || 0} color={T.blue} glowColor={T.blue} icon="…" />
-              <MetricCard label="Posiciones Finales" value={historySummary.resultingPositions || 0} color={T.purple} glowColor={T.purple} icon="◈" />
+              <MetricCard label="Trades Ledger" value={historySummary.tradeRows || 0} color={T.yellow} glowColor={T.yellow} icon={RefreshCw} />
+              <MetricCard label="Delta A Importar" value={historyCandidateSummary?.tradeRows || 0} color={T.cyan} glowColor={T.cyan} icon={ArrowRight} />
+              <MetricCard label="Compras" value={historyCandidateSummary?.buyRows || 0} color={T.green} glowColor={T.green} icon={TrendingUp} />
+              <MetricCard label="Ventas" value={historyCandidateSummary?.sellRows || 0} color={T.red} glowColor={T.red} icon={TrendingDown} />
+              <MetricCard label="Ignoradas" value={historySummary.ignoredRows || 0} color={T.blue} glowColor={T.blue} icon={XCircle} />
+              <MetricCard label="Posiciones Finales" value={historySummary.resultingPositions || 0} color={T.purple} glowColor={T.purple} icon={Layers} />
             </div>
 
             <div style={{ fontSize: 12, color: T.textDim, marginBottom: 14, lineHeight: 1.7 }}>
@@ -650,8 +651,8 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
                         <span style={{ fontWeight: 700, fontFamily: T.fontMono, color: T.text }}>{formatMoney(value)}</span>
                       </td>
                       <td style={S.td}>
-                        <span style={{ fontSize: 12, fontFamily: T.fontMono, fontWeight: 800, color: pnl >= 0 ? T.green : T.red, background: pnl >= 0 ? T.greenGlow : T.redGlow, padding: "3px 10px", borderRadius: 8 }}>
-                          {pnl >= 0 ? "▲" : "▼"} {Math.abs(pnl).toFixed(1)}%
+                        <span style={{ fontSize: 12, fontFamily: T.fontMono, fontWeight: 800, color: pnl >= 0 ? T.green : T.red, background: pnl >= 0 ? T.greenGlow : T.redGlow, padding: "3px 10px", borderRadius: 8, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          {pnl >= 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />} {Math.abs(pnl).toFixed(1)}%
                         </span>
                       </td>
                     </tr>

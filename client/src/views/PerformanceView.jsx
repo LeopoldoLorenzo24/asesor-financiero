@@ -1,4 +1,5 @@
 import React from "react";
+import { Download } from "lucide-react";
 import { T, S } from "../theme";
 import api from "../api";
 import { GlassCard, SectionHeader, MetricCard, Skeleton } from "../components/common";
@@ -9,7 +10,7 @@ export default function PerformanceView({ performance }) {
       <SectionHeader
         title="Performance del Bot"
         action={
-          <button onClick={api.exportCapitalHistory} style={{ ...S.btn("ghost"), fontSize: 11, padding: "8px 14px" }}>◆ Exportar Capital CSV</button>
+          <button onClick={api.exportCapitalHistory} style={{ ...S.btn("ghost"), fontSize: 11, padding: "8px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}><Download size={12} /> Exportar Capital CSV</button>
         }
       />
 

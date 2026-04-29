@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Download, BarChart2, CheckCircle2 } from "lucide-react";
 import { T, S, signalColors } from "../theme";
 import api from "../api";
 import { GlassCard, SectionHeader, HeatBadge } from "../components/common";
@@ -20,12 +21,12 @@ export default function PredictionsView({ predictions, performance }) {
         )}
       />
 
-      <button onClick={api.exportPredictions} style={{ ...S.btn("ghost"), fontSize: 11, padding: "8px 14px", marginBottom: 16 }}>◆ Exportar Predicciones CSV</button>
+      <button onClick={api.exportPredictions} style={{ ...S.btn("ghost"), fontSize: 11, padding: "8px 14px", marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 6 }}><Download size={12} /> Exportar Predicciones CSV</button>
 
       <GlassCard style={{ padding: 0, overflow: "hidden" }}>
         {predictions.length === 0 ? (
           <div style={{ textAlign: "center", padding: 60, color: T.textDim }}>
-            <div style={{ fontSize: 32, marginBottom: 12, opacity: 0.4 }}>◈</div>
+            <BarChart2 size={36} color={T.textDark} style={{ marginBottom: 12 }} />
             <div>No hay predicciones registradas.</div>
           </div>
         ) : (
@@ -70,9 +71,9 @@ export default function PredictionsView({ predictions, performance }) {
                     <td style={S.td}>
                       {p.evaluated ? (
                         p.prediction_correct === 1 ? (
-                          <span style={{ color: T.green, fontWeight: 700 }}>◆ Acertó</span>
+                          <span style={{ color: T.green, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><CheckCircle2 size={12} /> Acertó</span>
                         ) : (
-                          <span style={{ color: T.red, fontWeight: 700 }}>◊ Falló</span>
+                          <span style={{ color: T.red, fontWeight: 700 }}>Falló</span>
                         )
                       ) : (
                         <span style={{ color: T.yellow }}>Pendiente</span>
