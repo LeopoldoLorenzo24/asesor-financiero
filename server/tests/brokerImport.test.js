@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseBrokerSnapshotCsv, parseBrokerImportPayload } from "../brokerImport.js";
+import { parseBrokerSnapshotCsv, parseBrokerImportPayload, parseBrokerAccountLedgerPayload } from "../brokerImport.js";
 
 test("parseBrokerSnapshotCsv soporta CSV con punto y coma, columnas en USD y coma decimal", () => {
   const csv = [
@@ -63,4 +63,28 @@ test("parseBrokerSnapshotCsv Bull Market puede derivar precio desde Total/Cantid
   assert.equal(rows.length, 1);
   assert.equal(rows[0].ticker, "GOOGL");
   assert.equal(rows[0].priceArs, 8620);
+});
+
+test("parseBrokerAccountLedgerPayload detecta trades Bull Market y reconstruye posiciones finales", () => {
+  const csv = [
+    "Liquida;Operado;Comprobante;Numero;Cantidad;Especie;Precio;Importe;Saldo;Referencia",
+    "10/02/2026;10/02/2026;COMPRA NORMAL;1;5,000000;SPY;51440,070000;-257200,35;756299,65;",
+    "10/02/2026;10/02/2026;COMPRA NORMAL;2;10,000000;MSFT;20867,958000;-208679,58;547620,07;",
+    "07/04/2026;07/04/2026;VENTA;3;-3,000000;MSFT;18277,546667;54832,64;970537,77;",
+    "07/04/2026;07/04/2026;COMPRA NORMAL;4;16,000000;SPY;49245,562500;-787929,00;198055,28;",
+    "28/04/2026;28/04/2026;ORDEN DE PAGO;5;0,000000;;0,000000;-104533,47;-104461,70;TRANSFERENCIA VIA MEP",
+  ].join("\n");
+
+  const parsed = parseBrokerAccountLedgerPayload({ csv, broker: "bull_market" });
+
+  assert.equal(parsed.summary.tradeRows, 4);
+  assert.equal(parsed.summary.ignoredRows, 1);
+  assert.equal(parsed.summary.buyRows, 3);
+  assert.equal(parsed.summary.sellRows, 1);
+  assert.equal(parsed.resultingPositions.length, 2);
+  assert.deepEqual(parsed.resultingPositions, [
+    { ticker: "MSFT", shares: 7, priceArs: 20867.96 },
+    { ticker: "SPY", shares: 21, priceArs: 49768.06 },
+  ]);
+  assert.equal(parsed.warnings.length, 0);
 });

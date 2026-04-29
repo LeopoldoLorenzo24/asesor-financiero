@@ -21,6 +21,15 @@ function actionColor(type) {
   return type === "BUY" ? T.green : T.red;
 }
 
+function isBlockingHistoricalWarning(warning, importMode) {
+  if (importMode === "delta_backfill") {
+    return !warning.includes("Solo se propondrán movimientos posteriores")
+      && !warning.includes("ledger no trae movimientos")
+      && !warning.includes("oversells sintéticos");
+  }
+  return true;
+}
+
 export default function OperationsView({ portfolioDB, ranking, transactions, onReconciled }) {
   const [broker, setBroker] = useState("bull_market");
   const [csvText, setCsvText] = useState("");
@@ -32,6 +41,10 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
   const [reconcileBusy, setReconcileBusy] = useState(false);
   const [reconcileError, setReconcileError] = useState(null);
   const [reconcileSuccess, setReconcileSuccess] = useState(null);
+  const [historyPreview, setHistoryPreview] = useState(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+  const [historySuccess, setHistorySuccess] = useState(null);
   const [auditLog, setAuditLog] = useState([]);
   const fileInputRef = useRef(null);
 
@@ -44,6 +57,15 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
   const totalPnl = totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : 0;
   const previewSummary = reconcilePreview?.reconciliation?.summary || null;
   const previewActions = reconcilePreview?.reconciliation?.actions || [];
+  const historySummary = historyPreview?.summary || null;
+  const historyEntries = historyPreview?.entries || [];
+  const historyCandidateEntries = historyPreview?.candidateEntries || [];
+  const historyCandidateSummary = historyPreview?.candidateSummary || historySummary;
+  const historyPositions = historyPreview?.resultingPositions || [];
+  const historyIgnoredRows = historyPreview?.ignoredRows || [];
+  const historyWarnings = historyPreview?.warnings || [];
+  const historyDbState = historyPreview?.dbState || null;
+  const historyImportMode = historyPreview?.importMode || "full_import";
 
   const hasReconciliationChanges = useMemo(
     () => (previewSummary?.totalActions || 0) > 0,
@@ -82,7 +104,9 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
       setCsvText(text);
       setSelectedFileName(file.name);
       setReconcilePreview(null);
+      setHistoryPreview(null);
       setReconcileError(null);
+      setHistoryError(null);
       setReconcileSuccess(`Archivo cargado: ${file.name}`);
     } catch (err) {
       setReconcileError(`No pude leer el archivo: ${err.message}`);
@@ -91,8 +115,11 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
 
   const clearImportState = () => {
     setReconcilePreview(null);
+    setHistoryPreview(null);
     setReconcileError(null);
+    setHistoryError(null);
     setReconcileSuccess(null);
+    setHistorySuccess(null);
   };
 
   const buildPayload = () => {
@@ -144,6 +171,51 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
       setReconcileError(err.message);
     } finally {
       setReconcileBusy(false);
+    }
+  };
+
+  const handlePreviewHistoricalImport = async () => {
+    setHistoryBusy(true);
+    setHistoryError(null);
+    setHistorySuccess(null);
+    try {
+      const preview = await api.previewHistoricalBrokerImport({
+        broker,
+        csv: csvText,
+        sourceName: selectedFileName || undefined,
+      });
+      setHistoryPreview(preview);
+      await loadAuditLog();
+      setHistorySuccess(
+        preview.importMode === "delta_backfill"
+          ? `Backfill listo: ${preview.candidateSummary?.tradeRows || 0} movimiento(s) nuevos posteriores a ${preview.dbState?.latestTransactionDate || "—"}.`
+          : `Histórico listo: ${preview.summary?.tradeRows || 0} trades detectados entre ${preview.summary?.firstTradeDate || "—"} y ${preview.summary?.lastTradeDate || "—"}.`
+      );
+    } catch (err) {
+      setHistoryError(err.message);
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const handleApplyHistoricalImport = async () => {
+    setHistoryBusy(true);
+    setHistoryError(null);
+    setHistorySuccess(null);
+    try {
+      const result = await api.applyHistoricalBrokerImport({
+        broker,
+        csv: csvText,
+        sourceName: selectedFileName || undefined,
+      });
+      setHistoryPreview((current) => current ? { ...current, dbState: { ...current.dbState, isClean: false, latestTransactionDate: result.summary?.lastTradeDate || current.dbState?.latestTransactionDate } } : current);
+      await loadAuditLog();
+      setHistorySuccess(`Histórico aplicado: ${result.imported?.transactionsImported || 0} transacciones importadas.`);
+      if (onReconciled) await onReconciled();
+    } catch (err) {
+      setHistoryError(err.message);
+    } finally {
+      setHistoryBusy(false);
     }
   };
 
@@ -361,6 +433,131 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
                     })}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </>
+        )}
+      </GlassCard>
+
+      <GlassCard glowColor={T.yellow} style={{ marginBottom: 28 }}>
+        <SectionHeader
+          title="Recuperación Histórica"
+          subtitle="Usá el Excel de Cuenta Corriente de Bull Market para reconstruir compras y ventas reales sobre una base nueva."
+        />
+
+        {historyError && <StatusMsg type="error">{historyError}</StatusMsg>}
+        {historySuccess && <StatusMsg type="success">{historySuccess}</StatusMsg>}
+
+        <div style={{ fontSize: 12, color: T.textDim, lineHeight: 1.7, marginBottom: 16 }}>
+          Este flujo es para <strong style={{ color: T.text }}>histórico transaccional</strong>, no para snapshot de tenencias.
+          Si la base ya tiene histórico, el sistema entra en modo <strong style={{ color: T.text }}>delta backfill</strong> y solo propone movimientos posteriores al último registro guardado.
+        </div>
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: historySummary ? 18 : 0 }}>
+          <button
+            onClick={handlePreviewHistoricalImport}
+            disabled={historyBusy}
+            style={{ ...S.btn("secondary"), opacity: historyBusy ? 0.7 : 1 }}
+          >
+            {historyBusy ? "Procesando..." : "Previsualizar Histórico"}
+          </button>
+          <button
+            onClick={handleApplyHistoricalImport}
+            disabled={historyBusy || !historyPreview || (historyCandidateSummary?.tradeRows || 0) === 0 || historyWarnings.some((warning) => isBlockingHistoricalWarning(warning, historyImportMode))}
+            style={{ ...S.btn("primary"), opacity: historyBusy || !historyPreview || (historyCandidateSummary?.tradeRows || 0) === 0 || historyWarnings.some((warning) => isBlockingHistoricalWarning(warning, historyImportMode)) ? 0.6 : 1 }}
+          >
+            Aplicar Histórico
+          </button>
+        </div>
+
+        {historySummary && (
+          <>
+            <div style={{ ...S.grid(220), gap: 16, marginBottom: 20 }}>
+              <MetricCard label="Trades Ledger" value={historySummary.tradeRows || 0} color={T.yellow} glowColor={T.yellow} icon="↺" />
+              <MetricCard label="Delta A Importar" value={historyCandidateSummary?.tradeRows || 0} color={T.cyan} glowColor={T.cyan} icon="⇢" />
+              <MetricCard label="Compras" value={historyCandidateSummary?.buyRows || 0} color={T.green} glowColor={T.green} icon="▲" />
+              <MetricCard label="Ventas" value={historyCandidateSummary?.sellRows || 0} color={T.red} glowColor={T.red} icon="▼" />
+              <MetricCard label="Ignoradas" value={historySummary.ignoredRows || 0} color={T.blue} glowColor={T.blue} icon="…" />
+              <MetricCard label="Posiciones Finales" value={historySummary.resultingPositions || 0} color={T.purple} glowColor={T.purple} icon="◈" />
+            </div>
+
+            <div style={{ fontSize: 12, color: T.textDim, marginBottom: 14, lineHeight: 1.7 }}>
+              Rango: <strong style={{ color: T.text }}>{historySummary.firstTradeDate || "—"}</strong>
+              {" → "}
+              <strong style={{ color: T.text }}>{historySummary.lastTradeDate || "—"}</strong>
+              {" · "}
+              Tickers operados: <strong style={{ color: T.text }}>{historySummary.tickersTraded}</strong>
+              {" · "}
+              Modo: <strong style={{ color: historyImportMode === "delta_backfill" ? T.yellow : T.green }}>{historyImportMode === "delta_backfill" ? "delta backfill" : "full import"}</strong>
+              {" · "}
+              Última tx DB: <strong style={{ color: T.text }}>{historyDbState?.latestTransactionDate || "—"}</strong>
+            </div>
+
+            {!historyDbState?.isClean && (
+              <div style={{ padding: 16, borderRadius: 14, background: `${T.yellow}08`, border: `1px solid ${T.yellow}18`, color: T.yellow, marginBottom: 16 }}>
+                La base actual ya tiene histórico. Se ofrecerán solo movimientos posteriores a {historyDbState?.latestTransactionDate || "la última fecha disponible"}.
+              </div>
+            )}
+
+            {historyWarnings.length > 0 && (
+              <div style={{ padding: 16, borderRadius: 14, background: `${T.yellow}08`, border: `1px solid ${T.yellow}18`, color: T.yellow, marginBottom: 16 }}>
+                {historyWarnings[0]}
+              </div>
+            )}
+
+            <div style={{ display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
+              <div style={{ overflowX: "auto" }}>
+                <div style={{ ...S.label, marginBottom: 8 }}>Trades Detectados</div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={S.th}>Fecha</th>
+                      <th style={S.th}>Tipo</th>
+                      <th style={S.th}>Ticker</th>
+                      <th style={S.th}>Cant.</th>
+                      <th style={S.th}>Precio</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historyCandidateEntries.slice(0, 20).map((entry) => (
+                      <tr key={`${entry.sourceRow}-${entry.ticker}-${entry.type}`}>
+                        <td style={{ ...S.td, fontFamily: T.fontMono }}>{entry.executedAt}</td>
+                        <td style={S.td}><span style={{ ...S.badge(entry.type === "BUY" ? T.green : T.red), fontSize: 9 }}>{entry.type}</span></td>
+                        <td style={{ ...S.td, fontFamily: T.fontMono }}>{entry.ticker}</td>
+                        <td style={{ ...S.td, fontFamily: T.fontMono }}>{entry.shares}</td>
+                        <td style={{ ...S.td, fontFamily: T.fontMono }}>{formatMoney(entry.priceArs)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <div style={{ ...S.label, marginBottom: 8 }}>Posiciones Resultantes</div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={S.th}>Ticker</th>
+                      <th style={S.th}>Cantidad</th>
+                      <th style={S.th}>Costo Prom.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historyPositions.map((position) => (
+                      <tr key={position.ticker}>
+                        <td style={{ ...S.td, fontFamily: T.fontMono }}>{position.ticker}</td>
+                        <td style={{ ...S.td, fontFamily: T.fontMono }}>{position.shares}</td>
+                        <td style={{ ...S.td, fontFamily: T.fontMono }}>{formatMoney(position.priceArs)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {historyIgnoredRows.length > 0 && (
+              <div style={{ fontSize: 12, color: T.textDim, marginTop: 14 }}>
+                Se ignoraron {historyIgnoredRows.length} filas no operativas, como transferencias, créditos y otros movimientos de caja.
               </div>
             )}
           </>

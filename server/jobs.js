@@ -26,6 +26,10 @@ import CEDEARS from "./cedears.js";
 
 // ── AUTO SEED ──
 export async function seedIfEmpty() {
+  if (!FLAGS.ENABLE_BOOTSTRAP_SEED) {
+    console.log("[seed] ENABLE_BOOTSTRAP_SEED=false. No se seedeará portfolio sintético.");
+    return;
+  }
   const summary = await getPortfolioSummary();
   if (summary.length > 0) return;
   console.log("⚡ DB vacía — seeding portfolio inicial...");
@@ -51,6 +55,10 @@ export async function seedIfEmpty() {
 }
 
 export async function autoSeedHistoricalLessons() {
+  if (!FLAGS.ENABLE_SYNTHETIC_HISTORY_SEED) {
+    console.log("[seed] ENABLE_SYNTHETIC_HISTORY_SEED=false. No se generará historial sintético.");
+    return null;
+  }
   const existing = await getPostMortems(50);
   if (existing.some((pm) => pm.month_label?.includes("Histórico"))) {
     console.log("[seed] Experiencia histórica ya existe, saltando.");
@@ -562,4 +570,14 @@ export async function runTrackRecordLog() {
   } catch (err) {
     console.error("[track-record] Error:", err.message);
   }
+}
+
+export async function runDailyMaintenanceCycle() {
+  await runAutoEvaluation();
+  await runDailyCapitalLog();
+  await runStopLossCheck();
+  await runTakeProfitCheck();
+  await runMonthlyPostMortem();
+  await runMLPipeline();
+  await runTrackRecordLog();
 }

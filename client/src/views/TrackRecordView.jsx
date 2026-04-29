@@ -1,4 +1,5 @@
 import React from "react";
+import { TrendingUp, TrendingDown, BarChart2, Activity, LineChart, DollarSign } from "lucide-react";
 import { T, S } from "../theme";
 import { GlassCard, MetricCard, SectionHeader, AnimatedNumber, Skeleton } from "../components/common";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar } from "recharts";
@@ -47,12 +48,12 @@ export default function TrackRecordView({ data, days, onDaysChange }) {
 
       {metrics && (
         <div style={{ ...S.grid(220), gap: 14, marginBottom: 28 }}>
-          <MetricCard label="Alpha vs SPY" value={metrics.alphaPct} suffix="%" decimals={2} color={metrics.alphaPct >= 0 ? T.green : T.red} glowColor={metrics.alphaPct >= 0 ? T.green : T.red} icon="A" />
-          <MetricCard label="Sharpe Ratio" value={metrics.sharpeRatio} decimals={2} color={metrics.sharpeRatio >= 1 ? T.green : metrics.sharpeRatio >= 0.75 ? T.yellow : T.red} glowColor={metrics.sharpeRatio >= 1 ? T.green : T.yellow} icon="S" />
-          <MetricCard label="Max Drawdown" value={metrics.maxDrawdownPct} suffix="%" decimals={2} color={Math.abs(metrics.maxDrawdownPct) <= 15 ? T.green : Math.abs(metrics.maxDrawdownPct) <= 20 ? T.yellow : T.red} glowColor={Math.abs(metrics.maxDrawdownPct) <= 15 ? T.green : T.red} icon="D" />
-          <MetricCard label="Win Rate vs SPY" value={metrics.winRateVsSpyPct} suffix="%" decimals={1} color={metrics.winRateVsSpyPct >= 60 ? T.green : metrics.winRateVsSpyPct >= 55 ? T.yellow : T.red} glowColor={metrics.winRateVsSpyPct >= 60 ? T.green : T.yellow} icon="W" />
-          <MetricCard label="Volatilidad Anual" value={metrics.volatilityAnnualPct} suffix="%" decimals={2} color={T.text} glowColor={T.blue} icon="V" />
-          <MetricCard label="Retorno Virtual" value={metrics.virtualReturnPct} suffix="%" decimals={2} color={metrics.virtualReturnPct >= 0 ? T.green : T.red} glowColor={metrics.virtualReturnPct >= 0 ? T.green : T.red} icon="R" />
+          <MetricCard label="Alpha vs SPY" value={metrics.alphaPct} suffix="%" decimals={2} color={metrics.alphaPct >= 0 ? T.green : T.red} glowColor={metrics.alphaPct >= 0 ? T.green : T.red} icon={metrics.alphaPct >= 0 ? TrendingUp : TrendingDown} />
+          <MetricCard label="Sharpe Ratio" value={metrics.sharpeRatio} decimals={2} color={metrics.sharpeRatio >= 1 ? T.green : metrics.sharpeRatio >= 0.75 ? T.yellow : T.red} glowColor={metrics.sharpeRatio >= 1 ? T.green : T.yellow} icon={BarChart2} />
+          <MetricCard label="Max Drawdown" value={metrics.maxDrawdownPct} suffix="%" decimals={2} color={Math.abs(metrics.maxDrawdownPct) <= 15 ? T.green : Math.abs(metrics.maxDrawdownPct) <= 20 ? T.yellow : T.red} glowColor={Math.abs(metrics.maxDrawdownPct) <= 15 ? T.green : T.red} icon={TrendingDown} />
+          <MetricCard label="Win Rate vs SPY" value={metrics.winRateVsSpyPct} suffix="%" decimals={1} color={metrics.winRateVsSpyPct >= 60 ? T.green : metrics.winRateVsSpyPct >= 55 ? T.yellow : T.red} glowColor={metrics.winRateVsSpyPct >= 60 ? T.green : T.yellow} icon={Activity} />
+          <MetricCard label="Volatilidad Anual" value={metrics.volatilityAnnualPct} suffix="%" decimals={2} color={T.text} glowColor={T.blue} icon={LineChart} />
+          <MetricCard label="Retorno Virtual" value={metrics.virtualReturnPct} suffix="%" decimals={2} color={metrics.virtualReturnPct >= 0 ? T.green : T.red} glowColor={metrics.virtualReturnPct >= 0 ? T.green : T.red} icon={DollarSign} />
         </div>
       )}
 

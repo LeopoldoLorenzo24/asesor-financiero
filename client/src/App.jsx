@@ -29,29 +29,28 @@ import InvestmentReadinessView from "./views/InvestmentReadinessView";
 
 /* ─── RESPONSIVE STYLES ─── */
 const responsiveStyles = `
-  @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-  @media (max-width: 1024px) {
-    .ca-header { padding: 10px 16px !important; }
-    .ca-main { padding: 20px 16px !important; }
-    .ca-nav button { padding: 7px 10px !important; font-size: 10px !important; }
+  .ca-main-content { margin-left: 232px; }
+  @media (max-width: 900px) {
+    .ca-main-content { margin-left: 0 !important; }
   }
   @media (max-width: 768px) {
-    .ca-header { flex-direction: column !important; align-items: stretch !important; gap: 10px !important; padding: 10px 12px !important; }
-    .ca-header-brand { justify-content: center !important; }
-    .ca-nav { justify-content: center !important; overflow-x: auto !important; flex-wrap: nowrap !important; }
-    .ca-nav button { white-space: nowrap !important; padding: 7px 10px !important; font-size: 10px !important; }
-    .ca-main { padding: 14px 10px !important; }
-    .ca-stat-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 10px !important; }
-    .ca-stat-grid > div { padding: 16px !important; }
-    .ca-picks-grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) !important; gap: 10px !important; }
-    .ca-table-wrap table { font-size: 11px !important; }
-    .ca-table-wrap th, .ca-table-wrap td { padding: 8px 6px !important; }
+    .ca-stat-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 12px !important; }
+    .ca-stat-grid > div { padding: 18px !important; }
+    .ca-picks-grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) !important; gap: 12px !important; }
+    .ca-table-wrap table { font-size: 12px !important; }
+    .ca-table-wrap th, .ca-table-wrap td { padding: 9px 8px !important; }
     .ca-pie-wrap { flex-direction: column !important; }
-    .ca-ops-summary { grid-template-columns: 1fr !important; gap: 10px !important; }
+    .ca-ops-summary { grid-template-columns: 1fr !important; gap: 12px !important; }
   }
   @media (max-width: 480px) {
     .ca-stat-grid { grid-template-columns: 1fr !important; }
     .ca-picks-grid { grid-template-columns: 1fr 1fr !important; }
+  }
+  .ca-hide-mobile {
+    display: table-cell;
+  }
+  @media (max-width: 900px) {
+    .ca-hide-mobile { display: none !important; }
   }
 `;
 
@@ -66,13 +65,20 @@ export class ErrorBoundary extends React.Component {
     if (!this.state.hasError) return this.props.children;
     return (
       <div style={{ minHeight: "100vh", background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <div style={{ maxWidth: 480, textAlign: "center" }}>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>⚠</div>
-          <div style={{ fontWeight: 800, fontSize: 20, color: T.red, marginBottom: 8 }}>Algo salió mal</div>
-          <div style={{ fontSize: 13, color: T.textMuted, marginBottom: 24, fontFamily: "monospace", background: "rgba(239,68,68,0.06)", padding: "12px 16px", borderRadius: 10, border: "1px solid rgba(239,68,68,0.2)", textAlign: "left", wordBreak: "break-word" }}>
+        <div style={{ maxWidth: 460, textAlign: "center", animation: "fadeUp 0.4s ease" }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: 18,
+            background: "rgba(255,51,102,0.1)", border: "1px solid rgba(255,51,102,0.25)",
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            marginBottom: 20,
+          }}>
+            <span style={{ fontSize: 28 }}>⚠</span>
+          </div>
+          <div style={{ fontWeight: 800, fontSize: 20, color: T.red, marginBottom: 10, letterSpacing: "-0.3px" }}>Algo salió mal</div>
+          <div style={{ fontSize: 13, color: T.textMuted, marginBottom: 28, background: "rgba(255,51,102,0.05)", padding: "12px 16px", borderRadius: 12, border: "1px solid rgba(255,51,102,0.18)", textAlign: "left", wordBreak: "break-word", fontFamily: "monospace", lineHeight: 1.6 }}>
             {this.state.error?.message || "Error desconocido"}
           </div>
-          <button onClick={() => this.setState({ hasError: false, error: null })} style={{ background: "rgba(239,68,68,0.15)", color: T.red, border: "1px solid rgba(239,68,68,0.4)", borderRadius: 10, padding: "10px 24px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Reintentar</button>
+          <button onClick={() => this.setState({ hasError: false, error: null })} style={{ background: "rgba(255,51,102,0.12)", color: T.red, border: "1px solid rgba(255,51,102,0.35)", borderRadius: 12, padding: "11px 28px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: T.font, transition: "all 0.2s" }}>Reintentar</button>
         </div>
       </div>
     );
@@ -411,13 +417,13 @@ export default function App() {
       {showOnboarding && <Onboarding onComplete={() => setShowOnboarding(false)} />}
       <div style={{ minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.text, ...gridBg }}>
         <Header view={view} setView={nav} profile={profile} setProfile={setProfile} ccl={ccl} readiness={systemReadiness} />
-        <main style={{ marginLeft: 220, marginTop: 64, minHeight: "calc(100vh - 64px)" }}>
+        <main className="ca-main-content" style={{ marginTop: 64, minHeight: "calc(100vh - 64px)" }}>
           {error && (
-            <div style={{ padding: "20px 32px", maxWidth: 1400 }}>
+            <div style={{ padding: "20px 32px", maxWidth: 1440 }}>
               <StatusMsg type="error">{error}</StatusMsg>
             </div>
           )}
-          <div style={{ animation: "fadeUp 0.5s ease" }}>
+          <div key={view} style={{ animation: "fadeUp 0.35s cubic-bezier(0.4,0,0.2,1)" }}>
             {selectedTicker && view === "ranking" ? renderDetail() : (views[view] || renderDashboard)()}
           </div>
         </main>

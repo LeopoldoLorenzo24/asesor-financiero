@@ -205,17 +205,21 @@ export async function startServer() {
   autoSeedHistoricalLessons().catch((err) => console.warn("[seed] No se pudo generar experiencia histórica:", err.message));
   initTelegramBot();
 
-  setTimeout(() => {
-    runAutoEvaluation();
-    runDailyCapitalLog();
-    runStopLossCheck();
-    runTakeProfitCheck();
-    runMonthlyPostMortem();
-    runMLPipeline();
-    runTrackRecordLog();
-  }, DB_CONFIG.serverSettleDelayMs);
+  if (FLAGS.ENABLE_INTERNAL_SCHEDULER) {
+    setTimeout(() => {
+      runAutoEvaluation();
+      runDailyCapitalLog();
+      runStopLossCheck();
+      runTakeProfitCheck();
+      runMonthlyPostMortem();
+      runMLPipeline();
+      runTrackRecordLog();
+    }, DB_CONFIG.serverSettleDelayMs);
+  } else {
+    console.log("[scheduler] ENABLE_INTERNAL_SCHEDULER=false. El proceso web no ejecutará jobs periódicos.");
+  }
 
-  const intervals = [
+  const intervals = FLAGS.ENABLE_INTERNAL_SCHEDULER ? [
     setInterval(runAutoEvaluation, DB_CONFIG.autoEvalIntervalMs),
     setInterval(runStopLossCheck, DB_CONFIG.stopLossCheckIntervalMs),
     setInterval(runTakeProfitCheck, DB_CONFIG.stopLossCheckIntervalMs),
@@ -223,6 +227,8 @@ export async function startServer() {
     setInterval(runMonthlyPostMortem, 24 * 60 * 60 * 1000), // check once a day
     setInterval(runMLPipeline, 24 * 60 * 60 * 1000), // collect ML data daily
     setInterval(runTrackRecordLog, 24 * 60 * 60 * 1000), // track record daily
+    setInterval(() => cleanExpiredRateLimits(60 * 60 * 1000).catch(() => {}), DB_CONFIG.cleanRateLimitIntervalMs),
+  ] : [
     setInterval(() => cleanExpiredRateLimits(60 * 60 * 1000).catch(() => {}), DB_CONFIG.cleanRateLimitIntervalMs),
   ];
 

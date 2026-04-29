@@ -9,3 +9,35 @@ services:
         value: "22"
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: ENABLE_BOOTSTRAP_SEED
+        value: "false"
+      - key: ENABLE_SYNTHETIC_HISTORY_SEED
+        value: "false"
+      - key: ENABLE_INTERNAL_SCHEDULER
+        value: "false"
+      - key: TURSO_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+
+  - type: cron
+    name: cedear-advisor-daily-maintenance
+    runtime: node
+    buildCommand: npm run install:all
+    schedule: "20 3 * * *"
+    startCommand: npm --prefix server run daily:maintenance
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ENABLE_BOOTSTRAP_SEED
+        value: "false"
+      - key: ENABLE_SYNTHETIC_HISTORY_SEED
+        value: "false"
+      - key: ENABLE_INTERNAL_SCHEDULER
+        value: "false"
+      - key: TURSO_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false

@@ -17,6 +17,15 @@ function bool(envKey, defaultVal = false) {
 }
 
 export const FLAGS = {
+  /** Si true, permite seedear un portfolio sintético cuando la DB está vacía. */
+  ENABLE_BOOTSTRAP_SEED: bool("ENABLE_BOOTSTRAP_SEED", false),
+
+  /** Si true, genera experiencia histórica sintética a partir de backtests. */
+  ENABLE_SYNTHETIC_HISTORY_SEED: bool("ENABLE_SYNTHETIC_HISTORY_SEED", false),
+
+  /** Si true, el proceso web mantiene jobs periódicos con setInterval. */
+  ENABLE_INTERNAL_SCHEDULER: bool("ENABLE_INTERNAL_SCHEDULER", true),
+
   /** Si true, el análisis falla cuando enforceAnalysisConsistency hace correcciones. */
   STRICT_CONSISTENCY: bool("STRICT_CONSISTENCY", false),
 

@@ -55,6 +55,23 @@ const BROKER_IMPORT_CONFIG = {
   },
 };
 
+const BROKER_LEDGER_CONFIG = {
+  bull_market: {
+    aliases: {
+      settlementDate: ["liquida", "liquidacion", "liquidación"],
+      tradeDate: ["operado", "fecha operada", "fecha"],
+      voucherType: ["comprobante", "tipo", "movimiento"],
+      voucherNumber: ["numero", "número"],
+      shares: ["cantidad"],
+      ticker: ["especie", "ticker", "simbolo", "símbolo"],
+      priceArs: ["precio"],
+      amountArs: ["importe", "monto"],
+      balanceArs: ["saldo"],
+      reference: ["referencia", "detalle", "concepto"],
+    },
+  },
+};
+
 function stripBom(value) {
   return String(value || "").replace(/^\uFEFF/, "");
 }
@@ -65,6 +82,10 @@ function normalizeHeader(value) {
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase();
+}
+
+function normalizeText(value) {
+  return normalizeHeader(String(value || "").replace(/\./g, " "));
 }
 
 function splitCsvLine(line, separator) {
@@ -144,6 +165,14 @@ function normalizeBrokerKey(value) {
   return BROKER_IMPORT_CONFIG[raw] ? raw : DEFAULT_BROKER;
 }
 
+function normalizeLedgerBrokerKey(value) {
+  const raw = String(value || DEFAULT_BROKER)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  return BROKER_LEDGER_CONFIG[raw] ? raw : "bull_market";
+}
+
 function extractTickerFromProduct(value) {
   const text = String(value || "").toUpperCase();
   if (!text) return null;
@@ -168,6 +197,126 @@ function resolvePriceArs({ priceArs, priceUsd, totalArs, shares, cclRate }) {
     return Math.round(priceUsd * Number(cclRate) * 100) / 100;
   }
   return null;
+}
+
+function parseSpreadsheetDate(value) {
+  if (value == null || value === "") return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const serial = Number(raw);
+  if (Number.isFinite(serial) && serial > 20000 && serial < 100000) {
+    const utcMillis = Math.round((serial - 25569) * 86400 * 1000);
+    return new Date(utcMillis).toISOString().slice(0, 10);
+  }
+
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (isoMatch) return raw;
+
+  const slashMatch = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(raw);
+  if (slashMatch) {
+    const [, dd, mm, yyyy] = slashMatch;
+    return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
+  }
+
+  return null;
+}
+
+function getLedgerAliases(broker) {
+  const brokerKey = normalizeLedgerBrokerKey(broker);
+  return BROKER_LEDGER_CONFIG[brokerKey]?.aliases || BROKER_LEDGER_CONFIG.bull_market.aliases;
+}
+
+function classifyLedgerMovement(voucherType, reference) {
+  const voucher = normalizeText(voucherType);
+  const ref = normalizeText(reference);
+
+  if (voucher.includes("compra")) return "BUY";
+  if (voucher === "venta" || voucher.includes("venta")) return "SELL";
+  if (voucher.includes("divid") || ref.includes("divid")) return "DIVIDEND";
+  if (ref.includes("credito cta cte")) return "CASH_IN";
+  if (ref.includes("transferencia via mep")) return "CASH_OUT";
+  if (voucher.includes("recibo de cobro")) return "CASH_IN";
+  if (voucher.includes("orden de pago")) return "CASH_OUT";
+  return "OTHER";
+}
+
+function replayHistoricalEntries(entries) {
+  const sortedEntries = [...entries].sort((a, b) => {
+    const dateCompare = String(a.executedAt).localeCompare(String(b.executedAt));
+    if (dateCompare !== 0) return dateCompare;
+    return (a.sourceRow || 0) - (b.sourceRow || 0);
+  });
+
+  const lotsByTicker = new Map();
+  const warnings = [];
+
+  for (const entry of sortedEntries) {
+    const lots = lotsByTicker.get(entry.ticker) || [];
+    if (entry.type === "BUY") {
+      lots.push({
+        ticker: entry.ticker,
+        shares: entry.shares,
+        priceArs: entry.priceArs,
+        executedAt: entry.executedAt,
+        notes: entry.notes,
+      });
+      lotsByTicker.set(entry.ticker, lots);
+      continue;
+    }
+
+    if (entry.type !== "SELL") continue;
+
+    let remaining = entry.shares;
+    while (remaining > 0 && lots.length > 0) {
+      const lot = lots[0];
+      if (lot.shares <= remaining) {
+        remaining -= lot.shares;
+        lots.shift();
+      } else {
+        lot.shares -= remaining;
+        remaining = 0;
+      }
+    }
+
+    if (remaining > 0) {
+      warnings.push(`Fila ${entry.sourceRow}: venta de ${entry.ticker} excede las compras históricas por ${remaining} CEDEARs.`);
+    }
+
+    if (lots.length > 0) {
+      lotsByTicker.set(entry.ticker, lots);
+    } else {
+      lotsByTicker.delete(entry.ticker);
+    }
+  }
+
+  const resultingPositions = Array.from(lotsByTicker.entries())
+    .map(([ticker, lots]) => {
+      const totalShares = lots.reduce((sum, lot) => sum + lot.shares, 0);
+      const totalCost = lots.reduce((sum, lot) => sum + lot.shares * lot.priceArs, 0);
+      return {
+        ticker,
+        shares: totalShares,
+        priceArs: totalShares > 0 ? Math.round((totalCost / totalShares) * 100) / 100 : 0,
+      };
+    })
+    .filter((position) => position.shares > 0)
+    .sort((a, b) => a.ticker.localeCompare(b.ticker));
+
+  const remainingLots = Array.from(lotsByTicker.values())
+    .flat()
+    .filter((lot) => lot.shares > 0)
+    .sort((a, b) => {
+      const tickerCompare = a.ticker.localeCompare(b.ticker);
+      if (tickerCompare !== 0) return tickerCompare;
+      return String(a.executedAt).localeCompare(String(b.executedAt));
+    });
+
+  return { sortedEntries, resultingPositions, remainingLots, warnings };
 }
 
 function normalizeImportedPosition(position, index, cclRate) {
@@ -285,4 +434,142 @@ export function parseBrokerImportPayload({ positions, csv, cclRate = null, broke
     return parseBrokerSnapshotCsv(csv, cclRate, broker);
   }
   throw new Error("Debes enviar positions[] o csv para reconciliar la cartera del broker.");
+}
+
+export function parseBrokerAccountLedgerPayload({ csv, broker = "bull_market" }) {
+  if (typeof csv !== "string" || !csv.trim()) {
+    throw new Error("Debes enviar el CSV/Excel convertido de Cuenta Corriente para importar el histórico.");
+  }
+
+  const lines = stripBom(csv)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    throw new Error("Archivo histórico inválido: no hay suficientes filas.");
+  }
+
+  const separator = detectSeparator(lines[0]);
+  const headers = splitCsvLine(lines[0], separator);
+  const aliases = getLedgerAliases(broker);
+  const rows = lines.slice(1).map((line) => {
+    const values = splitCsvLine(line, separator);
+    return headers.reduce((acc, header, index) => {
+      acc[header] = values[index] ?? "";
+      return acc;
+    }, {});
+  });
+
+  const entries = [];
+  const ignoredRows = [];
+
+  rows.forEach((row, index) => {
+    const sourceRow = index + 2;
+    const voucherType = pickValue(row, aliases.voucherType);
+    const reference = pickValue(row, aliases.reference);
+    const movementType = classifyLedgerMovement(voucherType, reference);
+    const tickerRaw = pickValue(row, aliases.ticker);
+    const ticker = String(tickerRaw || "").trim().toUpperCase();
+    const sharesRaw = parseLocaleNumber(pickValue(row, aliases.shares));
+    const priceArs = parseLocaleNumber(pickValue(row, aliases.priceArs));
+    const amountArs = parseLocaleNumber(pickValue(row, aliases.amountArs));
+    const executedAt =
+      parseSpreadsheetDate(pickValue(row, aliases.tradeDate)) ||
+      parseSpreadsheetDate(pickValue(row, aliases.settlementDate));
+
+    if (!executedAt) {
+      ignoredRows.push({
+        sourceRow,
+        reason: "date_missing",
+        movementType,
+        voucherType,
+        reference,
+      });
+      return;
+    }
+
+    if (movementType !== "BUY" && movementType !== "SELL") {
+      ignoredRows.push({
+        sourceRow,
+        reason: "non_trade_movement",
+        movementType,
+        voucherType,
+        reference,
+        amountArs,
+      });
+      return;
+    }
+
+    if (!ticker || !TICKER_SET.has(ticker)) {
+      ignoredRows.push({
+        sourceRow,
+        reason: "ticker_outside_universe",
+        movementType,
+        ticker,
+        voucherType,
+      });
+      return;
+    }
+
+    const shares = Math.abs(Number(sharesRaw || 0));
+    if (!Number.isFinite(shares) || shares <= 0) {
+      ignoredRows.push({
+        sourceRow,
+        reason: "invalid_shares",
+        movementType,
+        ticker,
+        voucherType,
+      });
+      return;
+    }
+
+    if (!Number.isFinite(Number(priceArs)) || Number(priceArs) <= 0) {
+      ignoredRows.push({
+        sourceRow,
+        reason: "invalid_price",
+        movementType,
+        ticker,
+        voucherType,
+      });
+      return;
+    }
+
+    entries.push({
+      ticker,
+      type: movementType,
+      shares,
+      priceArs: Number(priceArs),
+      totalArs: amountArs != null ? Math.abs(Number(amountArs)) : Math.round(shares * Number(priceArs) * 100) / 100,
+      executedAt,
+      sourceRow,
+      voucherType: String(voucherType || ""),
+      voucherNumber: String(pickValue(row, aliases.voucherNumber) || ""),
+      notes: [String(voucherType || "").trim(), String(reference || "").trim()].filter(Boolean).join(" · "),
+    });
+  });
+
+  const { sortedEntries, resultingPositions, remainingLots, warnings } = replayHistoricalEntries(entries);
+  const buyEntries = sortedEntries.filter((entry) => entry.type === "BUY");
+  const sellEntries = sortedEntries.filter((entry) => entry.type === "SELL");
+
+  return {
+    entries: sortedEntries,
+    ignoredRows,
+    resultingPositions,
+    remainingLots,
+    warnings,
+    summary: {
+      tradeRows: sortedEntries.length,
+      ignoredRows: ignoredRows.length,
+      buyRows: buyEntries.length,
+      sellRows: sellEntries.length,
+      tickersTraded: new Set(sortedEntries.map((entry) => entry.ticker)).size,
+      resultingPositions: resultingPositions.length,
+      grossBuyArs: Math.round(buyEntries.reduce((sum, entry) => sum + entry.totalArs, 0) * 100) / 100,
+      grossSellArs: Math.round(sellEntries.reduce((sum, entry) => sum + entry.totalArs, 0) * 100) / 100,
+      firstTradeDate: sortedEntries[0]?.executedAt || null,
+      lastTradeDate: sortedEntries[sortedEntries.length - 1]?.executedAt || null,
+    },
+  };
 }

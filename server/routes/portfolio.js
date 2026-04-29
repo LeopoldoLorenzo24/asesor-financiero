@@ -2,11 +2,12 @@ import { Router } from "express";
 import {
   getPortfolio, getPortfolioSummary, addPosition, sellPosition, syncPortfolio, resetPortfolio, deletePosition,
   getTransactions, autoUpdateAdherenceFromTransaction, previewPortfolioSync, logBrokerImportAudit, getBrokerImportAuditLogs,
+  getHistoricalImportDbState, applyHistoricalBrokerLedgerEntries,
 } from "../database.js";
 import { fetchCCL, fetchQuote } from "../marketData.js";
 import { checkTradeRisk } from "../riskManager.js";
 import { toFiniteNumber } from "../utils.js";
-import { parseBrokerImportPayload } from "../brokerImport.js";
+import { parseBrokerImportPayload, parseBrokerAccountLedgerPayload } from "../brokerImport.js";
 import CEDEARS from "../cedears.js";
 
 const router = Router();
@@ -29,6 +30,28 @@ function inferBrokerSourceType(sourceName, hasPositionsPayload) {
   if (lowerName.endsWith(".xlsx")) return "xlsx";
   if (lowerName.endsWith(".xls")) return "xls";
   return "csv";
+}
+
+function inferHistoricalSourceType(sourceName) {
+  const lowerName = String(sourceName || "").toLowerCase();
+  if (lowerName.endsWith(".xlsx")) return "ledger_xlsx";
+  if (lowerName.endsWith(".xls")) return "ledger_xls";
+  return "ledger_csv";
+}
+
+function buildHistoricalImportSummary(entries) {
+  const buyEntries = entries.filter((entry) => entry.type === "BUY");
+  const sellEntries = entries.filter((entry) => entry.type === "SELL");
+  return {
+    tradeRows: entries.length,
+    buyRows: buyEntries.length,
+    sellRows: sellEntries.length,
+    tickersTraded: new Set(entries.map((entry) => entry.ticker)).size,
+    grossBuyArs: Math.round(buyEntries.reduce((sum, entry) => sum + entry.totalArs, 0) * 100) / 100,
+    grossSellArs: Math.round(sellEntries.reduce((sum, entry) => sum + entry.totalArs, 0) * 100) / 100,
+    firstTradeDate: entries[0]?.executedAt || null,
+    lastTradeDate: entries[entries.length - 1]?.executedAt || null,
+  };
 }
 
 router.get("/db", async (req, res) => {
@@ -222,6 +245,128 @@ router.get("/reconcile/audit", async (req, res) => {
     res.json(await getBrokerImportAuditLogs(userId, limit));
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/history/preview", async (req, res) => {
+  try {
+    const broker = String(req.body.broker || "bull_market").trim();
+    const userId = req.user?.userId ?? null;
+    const sourceName = String(req.body.sourceName || "").trim() || null;
+    const sourceType = inferHistoricalSourceType(sourceName);
+    const parsed = parseBrokerAccountLedgerPayload({
+      csv: req.body.csv,
+      broker,
+    });
+    const dbState = await getHistoricalImportDbState();
+    const importMode = dbState.isClean ? "full_import" : "delta_backfill";
+    const candidateEntries = dbState.isClean
+      ? parsed.entries
+      : parsed.entries.filter((entry) => String(entry.executedAt) > String(dbState.latestTransactionDate || ""));
+    const modeWarnings = [];
+    if (!dbState.isClean) {
+      modeWarnings.push(`La base ya tiene histórico hasta ${dbState.latestTransactionDate || "fecha desconocida"}. Solo se propondrán movimientos posteriores a esa fecha.`);
+      if (parsed.warnings.length > 0) {
+        modeWarnings.push("El ledger parcial puede mostrar oversells sintéticos porque las compras previas ya viven en la base. En modo delta eso no bloquea.");
+      }
+    }
+    if (!dbState.isClean && candidateEntries.length === 0) {
+      modeWarnings.push("El ledger no trae movimientos posteriores al último registro existente.");
+    }
+    const candidateSummary = buildHistoricalImportSummary(candidateEntries);
+    const auditLog = await logBrokerImportAudit({
+      userId,
+      brokerKey: broker,
+      sourceType,
+      sourceName,
+      snapshotDate: parsed.summary.lastTradeDate,
+      cclRate: null,
+      rawInput: typeof req.body.csv === "string" ? req.body.csv : null,
+      importedPositions: parsed.resultingPositions,
+      reconciliation: {
+        mode: importMode,
+        summary: candidateSummary,
+        warnings: [...parsed.warnings, ...modeWarnings],
+        dbState,
+      },
+      applied: false,
+      appliedTransactionCount: 0,
+    });
+    res.json({
+      success: true,
+      broker,
+      sourceType,
+      sourceName,
+      dbState,
+      importMode,
+      candidateEntries,
+      candidateSummary,
+      auditLog,
+      ...parsed,
+      warnings: [...parsed.warnings, ...modeWarnings],
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/history/apply", async (req, res) => {
+  try {
+    const broker = String(req.body.broker || "bull_market").trim();
+    const userId = req.user?.userId ?? null;
+    const sourceName = String(req.body.sourceName || "").trim() || null;
+    const sourceType = inferHistoricalSourceType(sourceName);
+    const parsed = parseBrokerAccountLedgerPayload({
+      csv: req.body.csv,
+      broker,
+    });
+    const dbState = await getHistoricalImportDbState();
+    const importMode = dbState.isClean ? "full_import" : "delta_backfill";
+    const candidateEntries = dbState.isClean
+      ? parsed.entries
+      : parsed.entries.filter((entry) => String(entry.executedAt) > String(dbState.latestTransactionDate || ""));
+    const candidateSummary = buildHistoricalImportSummary(candidateEntries);
+
+    if (dbState.isClean && parsed.warnings.length > 0) {
+      return res.status(400).json({ error: `El histórico tiene inconsistencias y no se puede aplicar: ${parsed.warnings[0]}` });
+    }
+    if (candidateEntries.length === 0) {
+      return res.status(400).json({ error: "El ledger no tiene movimientos nuevos para importar sobre la base actual." });
+    }
+    const imported = await applyHistoricalBrokerLedgerEntries(candidateEntries, {
+      sourceLabel: sourceName || `histórico ${broker}`,
+      requireClean: dbState.isClean,
+    });
+    const auditLog = await logBrokerImportAudit({
+      userId,
+      brokerKey: broker,
+      sourceType,
+      sourceName,
+      snapshotDate: parsed.summary.lastTradeDate,
+      cclRate: null,
+      rawInput: typeof req.body.csv === "string" ? req.body.csv : null,
+      importedPositions: parsed.resultingPositions,
+      reconciliation: {
+        mode: importMode,
+        summary: candidateSummary,
+        warnings: parsed.warnings,
+      },
+      applied: true,
+      appliedTransactionCount: imported.transactionsImported,
+    });
+    res.json({
+      success: true,
+      broker,
+      sourceType,
+      sourceName,
+      imported,
+      importMode,
+      auditLog,
+      summary: candidateSummary,
+      resultingPositions: parsed.resultingPositions,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

@@ -249,6 +249,40 @@ async function runMigrations() {
   }
 }
 
+async function ensureTrackRecordSchema() {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS track_record (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL UNIQUE,
+      virtual_value_ars REAL,
+      real_value_ars REAL,
+      spy_value_ars REAL,
+      capital_ars REAL,
+      ccl_rate REAL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  const columns = (await db.execute("PRAGMA table_info(track_record)")).rows
+    .map((row) => String((row as any).name || ""));
+  const existing = new Set(columns);
+
+  const requiredColumns: Array<{ name: string; sql: string }> = [
+    { name: "virtual_dividends_ars", sql: "ALTER TABLE track_record ADD COLUMN virtual_dividends_ars REAL DEFAULT 0" },
+    { name: "virtual_total_ars", sql: "ALTER TABLE track_record ADD COLUMN virtual_total_ars REAL DEFAULT 0" },
+    { name: "alpha_vs_spy_pct", sql: "ALTER TABLE track_record ADD COLUMN alpha_vs_spy_pct REAL" },
+    { name: "drawdown_from_peak_pct", sql: "ALTER TABLE track_record ADD COLUMN drawdown_from_peak_pct REAL" },
+    { name: "daily_return_pct", sql: "ALTER TABLE track_record ADD COLUMN daily_return_pct REAL" },
+    { name: "spy_daily_return_pct", sql: "ALTER TABLE track_record ADD COLUMN spy_daily_return_pct REAL" },
+    { name: "rolling_sharpe", sql: "ALTER TABLE track_record ADD COLUMN rolling_sharpe REAL" },
+  ];
+
+  for (const column of requiredColumns) {
+    if (existing.has(column.name)) continue;
+    await db.execute(column.sql);
+  }
+}
+
 export async function initDb() {
   if (dbUrl.startsWith("file:")) {
     await db.execute("PRAGMA journal_mode = WAL");
@@ -497,6 +531,7 @@ export async function initDb() {
   `);
 
   await runMigrations();
+  await ensureTrackRecordSchema();
 }
 
 // ============================================================
@@ -775,6 +810,162 @@ export async function syncPortfolio(
 
   if (ops.length > 0) await db.batch(ops, "write");
   return created;
+}
+
+export async function getHistoricalImportDbState() {
+  const [portfolioLotsRow, transactionsRow, capitalHistoryRow, trackRecordRow, latestTxRow] = (
+    await db.batch([
+      "SELECT COUNT(*) AS count FROM portfolio",
+      "SELECT COUNT(*) AS count FROM transactions",
+      "SELECT COUNT(*) AS count FROM capital_history",
+      "SELECT COUNT(*) AS count FROM track_record",
+      "SELECT MAX(date_executed) AS latest_transaction_date FROM transactions",
+    ], "read")
+  );
+
+  const portfolioLots = Number((portfolioLotsRow.rows?.[0] as any)?.count || 0);
+  const transactions = Number((transactionsRow.rows?.[0] as any)?.count || 0);
+  const capitalHistory = Number((capitalHistoryRow.rows?.[0] as any)?.count || 0);
+  const trackRecord = Number((trackRecordRow.rows?.[0] as any)?.count || 0);
+  const latestTransactionDate = String((latestTxRow.rows?.[0] as any)?.latest_transaction_date || "") || null;
+
+  return {
+    portfolioLots,
+    transactions,
+    capitalHistory,
+    trackRecord,
+    latestTransactionDate,
+    isClean: portfolioLots === 0 && transactions === 0,
+  };
+}
+
+export async function applyHistoricalBrokerLedgerEntries(
+  entries: Array<{
+    ticker: string;
+    type: "BUY" | "SELL";
+    shares: number;
+    priceArs: number;
+    totalArs: number;
+    executedAt: string;
+    notes?: string;
+  }>,
+  options: { sourceLabel?: string; requireClean?: boolean } = {}
+) {
+  const dbState = await getHistoricalImportDbState();
+  if (options.requireClean && !dbState.isClean) {
+    throw new Error("La importación histórica solo se puede aplicar sobre una base limpia de portfolio/transacciones.");
+  }
+  const startingClean = dbState.isClean;
+
+  const sourceLabel = String(options.sourceLabel || "import histórico broker").trim();
+  const existingLots = (
+    await db.execute("SELECT id, ticker, shares, avg_price_ars, date_bought FROM portfolio ORDER BY ticker, date_bought ASC, id ASC")
+  ).rows as unknown as { id: number; ticker: string; shares: number; avg_price_ars: number; date_bought: string }[];
+  const lotsByTicker = new Map<string, Array<{ id: number; shares: number; priceArs: number; dateBought: string }>>();
+
+  for (const lot of existingLots) {
+    const ticker = String(lot.ticker).toUpperCase();
+    if (!lotsByTicker.has(ticker)) lotsByTicker.set(ticker, []);
+    lotsByTicker.get(ticker).push({
+      id: Number(lot.id),
+      shares: Number(lot.shares),
+      priceArs: Number(lot.avg_price_ars),
+      dateBought: String(lot.date_bought || ""),
+    });
+  }
+
+  const sortedEntries = [...entries].sort((a, b) => {
+    const dateCompare = String(a.executedAt).localeCompare(String(b.executedAt));
+    if (dateCompare !== 0) return dateCompare;
+    return a.ticker.localeCompare(b.ticker);
+  });
+
+  const ops: any[] = [];
+
+  for (const entry of sortedEntries) {
+    const notes = [sourceLabel, entry.notes].filter(Boolean).join(" · ");
+    if (entry.type === "BUY") {
+      if (!startingClean) {
+        ops.push({
+          sql: `INSERT INTO portfolio (
+            ticker, shares, avg_price_ars, date_bought, notes
+          ) VALUES (?, ?, ?, ?, ?)`,
+          args: [entry.ticker, entry.shares, entry.priceArs, entry.executedAt, notes],
+        });
+      }
+      ops.push({
+        sql: `INSERT INTO transactions (
+          ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, date_executed, notes
+        ) VALUES (?, 'BUY', ?, ?, NULL, NULL, ?, ?, ?)`,
+        args: [entry.ticker, entry.shares, entry.priceArs, entry.totalArs, entry.executedAt, notes],
+      });
+
+      if (!lotsByTicker.has(entry.ticker)) lotsByTicker.set(entry.ticker, []);
+      lotsByTicker.get(entry.ticker).push({
+        id: 0,
+        shares: entry.shares,
+        priceArs: entry.priceArs,
+        dateBought: entry.executedAt,
+      });
+      continue;
+    }
+
+    const lots = lotsByTicker.get(entry.ticker) || [];
+    const availableShares = lots.reduce((sum, lot) => sum + lot.shares, 0);
+    if (availableShares < entry.shares) {
+      throw new Error(`La venta histórica de ${entry.ticker} por ${entry.shares} excede la posición disponible (${availableShares}).`);
+    }
+
+    let remaining = entry.shares;
+    while (remaining > 0 && lots.length > 0) {
+      const lot = lots[0];
+      if (lot.shares <= remaining) {
+        if (!startingClean && lot.id > 0) {
+          ops.push({ sql: "DELETE FROM portfolio WHERE id = ?", args: [lot.id] });
+        }
+        remaining -= lot.shares;
+        lots.shift();
+      } else {
+        lot.shares -= remaining;
+        if (!startingClean && lot.id > 0) {
+          ops.push({
+            sql: "UPDATE portfolio SET shares = ?, updated_at = datetime('now') WHERE id = ?",
+            args: [lot.shares, lot.id],
+          });
+        }
+        remaining = 0;
+      }
+    }
+
+    ops.push({
+      sql: `INSERT INTO transactions (
+        ticker, type, shares, price_ars, price_usd, ccl_rate, total_ars, date_executed, notes
+      ) VALUES (?, 'SELL', ?, ?, NULL, NULL, ?, ?, ?)`,
+      args: [entry.ticker, entry.shares, entry.priceArs, entry.totalArs, entry.executedAt, notes],
+    });
+  }
+
+  if (startingClean) {
+    for (const [ticker, lots] of lotsByTicker.entries()) {
+      for (const lot of lots) {
+        if (lot.shares <= 0) continue;
+        ops.push({
+          sql: `INSERT INTO portfolio (
+            ticker, shares, avg_price_ars, date_bought, notes
+          ) VALUES (?, ?, ?, ?, ?)`,
+          args: [ticker, lot.shares, lot.priceArs, lot.dateBought, sourceLabel],
+        });
+      }
+    }
+  }
+
+  if (ops.length > 0) {
+    await db.batch(ops, "write");
+  }
+
+  return {
+    transactionsImported: sortedEntries.length,
+  };
 }
 
 // ============================================================

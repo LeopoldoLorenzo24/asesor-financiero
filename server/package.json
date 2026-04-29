@@ -10,6 +10,7 @@
     "test": "node --import ./tests/setup-env.js --import tsx --test --test-concurrency=1 tests/*.test.js tests/**/*.test.js",
     "test:watch": "node --import ./tests/setup-env.js --import tsx --test --test-concurrency=1 --watch tests/*.test.js",
     "smoke": "node --import tsx scripts/smoke.js",
+    "daily:maintenance": "node --import tsx scripts/run-daily-maintenance.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

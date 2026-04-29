@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from "react";
+import { DollarSign, TrendingUp, TrendingDown, Layers, Banknote, RefreshCw, Trash2, ToggleLeft, ToggleRight } from "lucide-react";
 import { T, S } from "../theme";
 import { GlassCard, MetricCard, SectionHeader, StatusMsg, AnimatedNumber, HeatBadge, PulseDot } from "../components/common";
 import api from "../api";
@@ -63,10 +64,10 @@ export default function PaperTradingView({ virtualPortfolio, virtualRegret, rank
       {msg && <StatusMsg type={msg.type}>{msg.text}</StatusMsg>}
 
       <div style={{ ...S.grid(260), gap: 16, marginBottom: 28 }}>
-        <MetricCard label="Valor Total" value={totalValue} prefix="$" color={T.text} glowColor={T.blue} icon="◆" />
-        <MetricCard label="P&L Total" value={totalPnl} suffix="%" decimals={2} color={totalPnl >= 0 ? T.green : T.red} glowColor={totalPnl >= 0 ? T.green : T.red} icon="▲" />
-        <MetricCard label="Posiciones" value={positions.length} color={T.text} glowColor={T.purple} icon="◈" />
-        <MetricCard label="Dividendos Est." value={virtualPortfolio?.summary?.totalDividends || 0} prefix="$" color={T.cyan} glowColor={T.cyan} icon="⟐" />
+        <MetricCard label="Valor Total" value={totalValue} prefix="$" color={T.text} glowColor={T.blue} icon={DollarSign} />
+        <MetricCard label="P&L Total" value={totalPnl} suffix="%" decimals={2} color={totalPnl >= 0 ? T.green : T.red} glowColor={totalPnl >= 0 ? T.green : T.red} icon={totalPnl >= 0 ? TrendingUp : TrendingDown} />
+        <MetricCard label="Posiciones" value={positions.length} color={T.text} glowColor={T.purple} icon={Layers} />
+        <MetricCard label="Dividendos Est." value={virtualPortfolio?.summary?.totalDividends || 0} prefix="$" color={T.cyan} glowColor={T.cyan} icon={Banknote} />
       </div>
 
       <GlassCard style={{ marginBottom: 20, borderColor: `${T.blue}25`, background: `${T.blue}06` }}>

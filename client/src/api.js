@@ -146,6 +146,16 @@ export const api = {
     }),
   getBrokerReconciliationAudit: (limit = 10) =>
     request(`/portfolio/reconcile/audit?limit=${encodeURIComponent(limit)}`),
+  previewHistoricalBrokerImport: ({ broker, csv, sourceName }) =>
+    request("/portfolio/history/preview", {
+      method: "POST",
+      body: JSON.stringify({ broker, csv, sourceName }),
+    }),
+  applyHistoricalBrokerImport: ({ broker, csv, sourceName }) =>
+    request("/portfolio/history/apply", {
+      method: "POST",
+      body: JSON.stringify({ broker, csv, sourceName }),
+    }),
 
   getTransactions: (ticker = null, limit = 50) =>
     request(`/transactions?${new URLSearchParams({ ...(ticker && { ticker }), limit })}`),
