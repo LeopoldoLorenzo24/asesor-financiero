@@ -190,9 +190,9 @@ export function MetricCard({ label, value, prefix = "", suffix = "", decimals = 
             display: "flex", alignItems: "center", justifyContent: "center",
             flexShrink: 0,
           }}>
-            {typeof Icon === "function"
-              ? <Icon size={15} color={accentColor} strokeWidth={2} />
-              : <span style={{ fontSize: 12, color: accentColor, fontFamily: T.fontMono, fontWeight: 700 }}>{Icon}</span>
+            {typeof Icon === "string"
+              ? <span style={{ fontSize: 12, color: accentColor, fontFamily: T.fontMono, fontWeight: 700 }}>{Icon}</span>
+              : <Icon size={15} color={accentColor} strokeWidth={2} />
             }
           </div>
         )}
