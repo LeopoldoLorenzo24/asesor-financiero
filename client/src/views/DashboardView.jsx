@@ -7,7 +7,7 @@ import {
 import { T, S, signalColors } from "../theme";
 import {
   GlassCard, MetricCard, ScoreBar, Skeleton, StatusMsg,
-  SectionHeader, Sparkline, HeatBadge, AnimatedNumber,
+  SectionHeader, Sparkline, HeatBadge, AnimatedNumber, BlockerList,
 } from "../components/common";
 import Tooltip, { InfoBadge } from "../components/Tooltip";
 import WelcomeView from "./WelcomeView";
@@ -195,12 +195,7 @@ function ReadinessBanner({ readiness, readinessColor }) {
         <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>
           {readiness?.capitalPolicy?.summary || readiness?.summary || "Evaluando readiness..."}
         </div>
-        {(readiness?.blockers || []).length > 0 && (
-          <div style={{ marginTop: 6, fontSize: 11, color: T.textDim }}>
-            <AlertTriangle size={10} style={{ verticalAlign: "middle", marginRight: 4 }} />
-            {readiness.blockers.join(" · ")}
-          </div>
-        )}
+        <BlockerList blockers={readiness?.blockers} />
       </div>
       <div style={{ textAlign: "right", minWidth: 80, flexShrink: 0 }}>
         <div style={{ fontSize: 10, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 4 }}>Score</div>

@@ -624,6 +624,25 @@ export function StatusMsg({ type, children }) {
   );
 }
 
+// ── Blocker list (readiness blockers) ──
+export function BlockerList({ blockers }) {
+  if (!blockers?.length) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+      {blockers.map((text, i) => {
+        const isCritical = /demasiado alto|fallido|no es convincente|requerido|insuficiente|muy altos|no supera todavía/i.test(text);
+        const color = isCritical ? T.red : T.yellow;
+        return (
+          <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12, color, lineHeight: 1.5 }}>
+            <AlertTriangle size={12} color={color} strokeWidth={2} style={{ flexShrink: 0, marginTop: 2 }} />
+            <span>{text}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Pie chart label (recharts) ──
 export const PieLabel = ({ cx, cy, midAngle, outerRadius, name, percent }) => {
   if (percent < 0.04) return null;

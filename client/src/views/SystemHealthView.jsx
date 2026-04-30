@@ -1,6 +1,6 @@
 import React from "react";
 import { T, S } from "../theme";
-import { GlassCard, MetricCard, PulseDot, ScoreBar, SectionHeader, Skeleton, StatusMsg } from "../components/common";
+import {   GlassCard, MetricCard, PulseDot, ScoreBar, SectionHeader, Skeleton, StatusMsg, BlockerList } from "../components/common";
 
 function timeAgo(dateStr) {
   if (!dateStr) return "—";
@@ -33,7 +33,8 @@ export default function SystemHealthView({ health, readiness }) {
 
       {readiness?.mode === "paper_only" && (
         <StatusMsg type="error">
-          {`Readiness en paper_only. Blockers: ${(readiness.blockers || []).join(" | ") || "sin detalle"}`}
+          <div>Readiness en <strong>paper_only</strong></div>
+          <BlockerList blockers={readiness.blockers} />
         </StatusMsg>
       )}
 

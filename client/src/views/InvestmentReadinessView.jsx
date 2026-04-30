@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ShieldCheck, Brain, Trophy, TrendingUp, Activity, CalendarCheck, FileCheck, CheckCircle, Gauge, Target, CheckCircle2, XCircle, AlertTriangle, Lock, Unlock } from "lucide-react";
 import { T, S } from "../theme";
-import { GlassCard, MetricCard, PulseDot, ScoreBar, SectionHeader, Skeleton, StatusMsg } from "../components/common";
+import {   GlassCard, MetricCard, PulseDot, ScoreBar, SectionHeader, Skeleton, StatusMsg, BlockerList } from "../components/common";
 import api, { auth } from "../api";
 
 function pct(value, digits = 2) {
@@ -401,7 +401,8 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
 
       {blockers.length > 0 && (
         <StatusMsg type="error">
-          {`Blockers activos: ${blockers.join(" | ")}`}
+          <div style={{ marginBottom: 6 }}>Blockers activos</div>
+          <BlockerList blockers={blockers} />
         </StatusMsg>
       )}
 
