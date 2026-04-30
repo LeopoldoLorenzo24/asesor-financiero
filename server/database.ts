@@ -318,7 +318,15 @@ async function runMigrations() {
   for (const migration of sortedMigrations) {
     if (applied.has(migration.version)) continue;
     try {
-      await db.execute(migration.sql);
+      const hasMultiple = migration.sql.trim().replace(/\s+/g, " ").includes("; CREATE") ||
+        migration.sql.trim().replace(/\s+/g, " ").includes("; INSERT") ||
+        migration.sql.trim().replace(/\s+/g, " ").includes("; ALTER") ||
+        migration.sql.trim().replace(/\s+/g, " ").includes("; CREATE INDEX");
+      if (hasMultiple) {
+        await db.executeMultiple(migration.sql);
+      } else {
+        await db.execute(migration.sql);
+      }
       await db.execute({
         sql: "INSERT INTO _migrations (version, name) VALUES (?, ?)",
         args: [migration.version, migration.name],
