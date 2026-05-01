@@ -11,7 +11,7 @@ import {
   getPredictions, evaluatePredictionsForTicker, getCapitalHistory,
   savePostMortem, getPostMortems, getLatestLessons,
   getVirtualPortfolioSummary, resetVirtualPortfolio, addVirtualPosition,
-  getPaperTradingConfig, saveTrackRecord,
+  getPaperTradingConfig, saveTrackRecord, getTrackRecord,
 } from "./database.js";
 import { fetchQuote, fetchAllQuotes, fetchBymaPrices, fetchCCL, fetchHistory } from "./marketData.js";
 import { calcPriceARS, safeJsonParse } from "./utils.js";
@@ -514,22 +514,29 @@ export async function runTrackRecordLog() {
       const previous = await getTrackRecord(2);
       if (previous.length >= 2) {
         const prev = previous[previous.length - 2];
-        const prevVirtual = (prev.virtual_total_ars || prev.virtual_value_ars) || 1;
+        // Use virtual total when available, fall back to real portfolio value
+        const prevTracked = (prev.virtual_total_ars || prev.virtual_value_ars) > 0
+          ? (prev.virtual_total_ars || prev.virtual_value_ars)
+          : (prev.real_value_ars || 0);
+        const trackedNow = virtualTotal > 0 ? virtualTotal : realValue;
         const prevSpy = prev.spy_value_ars || 1;
 
-        dailyReturn = prevVirtual > 0 ? ((virtualTotal - prevVirtual) / prevVirtual) * 100 : 0;
+        dailyReturn = prevTracked > 0 ? ((trackedNow - prevTracked) / prevTracked) * 100 : 0;
         spyDailyReturn = prevSpy > 0 ? ((spyValue - prevSpy) / prevSpy) * 100 : 0;
         alphaVsSpy = (dailyReturn || 0) - (spyDailyReturn || 0);
       }
 
-      // Drawdown desde pico histórico
+      // Drawdown desde pico histórico (usa virtual si disponible, si no real)
       const allHistory = await getTrackRecord(365);
       let peak = 0;
       for (const h of allHistory) {
-        const v = h.virtual_total_ars || h.virtual_value_ars || 0;
+        const v = (h.virtual_total_ars || h.virtual_value_ars) > 0
+          ? (h.virtual_total_ars || h.virtual_value_ars)
+          : (h.real_value_ars || 0);
         if (v > peak) peak = v;
       }
-      drawdown = peak > 0 ? ((virtualTotal - peak) / peak) * 100 : 0;
+      const trackedNow = virtualTotal > 0 ? virtualTotal : realValue;
+      drawdown = peak > 0 ? ((trackedNow - peak) / peak) * 100 : 0;
 
       // Rolling Sharpe con frecuencia inferida de la serie real
       const recent30 = allHistory.slice(-30);
@@ -538,8 +545,12 @@ export async function runTrackRecordLog() {
         for (let i = 1; i < recent30.length; i++) {
           const prev = recent30[i - 1];
           const curr = recent30[i];
-          const p = prev.virtual_total_ars || prev.virtual_value_ars || 1;
-          const c = curr.virtual_total_ars || curr.virtual_value_ars || 0;
+          const p = (prev.virtual_total_ars || prev.virtual_value_ars) > 0
+            ? (prev.virtual_total_ars || prev.virtual_value_ars)
+            : (prev.real_value_ars || 0);
+          const c = (curr.virtual_total_ars || curr.virtual_value_ars) > 0
+            ? (curr.virtual_total_ars || curr.virtual_value_ars)
+            : (curr.real_value_ars || 0);
           if (p > 0) returns.push(((c - p) / p) * 100);
         }
         if (returns.length > 5) {
@@ -550,11 +561,17 @@ export async function runTrackRecordLog() {
       }
     } catch (e) { /* ignore calc errors */ }
 
+    // Check existing record to avoid overwriting good values with 0 (e.g. when markets are closed)
+    const existing = await getTrackRecord(1).catch(() => []);
+    const existingToday = existing.find((r) => r.date === today);
+    const safeReal = realValue > 0 ? realValue : (existingToday?.real_value_ars || 0);
+    const safeSpy = spyValue > 0 ? spyValue : (existingToday?.spy_value_ars || 0);
+
     await saveTrackRecord({
       date: today,
       virtualValueArs: virtualValue,
-      realValueArs: realValue,
-      spyValueArs: spyValue,
+      realValueArs: safeReal,
+      spyValueArs: safeSpy,
       capitalArs: capital,
       cclRate: ccl.venta || null,
       virtualDividendsArs: virtualDividends,

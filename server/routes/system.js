@@ -9,6 +9,7 @@ import { FLAGS } from "../featureFlags.js";
 import { getInvestmentReadiness } from "../investmentReadiness.js";
 import { authMiddleware } from "../auth.js";
 import { getGovernancePolicyAuditLog, saveGovernancePolicySelection } from "../database.js";
+import { runDailyMaintenanceCycle } from "../jobs.js";
 import {
   getIntradayMonitorStatusPayload,
   runIntradayMonitorOnce,
@@ -311,6 +312,21 @@ router.post("/system/monitor/run-now", authMiddleware, async (req, res) => {
       run,
       status: await getIntradayMonitorStatusPayload(),
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/system/run-maintenance", async (req, res) => {
+  const secret = req.headers["x-maintenance-secret"];
+  const expected = process.env.MAINTENANCE_SECRET;
+  if (!expected || secret !== expected) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  try {
+    console.log("[maintenance] Ciclo diario disparado externamente");
+    runDailyMaintenanceCycle().catch((err) => console.error("[maintenance] Error:", err.message));
+    res.json({ ok: true, message: "Mantenimiento diario iniciado", timestamp: new Date().toISOString() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

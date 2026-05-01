@@ -1,0 +1,38 @@
+name: Daily Maintenance
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # 00:00 ART (UTC-3)
+  workflow_dispatch:      # permite disparar manualmente desde GitHub
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        run: npm ci --prefix server
+
+      - name: Run daily maintenance
+        working-directory: server
+        run: npx tsx scripts/run-daily-maintenance.js
+        env:
+          TURSO_URL: ${{ secrets.TURSO_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ENABLE_INTERNAL_SCHEDULER: 'false'
+          ENABLE_BOOTSTRAP_SEED: 'false'
+          ENABLE_SYNTHETIC_HISTORY_SEED: 'false'
