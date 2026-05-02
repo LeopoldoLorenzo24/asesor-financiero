@@ -298,6 +298,99 @@ const MIGRATIONS: Migration[] = [
     );
     CREATE INDEX IF NOT EXISTS idx_intraday_monitor_events_created_at ON intraday_monitor_events(created_at DESC);`,
   },
+  {
+    version: 14,
+    name: "create_cedear_ratios",
+    sql: `CREATE TABLE IF NOT EXISTS cedear_ratios (
+      ticker TEXT PRIMARY KEY,
+      ratio REAL NOT NULL,
+      source TEXT NOT NULL DEFAULT 'calculated',
+      price_ars REAL,
+      price_usd REAL,
+      ccl_rate REAL,
+      deviation_pct REAL,
+      confidence TEXT NOT NULL DEFAULT 'medium',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      verified_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_cedear_ratios_updated ON cedear_ratios(updated_at DESC)`,
+  },
+  {
+    version: 15,
+    name: "create_broker_preference_settings",
+    sql: `CREATE TABLE IF NOT EXISTS broker_preference_settings (
+      user_id INTEGER PRIMARY KEY,
+      broker_key TEXT NOT NULL DEFAULT 'default',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+  },
+  {
+    version: 16,
+    name: "create_preflight_check_runs",
+    sql: `CREATE TABLE IF NOT EXISTS preflight_check_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_date_local TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
+      status TEXT NOT NULL DEFAULT 'unknown',
+      verdict TEXT,
+      summary TEXT,
+      timezone TEXT NOT NULL,
+      market_open_local TEXT NOT NULL,
+      window_start_local TEXT NOT NULL,
+      window_end_local TEXT NOT NULL,
+      ratio_sync_updated INTEGER NOT NULL DEFAULT 0,
+      ratio_sync_skipped INTEGER NOT NULL DEFAULT 0,
+      ratio_sync_warning_count INTEGER NOT NULL DEFAULT 0,
+      blockers_json TEXT,
+      cautions_json TEXT,
+      strengths_json TEXT,
+      audit_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_preflight_check_runs_date_created ON preflight_check_runs(run_date_local DESC, created_at DESC)`,
+  },
+  {
+    version: 17,
+    name: "create_execution_assistant_tables",
+    sql: `CREATE TABLE IF NOT EXISTS execution_assistant_settings (
+      user_id INTEGER PRIMARY KEY,
+      suggestion_mode TEXT NOT NULL DEFAULT 'manual_only',
+      confirmation_required INTEGER NOT NULL DEFAULT 1,
+      max_critical_alerts_per_day INTEGER NOT NULL DEFAULT 2,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS execution_trade_tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      analysis_session_id INTEGER,
+      source TEXT NOT NULL DEFAULT 'analysis',
+      status TEXT NOT NULL DEFAULT 'pending_confirmation' CHECK(status IN ('pending_confirmation','confirmed','rejected','executed_manual')),
+      suggestion_mode TEXT NOT NULL DEFAULT 'manual_only',
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('normal','critical')),
+      action TEXT NOT NULL CHECK(action IN ('BUY','SELL')),
+      ticker TEXT NOT NULL,
+      name TEXT,
+      sector TEXT,
+      subtype TEXT,
+      shares REAL NOT NULL DEFAULT 0,
+      limit_price_ars REAL,
+      estimated_amount_ars REAL,
+      target_pct REAL,
+      stop_loss_pct REAL,
+      conviction INTEGER,
+      rationale TEXT,
+      execution_note TEXT,
+      expires_at TEXT,
+      payload_json TEXT,
+      alert_sent_at TEXT,
+      confirmed_at TEXT,
+      rejected_at TEXT,
+      executed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_execution_tickets_user_status_created ON execution_trade_tickets(user_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_execution_tickets_user_priority_created ON execution_trade_tickets(user_id, priority, created_at DESC);`,
+  },
 ];
 
 async function runMigrations() {
@@ -516,11 +609,73 @@ export async function initDb() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS preflight_check_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_date_local TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
+      status TEXT NOT NULL DEFAULT 'unknown',
+      verdict TEXT,
+      summary TEXT,
+      timezone TEXT NOT NULL,
+      market_open_local TEXT NOT NULL,
+      window_start_local TEXT NOT NULL,
+      window_end_local TEXT NOT NULL,
+      ratio_sync_updated INTEGER NOT NULL DEFAULT 0,
+      ratio_sync_skipped INTEGER NOT NULL DEFAULT 0,
+      ratio_sync_warning_count INTEGER NOT NULL DEFAULT 0,
+      blockers_json TEXT,
+      cautions_json TEXT,
+      strengths_json TEXT,
+      audit_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS execution_assistant_settings (
+      user_id INTEGER PRIMARY KEY,
+      suggestion_mode TEXT NOT NULL DEFAULT 'manual_only',
+      confirmation_required INTEGER NOT NULL DEFAULT 1,
+      max_critical_alerts_per_day INTEGER NOT NULL DEFAULT 2,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS execution_trade_tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      analysis_session_id INTEGER,
+      source TEXT NOT NULL DEFAULT 'analysis',
+      status TEXT NOT NULL DEFAULT 'pending_confirmation' CHECK(status IN ('pending_confirmation','confirmed','rejected','executed_manual')),
+      suggestion_mode TEXT NOT NULL DEFAULT 'manual_only',
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('normal','critical')),
+      action TEXT NOT NULL CHECK(action IN ('BUY','SELL')),
+      ticker TEXT NOT NULL,
+      name TEXT,
+      sector TEXT,
+      subtype TEXT,
+      shares REAL NOT NULL DEFAULT 0,
+      limit_price_ars REAL,
+      estimated_amount_ars REAL,
+      target_pct REAL,
+      stop_loss_pct REAL,
+      conviction INTEGER,
+      rationale TEXT,
+      execution_note TEXT,
+      expires_at TEXT,
+      payload_json TEXT,
+      alert_sent_at TEXT,
+      confirmed_at TEXT,
+      rejected_at TEXT,
+      executed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_portfolio_ticker ON portfolio(ticker);
     CREATE INDEX IF NOT EXISTS idx_transactions_ticker ON transactions(ticker);
     CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date_executed);
     CREATE INDEX IF NOT EXISTS idx_predictions_ticker ON predictions(ticker);
     CREATE INDEX IF NOT EXISTS idx_predictions_date ON predictions(prediction_date);
+    CREATE INDEX IF NOT EXISTS idx_preflight_check_runs_date_created ON preflight_check_runs(run_date_local DESC, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_execution_tickets_user_status_created ON execution_trade_tickets(user_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_execution_tickets_user_priority_created ON execution_trade_tickets(user_id, priority, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_predictions_evaluated ON predictions(evaluated);
     CREATE INDEX IF NOT EXISTS idx_governance_audit_user_created ON governance_policy_audit_logs(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_broker_import_audit_user_created ON broker_import_audit_logs(user_id, created_at DESC);
@@ -621,6 +776,12 @@ export async function initDb() {
       label_3m INTEGER,
       source TEXT NOT NULL DEFAULT 'prediction',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS broker_preference_settings (
+      user_id INTEGER PRIMARY KEY,
+      broker_key TEXT NOT NULL DEFAULT 'default',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE INDEX IF NOT EXISTS idx_virtual_portfolio_ticker ON virtual_portfolio(ticker);
@@ -964,7 +1125,7 @@ export async function applyHistoricalBrokerLedgerEntries(
   for (const lot of existingLots) {
     const ticker = String(lot.ticker).toUpperCase();
     if (!lotsByTicker.has(ticker)) lotsByTicker.set(ticker, []);
-    lotsByTicker.get(ticker).push({
+    lotsByTicker.get(ticker)!.push({
       id: Number(lot.id),
       shares: Number(lot.shares),
       priceArs: Number(lot.avg_price_ars),
@@ -999,7 +1160,7 @@ export async function applyHistoricalBrokerLedgerEntries(
       });
 
       if (!lotsByTicker.has(entry.ticker)) lotsByTicker.set(entry.ticker, []);
-      lotsByTicker.get(entry.ticker).push({
+      lotsByTicker.get(entry.ticker)!.push({
         id: 0,
         shares: entry.shares,
         priceArs: entry.priceArs,
@@ -2009,6 +2170,272 @@ export async function setPaperTradingConfig(autoSyncEnabled: boolean) {
 }
 
 // ============================================================
+// EXECUTION ASSISTANT SETTINGS / TRADE TICKETS
+// ============================================================
+
+export type ExecutionSuggestionMode = "manual_only" | "critical_alerts";
+export type ExecutionTicketStatus = "pending_confirmation" | "confirmed" | "rejected" | "executed_manual";
+
+export function normalizeExecutionSuggestionMode(mode: unknown): ExecutionSuggestionMode {
+  return mode === "critical_alerts" ? "critical_alerts" : "manual_only";
+}
+
+export async function getExecutionAssistantSettings(userId: number | null | undefined) {
+  const defaults = {
+    suggestionMode: "manual_only" as ExecutionSuggestionMode,
+    confirmationRequired: true,
+    maxCriticalAlertsPerDay: 2,
+    updatedAt: null as string | null,
+  };
+  if (userId == null) return defaults;
+
+  const row = (await db.execute({
+    sql: `SELECT suggestion_mode, confirmation_required, max_critical_alerts_per_day, updated_at
+          FROM execution_assistant_settings
+          WHERE user_id = ?`,
+    args: [userId],
+  })).rows[0] as any;
+
+  if (!row) return defaults;
+  return {
+    suggestionMode: normalizeExecutionSuggestionMode(row.suggestion_mode),
+    confirmationRequired: row.confirmation_required !== 0,
+    maxCriticalAlertsPerDay: Math.max(1, Number(row.max_critical_alerts_per_day || 2)),
+    updatedAt: row.updated_at || null,
+  };
+}
+
+export async function saveExecutionAssistantSettings(userId: number, suggestionMode: unknown, maxCriticalAlertsPerDay: number) {
+  const normalizedMode = normalizeExecutionSuggestionMode(suggestionMode);
+  const normalizedLimit = Math.max(1, Math.min(5, Number(maxCriticalAlertsPerDay) || 2));
+  await db.execute({
+    sql: `INSERT INTO execution_assistant_settings (
+            user_id, suggestion_mode, confirmation_required, max_critical_alerts_per_day, updated_at
+          )
+          VALUES (?, ?, 1, ?, datetime('now'))
+          ON CONFLICT(user_id) DO UPDATE SET
+            suggestion_mode = excluded.suggestion_mode,
+            confirmation_required = 1,
+            max_critical_alerts_per_day = excluded.max_critical_alerts_per_day,
+            updated_at = excluded.updated_at`,
+    args: [userId, normalizedMode, normalizedLimit],
+  });
+  return getExecutionAssistantSettings(userId);
+}
+
+export async function countCriticalExecutionAlertsToday(userId: number) {
+  const row = (await db.execute({
+    sql: `SELECT COUNT(*) AS total
+          FROM execution_trade_tickets
+          WHERE user_id = ?
+            AND priority = 'critical'
+            AND alert_sent_at IS NOT NULL
+            AND date(alert_sent_at) = date('now')`,
+    args: [userId],
+  })).rows[0] as any;
+  return Number(row?.total || 0);
+}
+
+export async function getExecutionTradeTickets(
+  userId: number,
+  statuses: ExecutionTicketStatus[] = ["pending_confirmation", "confirmed"],
+  limit = 20
+) {
+  const normalizedStatuses = Array.isArray(statuses) && statuses.length > 0
+    ? statuses
+    : ["pending_confirmation", "confirmed"];
+  const placeholders = normalizedStatuses.map(() => "?").join(", ");
+  return (await db.execute({
+    sql: `SELECT *
+          FROM execution_trade_tickets
+          WHERE user_id = ?
+            AND status IN (${placeholders})
+          ORDER BY
+            CASE priority WHEN 'critical' THEN 0 ELSE 1 END,
+            created_at DESC
+          LIMIT ?`,
+    args: [userId, ...normalizedStatuses, Math.max(1, limit)],
+  })).rows;
+}
+
+export async function createExecutionTradeTicket({
+  userId,
+  analysisSessionId = null,
+  source = "analysis",
+  suggestionMode = "manual_only",
+  priority = "normal",
+  action,
+  ticker,
+  name = null,
+  sector = null,
+  subtype = null,
+  shares = 0,
+  limitPriceArs = null,
+  estimatedAmountArs = null,
+  targetPct = null,
+  stopLossPct = null,
+  conviction = null,
+  rationale = null,
+  executionNote = null,
+  expiresAt = null,
+  payload = null,
+}: {
+  userId: number;
+  analysisSessionId?: number | null;
+  source?: string;
+  suggestionMode?: ExecutionSuggestionMode;
+  priority?: "normal" | "critical";
+  action: "BUY" | "SELL";
+  ticker: string;
+  name?: string | null;
+  sector?: string | null;
+  subtype?: string | null;
+  shares?: number;
+  limitPriceArs?: number | null;
+  estimatedAmountArs?: number | null;
+  targetPct?: number | null;
+  stopLossPct?: number | null;
+  conviction?: number | null;
+  rationale?: string | null;
+  executionNote?: string | null;
+  expiresAt?: string | null;
+  payload?: unknown;
+}) {
+  const existing = (await db.execute({
+    sql: `SELECT id
+          FROM execution_trade_tickets
+          WHERE user_id = ?
+            AND ticker = ?
+            AND action = ?
+            AND status IN ('pending_confirmation','confirmed')
+          ORDER BY created_at DESC
+          LIMIT 1`,
+    args: [userId, ticker, action],
+  })).rows[0] as any;
+
+  if (existing?.id) {
+    return (await db.execute({
+      sql: "SELECT * FROM execution_trade_tickets WHERE id = ?",
+      args: [existing.id],
+    })).rows[0];
+  }
+
+  const insert = await db.execute({
+    sql: `INSERT INTO execution_trade_tickets (
+            user_id, analysis_session_id, source, suggestion_mode, priority, action, ticker,
+            name, sector, subtype, shares, limit_price_ars, estimated_amount_ars,
+            target_pct, stop_loss_pct, conviction, rationale, execution_note, expires_at, payload_json
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          RETURNING *`,
+    args: [
+      userId,
+      analysisSessionId,
+      source,
+      normalizeExecutionSuggestionMode(suggestionMode),
+      priority === "critical" ? "critical" : "normal",
+      action,
+      ticker,
+      name,
+      sector,
+      subtype,
+      shares,
+      limitPriceArs,
+      estimatedAmountArs,
+      targetPct,
+      stopLossPct,
+      conviction,
+      rationale,
+      executionNote,
+      expiresAt,
+      payload ? JSON.stringify(payload) : null,
+    ],
+  });
+  return insert.rows[0];
+}
+
+export async function markExecutionTicketAlertSent(userId: number, ticketId: number) {
+  await db.execute({
+    sql: `UPDATE execution_trade_tickets
+          SET alert_sent_at = datetime('now')
+          WHERE id = ? AND user_id = ?`,
+    args: [ticketId, userId],
+  });
+}
+
+export async function updateExecutionTradeTicketStatus(userId: number, ticketId: number, status: ExecutionTicketStatus) {
+  const normalizedStatus: ExecutionTicketStatus =
+    status === "confirmed" || status === "rejected" || status === "executed_manual"
+      ? status
+      : "pending_confirmation";
+  await db.execute({
+    sql: `UPDATE execution_trade_tickets
+          SET status = ?,
+              confirmed_at = CASE WHEN ? = 'confirmed' THEN datetime('now') ELSE confirmed_at END,
+              rejected_at = CASE WHEN ? = 'rejected' THEN datetime('now') ELSE rejected_at END,
+              executed_at = CASE WHEN ? = 'executed_manual' THEN datetime('now') ELSE executed_at END
+          WHERE id = ? AND user_id = ?`,
+    args: [normalizedStatus, normalizedStatus, normalizedStatus, normalizedStatus, ticketId, userId],
+  });
+  return (await db.execute({
+    sql: "SELECT * FROM execution_trade_tickets WHERE id = ? AND user_id = ?",
+    args: [ticketId, userId],
+  })).rows[0];
+}
+
+export async function expireExecutionTickets() {
+  const result = await db.execute({
+    sql: `UPDATE execution_trade_tickets
+          SET status = 'rejected',
+              rejected_at = datetime('now'),
+              execution_note = COALESCE(execution_note, '') || ' [Auto-expirado]'
+          WHERE status IN ('pending_confirmation', 'confirmed')
+            AND expires_at IS NOT NULL
+            AND expires_at < datetime('now')`,
+    args: [],
+  });
+  const changed = result.rowsAffected ?? 0;
+  if (changed > 0) {
+    console.log(`[ticket-expiry] ${changed} ticket(s) auto-expirados.`);
+  }
+  return changed;
+}
+
+// ============================================================
+// BROKER PREFERENCE SETTINGS
+// ============================================================
+
+export async function getBrokerPreference(userId: number | null | undefined) {
+  const defaultSetting = { brokerKey: "default", updatedAt: null };
+  if (userId == null) return defaultSetting;
+
+  const row = (await db.execute({
+    sql: `SELECT broker_key, updated_at
+          FROM broker_preference_settings
+          WHERE user_id = ?`,
+    args: [userId],
+  })).rows[0] as any;
+
+  if (!row) return defaultSetting;
+  return {
+    brokerKey: row.broker_key || "default",
+    updatedAt: row.updated_at || null,
+  };
+}
+
+export async function saveBrokerPreference(userId: number, brokerKey: string) {
+  await db.execute({
+    sql: `INSERT INTO broker_preference_settings (user_id, broker_key, updated_at)
+          VALUES (?, ?, datetime('now'))
+          ON CONFLICT(user_id) DO UPDATE SET
+            broker_key = excluded.broker_key,
+            updated_at = excluded.updated_at`,
+    args: [userId, brokerKey],
+  });
+  return getBrokerPreference(userId);
+}
+
+// ============================================================
 // GOVERNANCE POLICY SETTINGS
 // ============================================================
 
@@ -2208,6 +2635,134 @@ export async function getBrokerImportAuditLogs(userId: number | null | undefined
           LIMIT ?`,
     args: [userId ?? null, userId ?? null, limit],
   })).rows;
+}
+
+// ============================================================
+// PRE-FLIGHT CHECK RUNS
+// ============================================================
+
+function normalizePreflightCheckRunRow(row: any) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    runDateLocal: row.run_date_local || null,
+    source: row.source || "manual",
+    status: row.status || "unknown",
+    verdict: row.verdict || null,
+    summary: row.summary || null,
+    timezone: row.timezone || null,
+    marketOpenLocal: row.market_open_local || null,
+    windowStartLocal: row.window_start_local || null,
+    windowEndLocal: row.window_end_local || null,
+    ratioSyncUpdated: Number(row.ratio_sync_updated || 0),
+    ratioSyncSkipped: Number(row.ratio_sync_skipped || 0),
+    ratioSyncWarningCount: Number(row.ratio_sync_warning_count || 0),
+    blockers: safeJsonParse(row.blockers_json, []),
+    cautions: safeJsonParse(row.cautions_json, []),
+    strengths: safeJsonParse(row.strengths_json, []),
+    audit: safeJsonParse(row.audit_json, null),
+    createdAt: row.created_at || null,
+  };
+}
+
+export async function savePreflightCheckRun({
+  runDateLocal,
+  source = "manual",
+  status = "unknown",
+  verdict = null,
+  summary = null,
+  timezone,
+  marketOpenLocal,
+  windowStartLocal,
+  windowEndLocal,
+  ratioSyncUpdated = 0,
+  ratioSyncSkipped = 0,
+  ratioSyncWarningCount = 0,
+  blockers = [],
+  cautions = [],
+  strengths = [],
+  audit = null,
+}: {
+  runDateLocal: string;
+  source?: string;
+  status?: string;
+  verdict?: string | null;
+  summary?: string | null;
+  timezone: string;
+  marketOpenLocal: string;
+  windowStartLocal: string;
+  windowEndLocal: string;
+  ratioSyncUpdated?: number;
+  ratioSyncSkipped?: number;
+  ratioSyncWarningCount?: number;
+  blockers?: string[];
+  cautions?: string[];
+  strengths?: string[];
+  audit?: unknown;
+}) {
+  const result = await db.execute({
+    sql: `INSERT INTO preflight_check_runs (
+            run_date_local, source, status, verdict, summary, timezone,
+            market_open_local, window_start_local, window_end_local,
+            ratio_sync_updated, ratio_sync_skipped, ratio_sync_warning_count,
+            blockers_json, cautions_json, strengths_json, audit_json
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          RETURNING *`,
+    args: [
+      runDateLocal,
+      source,
+      status,
+      verdict,
+      summary,
+      timezone,
+      marketOpenLocal,
+      windowStartLocal,
+      windowEndLocal,
+      Number(ratioSyncUpdated || 0),
+      Number(ratioSyncSkipped || 0),
+      Number(ratioSyncWarningCount || 0),
+      JSON.stringify(blockers || []),
+      JSON.stringify(cautions || []),
+      JSON.stringify(strengths || []),
+      audit ? JSON.stringify(audit) : null,
+    ],
+  });
+  return normalizePreflightCheckRunRow(result.rows[0]);
+}
+
+export async function getLatestPreflightCheckRun() {
+  const row = (await db.execute({
+    sql: `SELECT *
+          FROM preflight_check_runs
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1`,
+    args: [],
+  })).rows[0] as any;
+  return normalizePreflightCheckRunRow(row);
+}
+
+export async function getPreflightCheckRuns(limit = 10) {
+  const rows = (await db.execute({
+    sql: `SELECT *
+          FROM preflight_check_runs
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?`,
+    args: [limit],
+  })).rows;
+  return rows.map((row) => normalizePreflightCheckRunRow(row));
+}
+
+export async function getPreflightCheckRunByDate(runDateLocal: string) {
+  const row = (await db.execute({
+    sql: `SELECT *
+          FROM preflight_check_runs
+          WHERE run_date_local = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1`,
+    args: [runDateLocal],
+  })).rows[0] as any;
+  return normalizePreflightCheckRunRow(row);
 }
 
 // ============================================================
@@ -2745,6 +3300,53 @@ export async function getMonthlyTrackRecord(months = 12) {
     sql: `SELECT * FROM track_record_monthly WHERE month >= date('now', '-' || ? || ' months') ORDER BY month ASC`,
     args: [months],
   })).rows;
+}
+
+// ============================================================
+// CEDEAR DYNAMIC RATIOS
+// ============================================================
+
+export async function upsertCedearRatio(data: {
+  ticker: string;
+  ratio: number;
+  source: string;
+  priceArs: number | null;
+  priceUsd: number | null;
+  cclRate: number | null;
+  deviationPct: number | null;
+  confidence: string;
+}) {
+  await db.execute({
+    sql: `INSERT INTO cedear_ratios (ticker, ratio, source, price_ars, price_usd, ccl_rate, deviation_pct, confidence, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(ticker) DO UPDATE SET
+            ratio = excluded.ratio,
+            source = excluded.source,
+            price_ars = excluded.price_ars,
+            price_usd = excluded.price_usd,
+            ccl_rate = excluded.ccl_rate,
+            deviation_pct = excluded.deviation_pct,
+            confidence = excluded.confidence,
+            updated_at = excluded.updated_at`,
+    args: [data.ticker, data.ratio, data.source, data.priceArs, data.priceUsd, data.cclRate, data.deviationPct, data.confidence],
+  });
+}
+
+export async function getCedearRatio(ticker: string): Promise<{ ratio: number; source: string; confidence: string; updated_at: string } | null> {
+  const row = (await db.execute({
+    sql: "SELECT ratio, source, confidence, updated_at FROM cedear_ratios WHERE ticker = ?",
+    args: [ticker],
+  })).rows[0] as unknown as { ratio: number; source: string; confidence: string; updated_at: string } | undefined;
+  return row || null;
+}
+
+export async function getAllCedearRatios(): Promise<Record<string, { ratio: number; source: string; confidence: string; updated_at: string }>> {
+  const rows = (await db.execute("SELECT ticker, ratio, source, confidence, updated_at FROM cedear_ratios")).rows as unknown as {
+    ticker: string; ratio: number; source: string; confidence: string; updated_at: string;
+  }[];
+  const map: Record<string, { ratio: number; source: string; confidence: string; updated_at: string }> = {};
+  for (const r of rows) map[r.ticker] = { ratio: r.ratio, source: r.source, confidence: r.confidence, updated_at: r.updated_at };
+  return map;
 }
 
 export default db;

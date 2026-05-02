@@ -5,5 +5,11 @@
 // ============================================================
 
 export const appState = {
-  lastAnalysisTimestamp: 0,
+  analysisCooldowns: new Map(),
+  getLastAnalysisTimestamp(key) {
+    return this.analysisCooldowns.get(String(key)) || 0;
+  },
+  setLastAnalysisTimestamp(key, timestamp) {
+    this.analysisCooldowns.set(String(key), timestamp);
+  },
 };

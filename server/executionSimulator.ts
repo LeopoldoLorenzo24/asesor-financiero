@@ -30,9 +30,12 @@ export async function simulateBuyExecution(
   shares: number,
   theoreticalPriceArs: number,
   tradeAmountArs: number,
-  isMarketHours = true
+  isMarketHours = true,
+  cclRate = 0,
+  brokerKey = "default"
 ): Promise<SimulatedExecution> {
   const profile = await computeLiquidityProfile(ticker);
+  const effectiveCcl = cclRate > 0 ? cclRate : 1200; // fallback only if caller didn't provide
 
   let spreadEstimate = 1.0;
   let marketImpactBase = 0.5;
@@ -41,7 +44,7 @@ export async function simulateBuyExecution(
   if (profile) {
     spreadEstimate = profile.spreadEstimatePct;
     marketImpactBase = profile.marketImpactPct;
-    const assessment = assessTradeLiquidity(profile, tradeAmountArs / 1200); // Aprox USD
+    const assessment = assessTradeLiquidity(profile, tradeAmountArs / effectiveCcl);
     if (assessment.warning) liquidityWarning = assessment.warning;
   }
 
@@ -60,7 +63,7 @@ export async function simulateBuyExecution(
   let partialFill = false;
 
   if (profile) {
-    const tradeValueUsd = tradeAmountArs / 1200;
+    const tradeValueUsd = tradeAmountArs / effectiveCcl;
     const fillRatio = tradeValueUsd / profile.avgDailyValueUsd;
     if (fillRatio > 0.03) {
       const fillProbability = Math.max(0.3, 1 - fillRatio * 5);
@@ -77,7 +80,7 @@ export async function simulateBuyExecution(
     : 60 + Math.floor(Math.random() * 120);
 
   const grossAmount = executedShares * executedPrice;
-  const brokerCosts = calculateBrokerCosts(grossAmount);
+  const brokerCosts = calculateBrokerCosts(grossAmount, brokerKey);
 
   return {
     requestedTicker: ticker,
@@ -103,9 +106,12 @@ export async function simulateSellExecution(
   shares: number,
   theoreticalPriceArs: number,
   tradeAmountArs: number,
-  isMarketHours = true
+  isMarketHours = true,
+  cclRate = 0,
+  brokerKey = "default"
 ): Promise<SimulatedExecution> {
   const profile = await computeLiquidityProfile(ticker);
+  const effectiveCcl = cclRate > 0 ? cclRate : 1200;
 
   let spreadEstimate = 1.0;
   let marketImpactBase = 0.5;
@@ -114,7 +120,7 @@ export async function simulateSellExecution(
   if (profile) {
     spreadEstimate = profile.spreadEstimatePct;
     marketImpactBase = profile.marketImpactPct;
-    const assessment = assessTradeLiquidity(profile, tradeAmountArs / 1200);
+    const assessment = assessTradeLiquidity(profile, tradeAmountArs / effectiveCcl);
     if (assessment.warning) liquidityWarning = assessment.warning;
   }
 
@@ -130,7 +136,7 @@ export async function simulateSellExecution(
   let partialFill = false;
 
   if (profile) {
-    const tradeValueUsd = tradeAmountArs / 1200;
+    const tradeValueUsd = tradeAmountArs / effectiveCcl;
     const fillRatio = tradeValueUsd / profile.avgDailyValueUsd;
     if (fillRatio > 0.03) {
       const fillProbability = Math.max(0.3, 1 - fillRatio * 5);
@@ -146,7 +152,7 @@ export async function simulateSellExecution(
     : 60 + Math.floor(Math.random() * 120);
 
   const grossAmount = executedShares * executedPrice;
-  const brokerCosts = calculateBrokerCosts(grossAmount);
+  const brokerCosts = calculateBrokerCosts(grossAmount, brokerKey);
 
   return {
     requestedTicker: ticker,

@@ -13,6 +13,7 @@ import { fileURLToPath } from "url";
 
 import { fetchStooqQuote, fetchStooqHistory } from "./marketFallback.js";
 import { fetchFinnhubQuote, fetchFinnhubHistory, fetchFinnhubFinancials, isFinnhubAvailable } from "./marketFinnhub.js";
+import { fetchFMPQuote, fetchFMPHistory, fetchFMPFinancials, isFMPAvailable } from "./marketFMP.js";
 import { recordCacheLookup } from "./observability.js";
 import { MARKET_DATA_CONFIG, APP_CONFIG } from "./config.js";
 import { sleep } from "./utils.js";
@@ -53,10 +54,13 @@ interface ProviderState {
   yahooFailures: number;
   finnhubSuccess: number;
   finnhubFailures: number;
+  fmpSuccess: number;
+  fmpFailures: number;
   fallbackSuccess: number;
   fallbackFailures: number;
   lastYahooError: string | null;
   lastFinnhubError: string | null;
+  lastFmpError: string | null;
   lastFallbackAt: string | null;
 }
 
@@ -65,10 +69,13 @@ const providerState: ProviderState = {
   yahooFailures: 0,
   finnhubSuccess: 0,
   finnhubFailures: 0,
+  fmpSuccess: 0,
+  fmpFailures: 0,
   fallbackSuccess: 0,
   fallbackFailures: 0,
   lastYahooError: null,
   lastFinnhubError: null,
+  lastFmpError: null,
   lastFallbackAt: null,
 };
 
@@ -116,6 +123,15 @@ export function getDataProviderStatus() {
       failureRatePct: totalFinnhub > 0 ? Math.round((providerState.finnhubFailures / totalFinnhub) * 10000) / 100 : 0,
       lastError: providerState.lastFinnhubError,
     },
+    fmp: {
+      available: isFMPAvailable(),
+      success: providerState.fmpSuccess,
+      failures: providerState.fmpFailures,
+      failureRatePct: (providerState.fmpSuccess + providerState.fmpFailures) > 0
+        ? Math.round((providerState.fmpFailures / (providerState.fmpSuccess + providerState.fmpFailures)) * 10000) / 100
+        : 0,
+      lastError: providerState.lastFmpError,
+    },
     stooq: {
       success: providerState.fallbackSuccess,
       failures: providerState.fallbackFailures,
@@ -150,6 +166,26 @@ async function setCached(key: string, value: unknown, ttlSeconds = APP_CONFIG.ca
   }
 }
 
+export async function fetchRiesgoPais() {
+  const key = "riesgo_pais";
+  const cached = getCached(key);
+  if (cached) return cached as { valor: number; fecha: string; _fetchedAt: number };
+
+  try {
+    const res = await withTimeout(fetch("https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais/ultimo"));
+    if (!res.ok) throw new Error(`Riesgo país API returned ${res.status}`);
+    const data = await res.json() as { valor: number; fecha: string };
+    const result = { valor: data.valor, fecha: data.fecha, _fetchedAt: Date.now() };
+    await setCached(key, result, 3600); // 1h cache — doesn't change fast
+    return result;
+  } catch (err: any) {
+    console.warn("[marketData] Riesgo país fetch failed:", err.message);
+    const last = readFileCache(key) as { valor: number; fecha: string } | null;
+    if (last) return { ...last, _stale: true, _fetchedAt: 0 };
+    return null;
+  }
+}
+
 export async function fetchCCL() {
   const key = "ccl";
   const cached = getCached(key);
@@ -159,7 +195,7 @@ export async function fetchCCL() {
     const res = await withTimeout(fetch(MARKET_DATA_CONFIG.cclApiUrl));
     if (!res.ok) throw new Error(`CCL API returned ${res.status}`);
     const data = await res.json() as { compra: number; venta: number; fechaActualizacion: string };
-    const ccl = { compra: data.compra, venta: data.venta, fecha: data.fechaActualizacion };
+    const ccl = { compra: data.compra, venta: data.venta, fecha: data.fechaActualizacion, _fetchedAt: Date.now() };
     await setCached(key, ccl, 300);
     return ccl;
   } catch (err: any) {
@@ -266,7 +302,25 @@ export async function fetchQuote(ticker: string): Promise<NormalizedQuote | null
     console.warn(`[marketData] Yahoo falló para ${ticker}: ${err.message}`);
 
     const isBATicker = /\.BA$/i.test(ticker);
+    const usTicker = String(ticker || "").replace(/\.BA$/i, "");
 
+    // Fallback 1: FMP (best data quality for US tickers)
+    if (isFMPAvailable() && !isBATicker) {
+      try {
+        const fmpResult = await fetchFMPQuote(usTicker);
+        if (fmpResult?.price) {
+          providerState.fmpSuccess += 1;
+          await setCached(key, fmpResult, 300);
+          return fmpResult as NormalizedQuote;
+        }
+      } catch (fmpErr: any) {
+        providerState.fmpFailures += 1;
+        providerState.lastFmpError = `${new Date().toISOString()} | ${ticker} | ${fmpErr.message}`;
+        console.warn(`[marketData] FMP falló para ${ticker}: ${fmpErr.message}`);
+      }
+    }
+
+    // Fallback 2: Finnhub
     if (isFinnhubAvailable() && !isBATicker) {
       try {
         const finnhubResult = await fetchFinnhubQuote(ticker);
@@ -282,8 +336,8 @@ export async function fetchQuote(ticker: string): Promise<NormalizedQuote | null
       }
     }
 
-    const fallbackTicker = String(ticker || "").replace(/\.BA$/i, "");
-    const stooqResult = await fetchStooqQuote(fallbackTicker).catch(() => null);
+    // Fallback 3: Stooq
+    const stooqResult = await fetchStooqQuote(usTicker).catch(() => null);
     if (stooqResult?.price) {
       providerState.fallbackSuccess += 1;
       providerState.lastFallbackAt = new Date().toISOString();
@@ -343,7 +397,24 @@ export async function fetchHistory(ticker: string, months = 6): Promise<HistoryP
     console.warn(`[marketData] Yahoo historial falló para ${ticker}: ${err.message}`);
 
     const isBATicker = /\.BA$/i.test(ticker);
+    const usTicker = String(ticker || "").replace(/\.BA$/i, "");
 
+    // Fallback 1: FMP
+    if (isFMPAvailable() && !isBATicker) {
+      try {
+        const fmpHistory = await fetchFMPHistory(usTicker, months);
+        if (fmpHistory.length > 0) {
+          providerState.fmpSuccess += 1;
+          await setCached(key, fmpHistory, 86400);
+          return fmpHistory as HistoryPoint[];
+        }
+      } catch (fmpErr: any) {
+        providerState.fmpFailures += 1;
+        providerState.lastFmpError = `${new Date().toISOString()} | history:${ticker} | ${fmpErr.message}`;
+      }
+    }
+
+    // Fallback 2: Finnhub
     if (isFinnhubAvailable() && !isBATicker) {
       try {
         const finnhubHistory = await fetchFinnhubHistory(ticker, months);
@@ -358,8 +429,8 @@ export async function fetchHistory(ticker: string, months = 6): Promise<HistoryP
       }
     }
 
-    const fallbackTicker = String(ticker || "").replace(/\.BA$/i, "");
-    const fallbackHistory = await fetchStooqHistory(fallbackTicker, months).catch(() => []);
+    // Fallback 3: Stooq
+    const fallbackHistory = await fetchStooqHistory(usTicker, months).catch(() => []);
     if (fallbackHistory.length > 0) {
       providerState.fallbackSuccess += 1;
       providerState.lastFallbackAt = new Date().toISOString();
@@ -426,6 +497,46 @@ export async function fetchFinancials(ticker: string): Promise<FinancialsResult 
   const cached = getCached(key);
   if (cached) return cached as FinancialsResult;
 
+  // Try FMP first — better data quality for fundamentals
+  if (isFMPAvailable()) {
+    try {
+      const fmp = await fetchFMPFinancials(ticker);
+      if (fmp && (fmp.pe || fmp.profitMargin || fmp.returnOnEquity)) {
+        providerState.fmpSuccess += 1;
+        const result: FinancialsResult = {
+          pe: fmp.pe,
+          forwardPE: fmp.forwardPE,
+          pegRatio: fmp.pegRatio,
+          priceToBook: fmp.priceToBook,
+          priceToSales: fmp.priceToSales,
+          epsGrowth: fmp.epsGrowth,
+          revenueGrowth: fmp.revenueGrowth,
+          profitMargin: fmp.profitMargin,
+          operatingMargin: fmp.operatingMargin,
+          returnOnEquity: fmp.returnOnEquity,
+          debtToEquity: fmp.debtToEquity,
+          currentRatio: fmp.currentRatio,
+          freeCashflow: fmp.freeCashflow,
+          targetMeanPrice: fmp.targetMeanPrice,
+          recommendationMean: fmp.recommendationMean,
+          recommendationKey: fmp.recommendationKey,
+          numberOfAnalystOpinions: fmp.numberOfAnalystOpinions,
+          nextEarningsDate: null,
+          epsRevisionDirection: fmp.earningsSurpriseDirection || null,
+          epsEstimateGrowthQ: null,
+          _source: "fmp",
+        };
+        await setCached(key, result, 3600);
+        return result;
+      }
+    } catch (fmpErr: any) {
+      providerState.fmpFailures += 1;
+      providerState.lastFmpError = `${new Date().toISOString()} | financials:${ticker} | ${fmpErr.message}`;
+      console.warn(`[marketData] FMP financials falló para ${ticker}: ${fmpErr.message}`);
+    }
+  }
+
+  // Fallback to Yahoo
   try {
     const summary = await yahooFinance.quoteSummary(ticker, {
       modules: ["defaultKeyStatistics", "financialData", "earningsTrend", "calendarEvents"],
@@ -657,6 +768,7 @@ export async function fetchVIX() {
       price,
       changePct: Math.round(((quote as any).regularMarketChangePercent || 0) * 100) / 100,
       regime: price >= 35 ? "crisis" : price >= 25 ? "elevated" : price >= 15 ? "normal" : "complacency",
+      _fetchedAt: Date.now(),
     };
     await setCached(key, result, 3600);
     return result;

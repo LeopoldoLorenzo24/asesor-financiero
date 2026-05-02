@@ -12,6 +12,8 @@ const METRIC_DEFS = [
     desc: "Caída máxima desde el pico",
     getColor: (v) => Math.abs(v ?? 100) <= 10 ? T.green : Math.abs(v ?? 100) <= 20 ? T.yellow : T.red,
     invert: true,
+    period: "desde inicio",
+    baseline: "SPY Max DD hist: ~-34%",
   },
   {
     key: "sharpeRatio",
@@ -20,6 +22,8 @@ const METRIC_DEFS = [
     Icon: BarChart2,
     desc: "Retorno ajustado por riesgo",
     getColor: (v) => (v ?? 0) >= 1 ? T.green : (v ?? 0) >= 0.75 ? T.yellow : T.red,
+    period: "últimos 90 días",
+    baseline: "SPY Sharpe: ~1.0",
   },
   {
     key: "sortinoRatio",
@@ -28,6 +32,8 @@ const METRIC_DEFS = [
     Icon: Activity,
     desc: "Solo penaliza volatilidad negativa",
     getColor: (v) => (v ?? 0) >= 1.5 ? T.green : (v ?? 0) >= 0.75 ? T.yellow : T.red,
+    period: "últimos 90 días",
+    baseline: "SPY Sortino: ~1.2",
   },
   {
     key: "beta",
@@ -36,15 +42,19 @@ const METRIC_DEFS = [
     Icon: Zap,
     desc: "Sensibilidad relativa al mercado",
     getColor: (v) => Math.abs((v ?? 1) - 1) <= 0.3 ? T.green : Math.abs((v ?? 1) - 1) <= 0.6 ? T.yellow : T.red,
+    period: "últimos 90 días",
+    baseline: "SPY Beta: 1.0 (por definición)",
   },
   {
     key: "var95",
-    label: "VaR 95%",
+    label: "VaR 95% (diario)",
     suffix: "%",
     Icon: ShieldAlert,
     desc: "Pérdida máxima esperada (95% conf.)",
     getColor: (v) => Math.abs(v ?? 100) <= 2 ? T.green : Math.abs(v ?? 100) <= 4 ? T.yellow : T.red,
     invert: true,
+    period: "diario, últimos 90 días",
+    baseline: "SPY VaR 95% diario: ~-2%",
   },
   {
     key: "volatilityAnnualized",
@@ -54,6 +64,8 @@ const METRIC_DEFS = [
     desc: "Desviación estándar anualizada",
     getColor: (v) => (v ?? 100) <= 15 ? T.green : (v ?? 100) <= 25 ? T.yellow : T.red,
     invert: true,
+    period: "últimos 90 días",
+    baseline: "SPY Vol hist: ~15-18%",
   },
 ];
 
@@ -100,7 +112,7 @@ export default function RiskMetricsView({ metrics, loading }) {
       />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
-        {METRIC_DEFS.map(({ key, label, suffix, Icon, desc, getColor, invert }, i) => {
+        {METRIC_DEFS.map(({ key, label, suffix, Icon, desc, getColor, invert, period, baseline }, i) => {
           const raw = data[key];
           const value = raw != null ? raw : null;
           const color = value != null ? getColor(value) : T.textDark;
@@ -112,7 +124,7 @@ export default function RiskMetricsView({ metrics, loading }) {
             <GlassCard key={key} style={{ animation: `fadeUp 0.4s ease ${i * 60}ms both` }} glowColor={color}>
               <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
                 <div>
-                  <div style={{ ...S.label, marginBottom: 4 }}>{label}</div>
+                  <div style={{ ...S.label, marginBottom: 4 }}>{label}{period ? ` (${period})` : ""}</div>
                   <div style={{ fontSize: 11, color: T.textDark, lineHeight: 1.4 }}>{desc}</div>
                 </div>
                 <div style={{
@@ -134,6 +146,11 @@ export default function RiskMetricsView({ metrics, loading }) {
                     {sign}{displayValue}{value != null ? suffix : ""}
                   </div>
                   {value != null && <GaugeMini value={Math.abs(value)} max={gaugeMax} color={color} />}
+                  {baseline && value != null && (
+                    <div style={{ fontSize: 10, color: T.textDim, fontFamily: T.fontMono, marginTop: 6 }}>
+                      {baseline}
+                    </div>
+                  )}
                 </>
               )}
 
@@ -148,6 +165,15 @@ export default function RiskMetricsView({ metrics, loading }) {
             </GlassCard>
           );
         })}
+      </div>
+
+      {/* ── Metrics Reference Legend ── */}
+      <div style={{ padding: 16, background: T.bgCard, borderRadius: 8, marginTop: 16, border: `1px solid ${T.border}` }}>
+        <h4 style={{ margin: "0 0 10px", fontSize: 14, fontWeight: 700, color: T.text }}>Referencia de métricas</h4>
+        <p style={{ margin: "0 0 6px", fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>Sharpe {">"} 1.0 = bueno, {">"} 1.5 = excelente, {">"} 2.0 = excepcional</p>
+        <p style={{ margin: "0 0 6px", fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>Max Drawdown {"<"} -5% = bajo riesgo, {"<"} -10% = moderado, {">"} -15% = alto riesgo</p>
+        <p style={{ margin: "0 0 6px", fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>VaR 95% = pérdida máxima esperada en 19 de 20 días</p>
+        <p style={{ margin: 0, fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>Beta = sensibilidad al mercado. Beta 1.5 = si SPY cae 10%, tu portfolio cae ~15%</p>
       </div>
     </div>
   );

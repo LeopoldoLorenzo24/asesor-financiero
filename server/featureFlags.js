@@ -26,6 +26,9 @@ export const FLAGS = {
   /** Si true, el proceso web mantiene jobs periódicos con setInterval. */
   ENABLE_INTERNAL_SCHEDULER: bool("ENABLE_INTERNAL_SCHEDULER", true),
 
+  /** Si true, corre un preflight operativo cerca de la apertura para sincronizar ratios y validar salud. */
+  ENABLE_PREMARKET_PREFLIGHT: bool("ENABLE_PREMARKET_PREFLIGHT", true),
+
   /** Si true, el análisis falla cuando enforceAnalysisConsistency hace correcciones. */
   STRICT_CONSISTENCY: bool("STRICT_CONSISTENCY", false),
 
@@ -44,12 +47,18 @@ export const FLAGS = {
   /** Si true, loguea el valor del portfolio una vez por día automáticamente. */
   ENABLE_DAILY_CAPITAL_LOG: bool("ENABLE_DAILY_CAPITAL_LOG", true),
 
-  /** Si true, envía alertas de take-profit y stop-loss por Telegram. */
-  ENABLE_TELEGRAM_ALERTS: bool("ENABLE_TELEGRAM_ALERTS", false),
+  /** Si true, envía alertas de take-profit, stop-loss, portfolio tracking y oportunidades emergentes por Telegram. */
+  ENABLE_TELEGRAM_ALERTS: bool("ENABLE_TELEGRAM_ALERTS", true),
 
   /** Si true, recolecta datos automáticamente para el modelo ML. */
   ENABLE_ML_AUTO_COLLECT: bool("ENABLE_ML_AUTO_COLLECT", true),
 
   /** Si true, genera señales de trading intraday/swing. */
   ENABLE_TRADING_SIGNALS: bool("ENABLE_TRADING_SIGNALS", true),
+
+  /** Si true, activa circuit breakers que fuerzan modo defensivo ante estrés de mercado (VIX alto, drawdown, etc.). */
+  ENABLE_CIRCUIT_BREAKERS: bool("ENABLE_CIRCUIT_BREAKERS", true),
+
+  /** Si true, calcula stop-loss dinámicos basados en ATR en lugar de porcentajes fijos. */
+  ENABLE_DYNAMIC_STOPS: bool("ENABLE_DYNAMIC_STOPS", true),
 };

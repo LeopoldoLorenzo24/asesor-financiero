@@ -126,6 +126,8 @@ export const api = {
   aiAnalyzeSingle: (ticker, signal) => request(`/ai/analyze/${encodeURIComponent(ticker)}`, { signal }),
 
   getPortfolioDB: (signal) => request("/portfolio/db", { signal }),
+  getLiquidityPlan: (targetArs, broker = "default") =>
+    request("/portfolio/liquidity-plan", { method: "POST", body: JSON.stringify({ targetArs, broker }) }),
   buyPosition: (ticker, shares, priceArs, notes = "") =>
     request("/portfolio/buy", { method: "POST", body: JSON.stringify({ ticker, shares, priceArs, notes }) }),
   sellPosition: (ticker, shares, priceArs, notes = "") =>
@@ -215,6 +217,25 @@ export const api = {
   // ── System health & alerts ──
   getSystemHealth: () => request("/system/health"),
   getSystemReadiness: () => request("/system/readiness"),
+  getPreflightStatus: () => request("/system/preflight-status"),
+  runPreflightNow: () => request("/system/preflight/run-now", { method: "POST", body: JSON.stringify({}) }),
+  getExecutionAssistant: () => request("/system/execution-assistant"),
+  saveExecutionAssistant: (suggestionMode, maxCriticalAlertsPerDay = 2) =>
+    request("/system/execution-assistant", {
+      method: "POST",
+      body: JSON.stringify({ suggestionMode, maxCriticalAlertsPerDay }),
+    }),
+  getExecutionTickets: (status = "open", limit = 20) =>
+    request(`/execution-tickets?status=${encodeURIComponent(status)}&limit=${encodeURIComponent(limit)}`),
+  confirmExecutionTicket: (id) =>
+    request(`/execution-tickets/${encodeURIComponent(id)}/confirm`, { method: "POST", body: JSON.stringify({}) }),
+  rejectExecutionTicket: (id) =>
+    request(`/execution-tickets/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({}) }),
+  markExecutionTicketExecuted: (id) =>
+    request(`/execution-tickets/${encodeURIComponent(id)}/executed`, { method: "POST", body: JSON.stringify({}) }),
+  getBrokerSettings: () => request("/system/broker-settings"),
+  saveBrokerSettings: (brokerKey) =>
+    request("/system/broker-settings", { method: "POST", body: JSON.stringify({ brokerKey }) }),
   getIntradayMonitorStatus: () => request("/system/monitor/status"),
   updateIntradayMonitorSettings: (payload) =>
     request("/system/monitor/settings", { method: "POST", body: JSON.stringify(payload || {}) }),

@@ -6,7 +6,36 @@
 // ============================================================
 
 import { getCapitalHistory, getPredictionHistory } from "./database.js";
-import { fetchHistory } from "./marketData.js";
+import { fetchHistory, fetchQuote } from "./marketData.js";
+
+// ── SPY Dividend Yield (fetched from real API) ──────────────
+
+/**
+ * SPY dividend yield fetched from real market data.
+ * Falls back to 1.5% annual if API is unavailable.
+ * Refreshed every 24h.
+ */
+let _spyAnnualDivYield = 0.015; // initial fallback
+let _spyDivYieldFetchedAt = 0;
+const SPY_DIV_YIELD_REFRESH_MS = 24 * 60 * 60 * 1000; // 24h
+
+async function getSpyMonthlyDivYield() {
+  if (Date.now() - _spyDivYieldFetchedAt < SPY_DIV_YIELD_REFRESH_MS) {
+    return _spyAnnualDivYield / 12;
+  }
+  try {
+    const quote = await fetchQuote("SPY");
+    if (quote?.dividendYield && quote.dividendYield > 0) {
+      // dividendYield from Yahoo/FMP is already a decimal (e.g., 0.015 for 1.5%)
+      _spyAnnualDivYield = quote.dividendYield > 1 ? quote.dividendYield / 100 : quote.dividendYield;
+      _spyDivYieldFetchedAt = Date.now();
+      console.log(`[performance] SPY dividend yield actualizado: ${(_spyAnnualDivYield * 100).toFixed(2)}% anual (desde API)`);
+    }
+  } catch {
+    // Keep previous value
+  }
+  return _spyAnnualDivYield / 12;
+}
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -68,11 +97,21 @@ export async function calculateSpyBenchmarkFromBuys(transactions = [], currentCc
   let investedArs = 0;
   const monthlyLog = [];
 
+  const spyMonthlyDivYield = await getSpyMonthlyDivYield();
+
   for (const tx of buyTxs) {
     const amount = Number(tx.total_ars || 0);
     const txDate = String(tx.date_executed).slice(0, 10);
     const spyPriceArs = getPriceOn(spyIdx, sortedSpyDates, txDate);
     if (!spyPriceArs || spyPriceArs <= 0) continue;
+
+    // Reinvest accumulated dividends before buying more
+    if (spyCedears > 0 && spyPriceArs > 0) {
+      const dividendArs = spyCedears * spyPriceArs * spyMonthlyDivYield;
+      const reinvestedCedears = dividendArs / spyPriceArs;
+      spyCedears += reinvestedCedears;
+    }
+
     const cedearsBought = amount / spyPriceArs;
     spyCedears += cedearsBought;
     investedArs += amount;
@@ -97,6 +136,7 @@ export async function calculateSpyBenchmarkFromBuys(transactions = [], currentCc
     spyPortfolioUsd,
     spyReturnPct,
     currentSpyPriceArs: Math.round(currentSpyPriceArs * 100) / 100,
+    benchmarkLabel: "SPY (total return, dividendos reinvertidos)",
     monthlyLog,
   };
 }
@@ -224,11 +264,13 @@ export async function calculateSpyBenchmark(currentCclVenta) {
     const currentSpyPriceArs = getPriceOn(spyIdx, sortedSpyDates, today);
     if (!currentSpyPriceArs) return null;
 
-    // Simular compras mensuales en SPY
+    // Simular compras mensuales en SPY con dividendos reinvertidos (total return)
     let totalSpyCedears = 0;
     let totalArsInvested = 0;
     let totalUsdInvested = 0;
     const monthlyLog = [];
+
+    const spyMonthlyDivYield = await getSpyMonthlyDivYield();
 
     for (const entry of monthly) {
       const spyPriceArs = getPriceOn(spyIdx, sortedSpyDates, entry.date);
@@ -236,6 +278,13 @@ export async function calculateSpyBenchmark(currentCclVenta) {
 
       const ccl = entry.ccl_rate || currentCclVenta;
       const deposit = entry.monthly_deposit || 1000000;
+
+      // Reinvest accumulated dividends before buying more (monthly dividend yield from real API)
+      if (totalSpyCedears > 0 && spyPriceArs > 0) {
+        const dividendArs = totalSpyCedears * spyPriceArs * spyMonthlyDivYield;
+        const reinvestedCedears = dividendArs / spyPriceArs;
+        totalSpyCedears += reinvestedCedears;
+      }
 
       // Cuántos CEDEARs de SPY.BA se pueden comprar con el depósito
       const cedearsBought = deposit / spyPriceArs;
@@ -286,6 +335,7 @@ export async function calculateSpyBenchmark(currentCclVenta) {
       alphaArs,
       alphaUsd,
       beatsSpy: alphaArs > 0,
+      benchmarkLabel: "SPY (total return, dividendos reinvertidos)",
       monthlyLog,
     };
   } catch (err) {

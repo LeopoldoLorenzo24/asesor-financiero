@@ -12,6 +12,7 @@ import {
 } from "./database.js";
 import { getRealPicksAlpha, calculateSpyBenchmark } from "./performance.js";
 import { sanitizePromptString } from "./utils.js";
+import { getEffectiveRatio } from "./cedears.js";
 
 /**
  * Genera el contexto completo del ciclo mensual para el prompt de la IA.
@@ -40,8 +41,8 @@ export async function buildMonthlyCycleContext({ capital, ccl, ranking }) {
     const r = ranking?.find((x) => x.cedear?.ticker === pos.ticker);
     const currentPriceARS =
       r?.priceARS ||
-      (r?.quote?.price && ccl?.venta && r?.cedear?.ratio
-        ? Math.round((r.quote.price * ccl.venta) / r.cedear.ratio)
+      (r?.quote?.price && ccl?.venta
+        ? Math.round((r.quote.price * ccl.venta) / getEffectiveRatio(pos.ticker).ratio)
         : null) ||
       pos.weighted_avg_price;
     const currentValue = currentPriceARS * pos.total_shares;
@@ -51,7 +52,7 @@ export async function buildMonthlyCycleContext({ capital, ccl, ranking }) {
     portfolioValueARS += currentValue;
 
     // USD P&L — requires quote price + ratio, falls back to CCL conversion
-    const ratio = r?.cedear?.ratio || 1;
+    const ratio = getEffectiveRatio(pos.ticker).ratio;
     const quoteUsd = r?.quote?.price || null;
     const currentUsdValue = quoteUsd != null
       ? Math.round((pos.total_shares / ratio) * quoteUsd * 100) / 100

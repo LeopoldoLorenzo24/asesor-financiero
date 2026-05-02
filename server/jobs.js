@@ -11,7 +11,7 @@ import {
   getPredictions, evaluatePredictionsForTicker, getCapitalHistory,
   savePostMortem, getPostMortems, getLatestLessons,
   getVirtualPortfolioSummary, resetVirtualPortfolio, addVirtualPosition,
-  getPaperTradingConfig, saveTrackRecord, getTrackRecord,
+  getPaperTradingConfig, getBrokerPreference, saveTrackRecord, getTrackRecord,
 } from "./database.js";
 import { fetchQuote, fetchAllQuotes, fetchBymaPrices, fetchCCL, fetchHistory } from "./marketData.js";
 import { calcPriceARS, safeJsonParse } from "./utils.js";
@@ -22,7 +22,8 @@ import { getClient, extractJSON } from "./aiAdvisor.js";
 import { assertAiBudgetAvailable, recordAnthropicUsage } from "./aiUsage.js";
 import { calculateSpyBenchmark } from "./performance.js";
 import { calcSharpeRatio, inferPeriodsPerYearFromDates } from "./riskMetrics.js";
-import CEDEARS from "./cedears.js";
+import CEDEARS, { loadDynamicRatios, setDynamicRatios, getEffectiveRatio, getRatioFreshness } from "./cedears.js";
+import { upsertCedearRatio, getAllCedearRatios } from "./database.js";
 
 // ── AUTO SEED ──
 export async function seedIfEmpty() {
@@ -188,8 +189,12 @@ export async function runDailyCapitalLog() {
     const [quotesMap, bymaPrices, ccl] = await Promise.all([
       fetchAllQuotes(tickers).catch(() => ({})),
       fetchBymaPrices(tickers).catch(() => ({})),
-      fetchCCL().catch(() => ({ venta: 1200 })),
+      fetchCCL().catch(() => { console.warn("[jobs] CCL no disponible, job omitido"); return null; }),
     ]);
+    if (!ccl?.venta) {
+      console.warn("[capital-log] CCL no disponible — no se puede calcular valuación. Job omitido.");
+      return;
+    }
 
     let portfolioValueArs = 0;
     for (const pos of portfolio) {
@@ -256,7 +261,8 @@ export async function runMLPipeline() {
   mlPipelineRunning = true;
   try {
     const { runMLPipeline } = await import("./mlEngine.js");
-    const ccl = await fetchCCL().catch(() => ({ venta: 1200 }));
+    const ccl = await fetchCCL().catch(() => { console.warn("[jobs] CCL no disponible, job omitido"); return null; });
+    if (!ccl?.venta) { console.warn("[ml] CCL no disponible — job omitido."); return; }
     const tickers = CEDEARS.slice(0, 20).map((c) => c.ticker);
     const result = await runMLPipeline(tickers, ccl.venta);
     console.log(`[ml] Pipeline: ${result.collected} filas recolectadas. Modelo accuracy: ${result.model?.accuracy ?? "N/A"}%`);
@@ -385,7 +391,7 @@ Respondé SOLO con JSON válido:
 }
 
 // ── AUTO PAPER TRADING ──
-export async function runAutoPaperTrading(aiAnalysis) {
+export async function runAutoPaperTrading(aiAnalysis, userId = null) {
   try {
     const config = await getPaperTradingConfig();
     if (!config.autoSyncEnabled) return;
@@ -394,13 +400,15 @@ export async function runAutoPaperTrading(aiAnalysis) {
 
     const { simulateBuyExecution } = await import("./executionSimulator.js");
     const { logVirtualTransaction } = await import("./database.js");
+    const brokerPreference = await getBrokerPreference(userId);
+    const brokerKey = brokerPreference?.brokerKey || "default";
 
     await resetVirtualPortfolio([]);
     let executedCount = 0;
     for (const pick of picks) {
       if (!pick.ticker || !pick.cantidad_cedears || !pick.precio_aprox_ars) continue;
       const tradeAmountArs = pick.cantidad_cedears * pick.precio_aprox_ars;
-      const simulated = await simulateBuyExecution(pick.ticker, pick.cantidad_cedears, pick.precio_aprox_ars, tradeAmountArs, true);
+      const simulated = await simulateBuyExecution(pick.ticker, pick.cantidad_cedears, pick.precio_aprox_ars, tradeAmountArs, true, 0, brokerKey);
 
       await logVirtualTransaction({
         ticker: pick.ticker,
@@ -415,7 +423,7 @@ export async function runAutoPaperTrading(aiAnalysis) {
         partialFill: simulated.partialFill,
         brokerCostsArs: simulated.brokerCosts.totalCosts,
         totalCostArs: simulated.totalCostArs,
-        notes: simulated.liquidityWarning || `Auto-sync ${pick.ticker}`,
+        notes: simulated.liquidityWarning || `Auto-sync ${pick.ticker} (${brokerKey})`,
       });
 
       if (simulated.executedShares > 0) {
@@ -589,7 +597,306 @@ export async function runTrackRecordLog() {
   }
 }
 
+// ── CEDEAR RATIO SYNC ──
+// Calculates real ratios by comparing BYMA ARS price vs USD price × CCL.
+// Known BYMA ratios are always whole numbers or simple fractions.
+// We round to the nearest known ratio to avoid floating-point drift.
+
+const KNOWN_RATIOS = [
+  0.1, 0.2, 0.25, 0.33, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+  11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 24, 25, 27, 28, 30,
+  32, 35, 36, 38, 39, 40, 44, 47, 48, 50, 52, 55, 56, 58, 60,
+  70, 72, 78, 80, 83, 87, 100, 107, 110, 115, 120, 130, 144, 146,
+  150, 160, 172, 200, 230, 250, 300, 400, 500, 600, 700,
+];
+
+function snapToKnownRatio(rawRatio) {
+  if (rawRatio <= 0) return 1;
+  let best = KNOWN_RATIOS[0];
+  let bestDist = Math.abs(rawRatio - best);
+  for (const k of KNOWN_RATIOS) {
+    const dist = Math.abs(rawRatio - k);
+    if (dist < bestDist) { best = k; bestDist = dist; }
+  }
+  return best;
+}
+
+export async function runRatioSync() {
+  try {
+    console.log("[ratio-sync] Iniciando sincronización de ratios CEDEAR...");
+    const ccl = await fetchCCL().catch(() => null);
+    if (!ccl?.venta || ccl.venta <= 0) {
+      console.warn("[ratio-sync] CCL no disponible, abortando.");
+      return;
+    }
+
+    const tickers = CEDEARS.map(c => c.ticker);
+    const [bymaPrices, usdQuotes] = await Promise.all([
+      fetchBymaPrices(tickers).catch(() => ({})),
+      fetchAllQuotes(tickers).catch(() => ({})),
+    ]);
+
+    let updated = 0;
+    let skipped = 0;
+    const warnings = [];
+
+    for (const cedear of CEDEARS) {
+      const byma = bymaPrices[cedear.ticker];
+      const usdQuote = usdQuotes[cedear.ticker];
+      const priceArs = byma?.priceARS;
+      const priceUsd = usdQuote?.price;
+
+      if (!priceArs || priceArs <= 0 || !priceUsd || priceUsd <= 0) {
+        skipped++;
+        continue;
+      }
+
+      // ratio = USD_price × CCL / ARS_price_per_cedear
+      const rawRatio = (priceUsd * ccl.venta) / priceArs;
+      const snappedRatio = snapToKnownRatio(rawRatio);
+      const deviationFromSnapped = Math.abs(rawRatio - snappedRatio) / snappedRatio;
+
+      let confidence = 'high';
+      if (deviationFromSnapped > 0.15) {
+        confidence = 'low';
+        warnings.push(`${cedear.ticker}: ratio calculado ${rawRatio.toFixed(2)} difiere ${(deviationFromSnapped * 100).toFixed(0)}% del snap ${snappedRatio}. Revisar manualmente.`);
+      } else if (deviationFromSnapped > 0.05) {
+        confidence = 'medium';
+      }
+
+      // Check if ratio changed vs hardcoded
+      if (snappedRatio !== cedear.ratio && confidence !== 'low') {
+        warnings.push(`${cedear.ticker}: ratio cambió de ${cedear.ratio} (hardcoded) a ${snappedRatio} (calculado). Raw: ${rawRatio.toFixed(2)}`);
+      }
+
+      await upsertCedearRatio({
+        ticker: cedear.ticker,
+        ratio: snappedRatio,
+        source: 'calculated',
+        priceArs,
+        priceUsd,
+        cclRate: ccl.venta,
+        deviationPct: Math.round(deviationFromSnapped * 10000) / 100,
+        confidence,
+      });
+      updated++;
+    }
+
+    // Reload into memory
+    const allRatios = await getAllCedearRatios();
+    setDynamicRatios(allRatios);
+
+    if (warnings.length > 0) {
+      console.warn(`[ratio-sync] Warnings:\n  ${warnings.join("\n  ")}`);
+    }
+    console.log(`[ratio-sync] Completado: ${updated} actualizados, ${skipped} sin datos, ${warnings.length} warnings.`);
+
+    return { updated, skipped, warnings };
+  } catch (err) {
+    console.error("[ratio-sync] Error:", err.message);
+    throw err;
+  }
+}
+
+// ── SMART PORTFOLIO TRACKING NOTIFICATION ──
+export async function runPortfolioTrackingNotification() {
+  if (!FLAGS.ENABLE_TELEGRAM_ALERTS) return;
+  try {
+    const portfolio = await getPortfolioSummary();
+    if (portfolio.length === 0) return;
+
+    const activePicks = await getPredictions(null, true, 200);
+    const buyPicks = activePicks.filter((p) => p.action === "COMPRAR" && p.price_usd_at_prediction > 0);
+    const picksByTicker = {};
+    for (const pick of buyPicks) {
+      picksByTicker[pick.ticker] = pick;
+    }
+
+    const tickers = portfolio.map((p) => p.ticker);
+    const quotesMap = await fetchAllQuotes(tickers).catch(() => ({}));
+
+    const updates = [];
+    let totalInvested = 0;
+    let totalCurrent = 0;
+
+    for (const pos of portfolio) {
+      const quote = quotesMap[pos.ticker];
+      if (!quote?.price) continue;
+      const pick = picksByTicker[pos.ticker];
+
+      const entryPriceUsd = pick?.price_usd_at_prediction || 0;
+      const currentPriceUsd = quote.price;
+      if (entryPriceUsd <= 0) continue;
+
+      const changePct = ((currentPriceUsd - entryPriceUsd) / entryPriceUsd) * 100;
+      const targetPct = pick?.target_pct ?? null;
+      const stopPct = pick?.stop_loss_pct ?? null;
+
+      let distanceToTargetPct = null;
+      if (targetPct != null) {
+        distanceToTargetPct = targetPct - changePct;
+      }
+      let distanceToStopPct = null;
+      if (stopPct != null) {
+        distanceToStopPct = changePct - stopPct; // how far above stop
+      }
+
+      totalInvested += entryPriceUsd * pos.total_shares;
+      totalCurrent += currentPriceUsd * pos.total_shares;
+
+      // Only include noteworthy positions: significant move, near target, or near stop
+      const isNoteworthy = Math.abs(changePct) >= 3 ||
+        (distanceToTargetPct != null && distanceToTargetPct <= 5) ||
+        (distanceToStopPct != null && distanceToStopPct <= 3);
+
+      if (isNoteworthy) {
+        updates.push({
+          ticker: pos.ticker,
+          shares: pos.total_shares,
+          entryPrice: entryPriceUsd,
+          currentPrice: currentPriceUsd,
+          changePct: Math.round(changePct * 10) / 10,
+          targetPct,
+          stopPct,
+          distanceToTargetPct: distanceToTargetPct != null ? Math.round(distanceToTargetPct * 10) / 10 : null,
+          distanceToStopPct: distanceToStopPct != null ? Math.round(distanceToStopPct * 10) / 10 : null,
+        });
+      }
+    }
+
+    if (updates.length === 0) return; // Nothing noteworthy
+
+    const totalPnlPct = totalInvested > 0 ? ((totalCurrent - totalInvested) / totalInvested) * 100 : 0;
+
+    const { sendPortfolioTrackingUpdate } = await import("./telegramBot.js");
+    await sendPortfolioTrackingUpdate(updates, Math.round(totalPnlPct * 10) / 10);
+    console.log(`[portfolio-tracking] Notificación enviada: ${updates.length} posiciones notables`);
+  } catch (err) {
+    console.error("[portfolio-tracking] Error:", err.message);
+  }
+}
+
+// ── EMERGING OPPORTUNITIES SCANNER ──
+export async function runEmergingOpportunitiesNotification() {
+  if (!FLAGS.ENABLE_TELEGRAM_ALERTS) return;
+  try {
+    const { technicalAnalysis, fundamentalAnalysis, compositeScore } = await import("./analysis.js");
+    const { fetchFullData } = await import("./marketData.js");
+    const { RANKING_CONFIG } = await import("./config.js");
+
+    // Get current portfolio tickers to exclude
+    const portfolio = await getPortfolioSummary();
+    const heldTickers = new Set(portfolio.map((p) => p.ticker));
+
+    // Pre-rank universe quickly
+    const quotesMap = await fetchAllQuotes(CEDEARS.map((c) => c.ticker)).catch(() => ({}));
+    const preRanked = CEDEARS
+      .filter((c) => !heldTickers.has(c.ticker)) // exclude what we already own
+      .map((c) => ({
+        cedear: c,
+        quote: quotesMap[c.ticker],
+        basicScore: fundamentalAnalysis(null, quotesMap[c.ticker], c.sector).score,
+      }))
+      .sort((a, b) => b.basicScore - a.basicScore)
+      .slice(0, 30); // analyze top 30
+
+    const opportunities = [];
+
+    for (const { cedear, quote } of preRanked) {
+      try {
+        const data = await fetchFullData(cedear.ticker);
+        const tech = technicalAnalysis(data.history);
+        const fund = fundamentalAnalysis(data.financials, data.quote || quote, cedear.sector, tech?.indicators);
+        const scores = compositeScore(tech, fund, data.quote || quote, cedear.sector, "moderate");
+
+        // Look for emerging signals: high score + momentum building
+        if (scores.composite < 65) continue; // only strong candidates
+
+        const rsi = tech?.indicators?.rsi || 50;
+        const macdHist = tech?.indicators?.macd?.histogram || 0;
+        const perf1m = tech?.indicators?.performance?.month1 || 0;
+
+        // Identify WHY this is emerging
+        const reasons = [];
+        if (scores.composite >= 75) reasons.push(`Score alto (${scores.composite}/100)`);
+        if (rsi >= 30 && rsi <= 45 && macdHist > 0) reasons.push("RSI en zona de rebote + MACD girando positivo");
+        if (rsi <= 30) reasons.push("RSI oversold — posible rebote");
+        if (perf1m < -10 && scores.composite >= 70) reasons.push(`Caída reciente (-${Math.abs(perf1m).toFixed(0)}%) en activo de alta calidad`);
+        if (macdHist > 0 && perf1m > 0) reasons.push("Momentum alcista confirmándose");
+        if (fund?.data?.pegRatio && fund.data.pegRatio < 1) reasons.push(`PEG ratio atractivo (${fund.data.pegRatio.toFixed(1)})`);
+
+        if (reasons.length === 0) continue; // No specific trigger
+
+        opportunities.push({
+          ticker: cedear.ticker,
+          name: cedear.name,
+          sector: cedear.sector,
+          compositeScore: scores.composite,
+          signal: scores.signal,
+          reason: reasons.join(". "),
+        });
+      } catch {
+        // Skip on error
+      }
+    }
+
+    if (opportunities.length === 0) return;
+
+    // Only send top 5 most interesting
+    const topOpps = opportunities.sort((a, b) => b.compositeScore - a.compositeScore).slice(0, 5);
+
+    const { sendEmergingOpportunityAlert } = await import("./telegramBot.js");
+    await sendEmergingOpportunityAlert(topOpps);
+    console.log(`[emerging-opps] Notificación enviada: ${topOpps.length} oportunidades emergentes`);
+  } catch (err) {
+    console.error("[emerging-opps] Error:", err.message);
+  }
+}
+
+// ── SIGNIFICANT POSITION MOVE DETECTOR ──
+export async function runSignificantMoveCheck() {
+  if (!FLAGS.ENABLE_TELEGRAM_ALERTS) return;
+  try {
+    const portfolio = await getPortfolioSummary();
+    if (portfolio.length === 0) return;
+
+    const tickers = portfolio.map((p) => p.ticker);
+    const quotesMap = await fetchAllQuotes(tickers).catch(() => ({}));
+
+    for (const pos of portfolio) {
+      const quote = quotesMap[pos.ticker];
+      if (!quote?.price) continue;
+      const dayChangePct = quote.changePercent ?? 0;
+      if (!dayChangePct) continue;
+      if (Math.abs(dayChangePct) < 5) continue; // Only significant moves
+
+      const reason = dayChangePct >= 5
+        ? `📊 Tu posición de ${pos.total_shares} CEDEARs se beneficia de esta suba.`
+        : `📊 Tu posición de ${pos.total_shares} CEDEARs se ve afectada. Revisá tus niveles de stop-loss.`;
+
+      const { sendSignificantMoveAlert } = await import("./telegramBot.js");
+      await sendSignificantMoveAlert(pos.ticker, dayChangePct, quote.price, reason);
+    }
+  } catch (err) {
+    console.error("[significant-move] Error:", err.message);
+  }
+}
+
+// ── TICKET EXPIRY CHECK ──
+export async function runTicketExpiryCheck() {
+  try {
+    const { expireExecutionTickets } = await import("./database.js");
+    const count = await expireExecutionTickets();
+    if (count > 0) {
+      console.log(`[ticket-expiry] Job completado: ${count} tickets expirados.`);
+    }
+  } catch (err) {
+    console.error("[ticket-expiry] Error:", err.message);
+  }
+}
+
 export async function runDailyMaintenanceCycle() {
+  await runRatioSync();
   await runAutoEvaluation();
   await runDailyCapitalLog();
   await runStopLossCheck();
@@ -597,4 +904,7 @@ export async function runDailyMaintenanceCycle() {
   await runMonthlyPostMortem();
   await runMLPipeline();
   await runTrackRecordLog();
+  await runPortfolioTrackingNotification();
+  await runSignificantMoveCheck();
+  await runTicketExpiryCheck();
 }

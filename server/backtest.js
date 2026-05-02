@@ -153,16 +153,42 @@ function applyLotSize(ticker, rawShares) {
   return Math.floor(rawShares / lot) * lot;
 }
 
+function historyDateKey(point) {
+  const raw = point?.date;
+  if (!raw) return "";
+  if (raw instanceof Date) return raw.toISOString().slice(0, 10);
+  return String(raw).slice(0, 10);
+}
+
+function isHistoryOnOrBefore(point, cutoffStr) {
+  const key = historyDateKey(point);
+  return key.length > 0 && key <= cutoffStr;
+}
+
+function isHistoryAfter(point, cutoffStr) {
+  const key = historyDateKey(point);
+  return key.length > 0 && key > cutoffStr;
+}
+
+/**
+ * Detecta look-ahead bias para un período de backtest dado.
+ * Verifica que los datos pasados a scoring/selección NO contengan precios
+ * posteriores al cutoff. Si se detecta bias, el mes debe ser excluido.
+ *
+ * @param {Object} historyMap - Mapa ticker → array de precios
+ * @param {string} cutoffStr - Fecha de corte ISO "YYYY-MM-DD"
+ * @returns {{ clean: boolean, tickers: string[] }} - clean=false si hay bias; tickers afectados
+ */
 function checkLookAheadBias(historyMap, cutoffStr) {
-  // Validación básica: verifica que no haya datos futuros en el historyMap
+  const biasedTickers = [];
   for (const [ticker, history] of Object.entries(historyMap)) {
-    const futureData = history.filter((p) => p.date > cutoffStr);
+    const futureData = history.filter((p) => isHistoryAfter(p, cutoffStr));
     if (futureData.length > 0) {
       console.warn(`[backtest] LOOK-AHEAD BIAS detectado en ${ticker}: ${futureData.length} puntos futuros respecto a cutoff ${cutoffStr}`);
-      return false;
+      biasedTickers.push(ticker);
     }
   }
-  return true;
+  return { clean: biasedTickers.length === 0, tickers: biasedTickers };
 }
 
 export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, monthlyDeposit = BACKTEST_CONFIG.defaultMonthlyDeposit, profile = "moderate", picksPerMonth = BACKTEST_CONFIG.defaultPicksPerMonth } = {}) {
@@ -202,12 +228,41 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
   const coreHoldings = [];
   const meses = [];
   let stoplossRecoveredCapital = 0;
+  const backtestWarnings = [];
+  let biasFreePeriods = 0;
+  const totalPeriods = months;
 
   for (let m = months; m >= 1; m--) {
     const cutoffDate = new Date();
     cutoffDate.setMonth(cutoffDate.getMonth() - m);
     const cutoffStr = cutoffDate.toISOString().slice(0, 10);
     const monthLabel = cutoffDate.toLocaleDateString("es-AR", { year: "numeric", month: "short" });
+
+    // Per-month look-ahead bias check: build a filtered historyMap up to cutoff
+    const cutoffHistoryMap = {};
+    let monthHasBias = false;
+    for (const [ticker, history] of Object.entries(historyMap)) {
+      const cutHistory = history.filter((p) => isHistoryOnOrBefore(p, cutoffStr));
+      cutoffHistoryMap[ticker] = cutHistory;
+    }
+    // Verify no future data leaked into the cut history
+    const biasCheck = checkLookAheadBias(cutoffHistoryMap, cutoffStr);
+    if (!biasCheck.clean) {
+      monthHasBias = true;
+      backtestWarnings.push(`Look-ahead bias detectado en mes ${monthLabel}. Resultados de ese período excluidos.`);
+      meses.push({
+        month: monthLabel, date: cutoffStr, bought: [],
+        skipped: true, skipReason: 'look-ahead bias',
+        core: { ticker: coreETF, shares: 0, monto: 0 },
+        satellite: [],
+        corePct: Math.round(corePct * 100),
+        satellitePct: Math.round(satellitePct * 100),
+        holdingsCount: activeHoldings.length + coreHoldings.length,
+        stopLossEvents: 0, takeProfitEvents: 0, qualityPicksAvailable: 0,
+      });
+      continue;
+    }
+    biasFreePeriods++;
 
     // Check stop-loss / take-profit
     const stopLossEvents = [];
@@ -219,11 +274,11 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
       const fullHistory = historyMap[h.ticker];
       if (!fullHistory) continue;
 
-      const cutPrices = fullHistory.filter((p) => p.date <= cutoffStr);
+      const cutPrices = fullHistory.filter((p) => isHistoryOnOrBefore(p, cutoffStr));
       if (cutPrices.length === 0) continue;
       const currentPrice = cutPrices[cutPrices.length - 1].close;
 
-      const pricesSinceEntry = fullHistory.filter((p) => p.date > h.boughtMonth && p.date <= cutoffStr);
+      const pricesSinceEntry = fullHistory.filter((p) => isHistoryAfter(p, h.boughtMonth) && isHistoryOnOrBefore(p, cutoffStr));
       let hitStopLoss = false;
       let hitTakeProfit = false;
 
@@ -282,7 +337,7 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
     const coreBudget = monthlyDeposit * corePct + extraForCore;
     let coreBought = null;
     if (coreHistory && coreBudget > 0) {
-      const coreCut = coreHistory.filter((p) => p.date <= cutoffStr);
+      const coreCut = coreHistory.filter((p) => isHistoryOnOrBefore(p, cutoffStr));
       if (coreCut.length > 0) {
         const rawCorePrice = coreCut[coreCut.length - 1].close;
         const corePrice = rawCorePrice * (1 + SLIPPAGE);
@@ -309,7 +364,7 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
     for (const c of candidates) {
       const fullHistory = historyMap[c.ticker];
       if (!fullHistory) continue;
-      const cutHistory = fullHistory.filter((p) => p.date <= cutoffStr);
+      const cutHistory = fullHistory.filter((p) => isHistoryOnOrBefore(p, cutoffStr));
       if (cutHistory.length < 30) continue;
 
       const enhancedScores = backtestScore(cutHistory, c.sector, profile);
@@ -330,7 +385,7 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
       actualCoreBudget = shifted;
 
       if (coreHistory && actualCoreBudget > 0) {
-        const coreCut = coreHistory.filter((p) => p.date <= cutoffStr);
+        const coreCut = coreHistory.filter((p) => isHistoryOnOrBefore(p, cutoffStr));
         if (coreCut.length > 0) {
           const corePrice = coreCut[coreCut.length - 1].close;
           const rawShares = Math.floor(actualCoreBudget / corePrice);
@@ -403,13 +458,16 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
     });
   }
 
-  // Look-ahead bias guard
-  const firstMonthCutoff = new Date();
-  firstMonthCutoff.setMonth(firstMonthCutoff.getMonth() - months);
-  const firstCutoffStr = firstMonthCutoff.toISOString().slice(0, 10);
-  const lookAheadClean = checkLookAheadBias(historyMap, firstCutoffStr);
-  if (!lookAheadClean) {
-    console.warn("[backtest] ADVERTENCIA: Posible look-ahead bias detectado. Resultados pueden ser optimistas.");
+  // Look-ahead bias reliability assessment
+  const biasPct = totalPeriods > 0 ? ((totalPeriods - biasFreePeriods) / totalPeriods) * 100 : 0;
+  const biasReliability = {
+    biasFreePeriods,
+    totalPeriods,
+    biasPct: Math.round(biasPct * 100) / 100,
+    reliable: biasPct <= 30,
+  };
+  if (!biasReliability.reliable) {
+    backtestWarnings.push(`Backtest no confiable: >${Math.round(biasPct)}% de períodos con look-ahead bias.`);
   }
 
   if (activeHoldings.length === 0 && coreHoldings.length === 0 && closedHoldings.length === 0) {
@@ -457,7 +515,7 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
       const cutoffDate = new Date();
       cutoffDate.setMonth(cutoffDate.getMonth() - m);
       const cutoffStr = cutoffDate.toISOString().slice(0, 10);
-      const spyCut = spyHistory.filter((p) => p.date <= cutoffStr);
+      const spyCut = spyHistory.filter((p) => isHistoryOnOrBefore(p, cutoffStr));
         if (spyCut.length > 0) {
           const rawPrice = spyCut[spyCut.length - 1].close;
           const price = rawPrice * (1 + SLIPPAGE);
@@ -484,7 +542,7 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
         const cutoffDate = new Date();
         cutoffDate.setMonth(cutoffDate.getMonth() - m);
         const cutoffStr = cutoffDate.toISOString().slice(0, 10);
-        const spyCut = spyH.filter((p) => p.date <= cutoffStr);
+        const spyCut = spyH.filter((p) => isHistoryOnOrBefore(p, cutoffStr));
         if (spyCut.length > 0) {
           const rawPrice = spyCut[spyCut.length - 1].close;
           const price = rawPrice * (1 + SLIPPAGE);
@@ -579,6 +637,8 @@ export async function runBacktest({ months = BACKTEST_CONFIG.defaultMonths, mont
   return {
     config: { months, monthlyDeposit, profile, picksPerMonth, corePct: Math.round(corePct * 100) },
     entryDate: entryDate.toISOString().slice(0, 10),
+    warnings: backtestWarnings,
+    biasReliability,
     resultado: {
       totalInvertido: Math.round(totalInvested),
       valorFinal: Math.round(totalCurrent),

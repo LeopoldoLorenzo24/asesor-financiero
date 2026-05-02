@@ -2,13 +2,16 @@ import { Router } from "express";
 import {
   getPortfolio, getPortfolioSummary, addPosition, sellPosition, syncPortfolio, resetPortfolio, deletePosition,
   getTransactions, autoUpdateAdherenceFromTransaction, previewPortfolioSync, logBrokerImportAudit, getBrokerImportAuditLogs,
-  getHistoricalImportDbState, applyHistoricalBrokerLedgerEntries,
+  getHistoricalImportDbState, applyHistoricalBrokerLedgerEntries, getCapitalHistory, getAnalysisSessions, getBrokerPreference,
 } from "../database.js";
-import { fetchCCL, fetchQuote } from "../marketData.js";
+import { fetchCCL, fetchQuote, fetchAllQuotes } from "../marketData.js";
 import { checkTradeRisk } from "../riskManager.js";
-import { toFiniteNumber } from "../utils.js";
+import { calcPriceARS, safeJsonParse, toFiniteNumber } from "../utils.js";
 import { parseBrokerImportPayload, parseBrokerAccountLedgerPayload } from "../brokerImport.js";
+import { buildLiquidityPlan } from "../liquidityPlanner.js";
 import CEDEARS from "../cedears.js";
+import { sendInternalError } from "../http.js";
+import { getInvestmentReadiness } from "../investmentReadiness.js";
 
 const router = Router();
 
@@ -54,9 +57,84 @@ function buildHistoricalImportSummary(entries) {
   };
 }
 
+export function buildNewExposureBlocker(readiness) {
+  const preflight = readiness?.preflight || null;
+  const dataIntegrity = readiness?.dataIntegrity || null;
+  if (!preflight?.blocksNewTrading && !dataIntegrity?.mustStandAside) {
+    return null;
+  }
+
+  return {
+    error:
+      preflight?.blocksNewTrading
+        ? preflight.summary || "El preflight operativo del dia no habilita posiciones nuevas."
+        : dataIntegrity?.summary || "La integridad de datos no habilita posiciones nuevas.",
+    readiness: {
+      preflight,
+      dataIntegrity,
+    },
+  };
+}
+
+async function getNewExposureBlocker(userId) {
+  const readiness = await getInvestmentReadiness(userId);
+  return buildNewExposureBlocker(readiness);
+}
+
 router.get("/db", async (req, res) => {
   try { res.json({ summary: await getPortfolioSummary(), positions: await getPortfolio() }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  catch (err) { sendInternalError(res, "portfolio.db", err); }
+});
+
+router.post("/liquidity-plan", async (req, res) => {
+  try {
+    const targetCheck = validatePositiveNumber(req.body?.targetArs, "targetArs");
+    if (!targetCheck.valid) return res.status(400).json({ error: targetCheck.error });
+
+    const userId = req.user?.userId ?? null;
+    const brokerPreference = await getBrokerPreference(userId);
+    const brokerKey = String(req.body?.broker || brokerPreference?.brokerKey || "default").trim() || "default";
+    const [portfolioSummary, capitalRows, latestSessions, ccl] = await Promise.all([
+      getPortfolioSummary(),
+      getCapitalHistory(1),
+      getAnalysisSessions(1),
+      fetchCCL().catch(() => ({ venta: 0 })),
+    ]);
+
+    const tickers = portfolioSummary.map((row) => row.ticker).filter(Boolean);
+    const quotesMap = tickers.length > 0 ? await fetchAllQuotes(tickers).catch(() => ({})) : {};
+    const priceMap = {};
+    for (const row of portfolioSummary) {
+      const ticker = String(row.ticker || "").toUpperCase();
+      const quote = quotesMap[ticker];
+      const cedear = CEDEARS.find((item) => item.ticker === ticker);
+      priceMap[ticker] = calcPriceARS(quote?.price, ccl?.venta, cedear?.ratio) || toFiniteNumber(row.weighted_avg_price, 0);
+    }
+
+    const latestAnalysis = latestSessions?.[0]?.full_response
+      ? safeJsonParse(latestSessions[0].full_response, null)
+      : null;
+    const availableCashArs = toFiniteNumber(capitalRows?.[0]?.capital_available_ars, 0);
+    const cedearDefs = Object.fromEntries(CEDEARS.map((item) => [item.ticker, item]));
+
+    const plan = buildLiquidityPlan({
+      targetNetArs: targetCheck.value,
+      availableCashArs,
+      portfolioSummary,
+      pricesByTicker: priceMap,
+      cedearDefs,
+      latestAnalysis,
+      brokerKey,
+    });
+
+    res.json({
+      ...plan,
+      brokerKey,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    sendInternalError(res, "portfolio.liquidityPlan", err);
+  }
 });
 
 router.post("/buy", async (req, res) => {
@@ -70,9 +148,18 @@ router.post("/buy", async (req, res) => {
     if (!priceCheck.valid) return res.status(400).json({ error: priceCheck.error });
     const shares = sharesCheck.value;
     const priceArs = priceCheck.value;
-
     const upperTicker = ticker.toUpperCase();
     if (!CEDEARS.find((c) => c.ticker === upperTicker)) return res.status(400).json({ error: `Ticker ${upperTicker} no existe` });
+
+    const newExposureBlocker = await getNewExposureBlocker(req.user?.userId ?? null);
+    if (newExposureBlocker) {
+      return res.status(409).json({
+        error: newExposureBlocker.error,
+        code: "NEW_EXPOSURE_BLOCKED",
+        ...newExposureBlocker.readiness,
+      });
+    }
+
     const ccl = await fetchCCL();
     const quote = await fetchQuote(upperTicker).catch(() => null);
 
@@ -91,7 +178,7 @@ router.post("/buy", async (req, res) => {
     await addPosition(upperTicker, shares, priceArs, quote?.price || null, ccl.venta, notes || "");
     const adherence = await autoUpdateAdherenceFromTransaction(upperTicker, shares, tradeAmount).catch(() => null);
     res.json({ success: true, message: `Compra: ${shares} ${upperTicker} a $${priceArs}`, riskWarnings: riskCheck.warnings, adherence });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "portfolio.buy", err); }
 });
 
 router.post("/sell", async (req, res) => {
@@ -114,7 +201,10 @@ router.post("/sell", async (req, res) => {
     res.json({ success: true, message: `Venta: ${shares} ${ticker} a $${priceArs}`, adherence });
   } catch (err) {
     const isValidation = err.message.startsWith("No tenés");
-    res.status(isValidation ? 400 : 500).json({ error: err.message });
+    if (isValidation) {
+      return res.status(400).json({ error: err.message });
+    }
+    return sendInternalError(res, "portfolio.sell", err);
   }
 });
 
@@ -131,7 +221,7 @@ router.post("/sync", async (req, res) => {
     }
     const created = await syncPortfolio(positions);
     res.json({ success: true, created, count: created.length });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "portfolio.sync", err); }
 });
 
 router.post("/reconcile/preview", async (req, res) => {
@@ -244,7 +334,7 @@ router.get("/reconcile/audit", async (req, res) => {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
     res.json(await getBrokerImportAuditLogs(userId, limit));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "portfolio.reconcile.audit", err);
   }
 });
 
@@ -383,17 +473,17 @@ router.post("/reset", async (req, res) => {
     }
     const count = await resetPortfolio(positions);
     res.json({ success: true, count });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "portfolio.reset", err); }
 });
 
 router.delete("/:ticker", async (req, res) => {
   try { await deletePosition(req.params.ticker.toUpperCase()); res.json({ success: true, message: `Posición ${req.params.ticker.toUpperCase()} eliminada` }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  catch (err) { sendInternalError(res, "portfolio.delete", err); }
 });
 
 router.get("/transactions", async (req, res) => {
   try { res.json(await getTransactions(req.query.ticker || null, parseInt(req.query.limit) || 50)); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  catch (err) { sendInternalError(res, "portfolio.transactions", err); }
 });
 
 export default router;

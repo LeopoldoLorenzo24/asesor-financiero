@@ -12,7 +12,7 @@ CEDEAR Advisor es un motor de inversión full-stack para Certificados de Depósi
 | Backend | Node.js + Express, mix JS/TS |
 | Base de Datos | Turso (LibSQL/SQLite) vía `@libsql/client` |
 | IA | Anthropic Claude (`@anthropic-ai/sdk`) |
-| Datos de Mercado | Yahoo Finance (`yahoo-finance2`), Finnhub, Stooq (fallback), BYMA |
+| Datos de Mercado | Yahoo Finance (`yahoo-finance2`), FMP (Financial Modeling Prep), Finnhub, Stooq (fallback), BYMA |
 | Charts | Recharts |
 | Alertas | Telegram Bot API |
 | Auth | bcrypt + JWT + TOTP (2FA) |
@@ -88,11 +88,11 @@ La navegación es una SPA con estado centralizado (`view` string en `App.jsx`). 
 |---------|-----------|----------|
 | `routes/auth.js` | POST /api/auth/* | Login, register, logout, 2FA (enable/disable/status), JWT refresh |
 | `routes/market.js` | GET /api/market/* | Ranking de CEDEARs, precios, CCL, detalle de ticker, quotes |
-| `routes/ai.js` | POST /api/ai/analyze | Análisis mensual con Claude, gobernanza, guarda sesión y predicciones |
+| `routes/ai.js` | POST /api/ai/analyze, GET /api/ai/analyze/:ticker, GET /api/ai/usage | Análisis mensual con Claude (budget check, riesgo país, broker costs), análisis individual, reporte de uso IA |
 | `routes/portfolio.js` | GET/POST /api/portfolio/* | CRUD de posiciones, resumen, export CSV |
 | `routes/predictions.js` | GET /api/predictions | Listar predicciones, evaluar vs precio actual |
 | `routes/capital.js` | GET/POST /api/capital | Historial de capital, log de capital actual |
-| `routes/system.js` | GET /api/system/health | Health check completo: status, uptime, memoria, providers, AI budget, alerts, feature flags, self checks |
+| `routes/system.js` | GET /api/system/health, GET/POST /api/system/broker-settings | Health check completo con riesgo país; configuración de broker preferido |
 | `routes/virtual.js` | GET/POST /api/virtual/* | Paper trading: portfolio virtual, transacciones virtuales, sync con IA, reset, config auto-sync |
 | `routes/trading.js` | GET/POST /api/trading/* | Señales de trading, validar trade vs reglas de riesgo |
 | `routes/export.js` | GET /api/export/* | Exportar portfolio, transacciones, predicciones, capital history, track record a CSV |
@@ -103,27 +103,37 @@ La navegación es una SPA con estado centralizado (`view` string en `App.jsx`). 
 
 | Archivo | Descripción |
 |---------|-------------|
-| `database.ts` | Cliente Turso, schema inicial, sistema de migraciones (13 migraciones), todas las operaciones CRUD |
+| `database.ts` | Cliente Turso, schema inicial, sistema de migraciones (15 migraciones), todas las operaciones CRUD |
 | `aiAdvisor.js` | Integración con Anthropic Claude. Construye prompt con contexto de mercado, cartera, scoring. Procesa respuesta, valida JSON, guarda sesión y predicciones |
 | `marketKnowledge.js` | Calendario de earnings, eventos macro, feriados. No es un scraper activo, es conocimiento base embebido |
+| `marketFMP.js` | Cliente Financial Modeling Prep para fundamentals de alta calidad (P/E, EPS growth, ROE, deuda). 250 req/día free tier |
 | `marketFallback.js` | Fallback a Stooq y Finnhub cuando Yahoo falla. Normaliza quotes de múltiples fuentes |
 | `marketFinnhub.js` | Cliente Finnhub para quotes en tiempo real y fundamentales |
 | `backtest.js` | Motor de backtesting Core/Satellite. Simula cartera virtual sobre datos históricos con costos reales. Calcula retorno vs SPY benchmark |
 | `benchmarks.js` | Calcula comparativas: portfolio real vs SPY DCA, alpha ARS, virtual return |
-| `performance.js` | Calcula métricas de performance del bot: accuracy, retorno promedio, mejor/peor pick |
+| `performance.js` | Calcula métricas de performance del bot: accuracy, retorno promedio, mejor/peor pick, SPY benchmark con dividendos reales (API) |
 | `investmentCycle.js` | Determina fase del ciclo de inversión según datos de mercado (alcista/bajista/lateral) |
 | `diversifier.js` | Calcula exposición por sector y país, sugiere rebalanceo |
 | `brokerImport.js` | Parsea CSV/Excel de brokers (Bull Market, genérico). Normaliza tickers, calcula diff, aplica sobre portfolio. Auditoría completa |
 | `intradayMonitor.js` | Motor de monitoreo intradía. Corre en intervalos durante horario de mercado. Guarda snapshots de precios, CCL, VIX, portfolio, eventos |
 | `governancePolicies.js` | Motor de políticas de gobernanza. Define overlays (conservative, moderate, aggressive) y modos de despliegue. Valida cambios de política |
 | `selfCheck.js` | Validaciones de salud del sistema: DB, providers, rate limits, consistencia de datos |
-| `alerting.js` | Sistema de alertas. Integra con Telegram. Alertas críticas/warning/info. Cooldown para evitar spam |
+| `alerting.js` | Sistema de alertas. Integra con Telegram y webhooks. Alertas críticas/warning/info. Cooldown para evitar spam |
+| `telegramBot.ts` | Bot de Telegram: alertas take-profit/stop-loss, seguimiento de posiciones, oportunidades emergentes, resumen semanal |
+| `executionSimulator.ts` | Simulador de ejecución realista con slippage basado en liquidez real, partial fills, costos de broker por operador |
+| `brokerCosts.js` | Catálogo de costos por broker argentino (Bull Market, PPI, IOL, etc.) con comisiones, derechos de mercado, IVA |
+| `liquidityProfile.ts` | Perfil de liquidez por CEDEAR usando volúmenes reales de Yahoo Finance |
+| `corporateActions.js` | Escaneo de dividendos y splits corporativos, cálculo de dividendos virtuales |
+| `riskManager.ts` | Sanitización de picks con límites de riesgo: concentración, correlación, circuit breakers |
+| `investmentReadiness.ts` | Motor de readiness con escalación gradual: paper_only → pilot → cautious → scaled → full |
+| `investmentAudit.ts` | Auditoría de decisiones de inversión con trazabilidad completa |
+| `observability.js` | Métricas API, self-check results, instrumentación de requests |
 | `aiUsage.js` | Tracking de uso de Claude: tokens, costo estimado, latency |
 | `cedears.js` | Define el universo de ~226 CEDEARs con mapeo ticker local → subyacente, sector, ratio |
 | `seed-portfolio.js` | Seed de portfolio sintético para testing |
 | `featureFlags.js` | Feature flags globales (enable/disable funcionalidades) |
 | `state.js` | Estado en memoria del servidor (caché de rankings, último análisis, etc.) |
-| `jobs.js` | Scheduler de tareas: daily maintenance, hourly checks, intraday monitoring |
+| `jobs.js` | Scheduler de tareas: daily maintenance, hourly checks, intraday monitoring, smart notifications, CEDEAR ratio sync |
 | `analysis.js` | Lógica de análisis técnico y fundamental para scoring de CEDEARs |
 | `riskMetrics.js` | Cálculo de métricas de riesgo: Sharpe, Sortino, VaR, beta, volatilidad, max drawdown |
 
@@ -192,6 +202,8 @@ La navegación es una SPA con estado centralizado (`view` string en `App.jsx`). 
 |-------|-----------|
 | `paper_trading_config` | Config de paper trading (auto_sync_enabled) |
 | `rate_limit_entries` | Rate limiting por IP (window_start_ms, count) |
+| `broker_preference_settings` | Broker preferido del usuario para cálculos de costos (broker_key, updated_at) |
+| `cedear_ratios` | Ratios dinámicos calculados por el sistema (ticker, ratio, source, confidence, price_ars, price_usd, ccl_rate) |
 
 ---
 
@@ -253,6 +265,11 @@ Solicitud de quote
           | Falla?
           v
 +-------------------+
+|  FMP (Fin. Mod.)  |  <-- Alta calidad (fundamentals)
++---------+---------+
+          | Falla?
+          v
++-------------------+
 |  BYMA (local)     |  <-- Para tickers argentinos
 +---------+---------+
           | Falla?
@@ -269,49 +286,74 @@ Solicitud de quote
 
 ### Cálculo del CCL
 
-- Se obtiene del dólar CCL (contado con liqui) de mercado
+- Se obtiene del dólar CCL (contado con liqui) de mercado (sin hardcoded fallbacks)
 - Se usa para convertir precios USD → ARS
 - Se guarda en cada snapshot de análisis
+- Jobs se suspenden si el CCL no está disponible (no se usan valores hardcodeados)
+
+### Riesgo País (EMBI+ Spread)
+
+- Se obtiene de `api.argentinadatos.com/v1/finanzas/indices/riesgo-pais/ultimo`
+- Cache de 1 hora
+- Se inyecta en el prompt de IA con 4 niveles de severidad:
+  - Crisis (>2000pb): se fuerza modo defensivo
+  - Elevado (>1000pb): se recomienda cautela
+  - Moderado-alto (>600pb): se ajustan stops
+  - Contenido (<600pb): operación normal
 
 ---
 
 ## 7. Flujo de Análisis de IA
 
 ```
-1. Context Gathering
+1. Pre-flight Checks
+   - Budget check: verifica presupuesto diario de IA ($USD)
+   - Self-check: valida DB, providers, rate limits, consistencia
+   - Cooldown: 1 análisis por hora por usuario
+
+2. Context Gathering
    - Cartera actual (real + virtual)
-   - Ranking de CEDEARs con scores
-   - Datos de mercado (CCL, VIX, SPY, QQQ)
+   - Ranking de CEDEARs con scores (pre-rank → full analysis por batches)
+   - Datos de mercado en tiempo real (CCL, VIX, SPY, QQQ, riesgo país)
    - Métricas de riesgo actuales
    - Ciclo de inversión
    - Track record histórico
    - Predicciones pendientes de evaluación
+   - Preferencia de broker del usuario
 
-2. Prompt Engineering
+3. Prompt Engineering
    - Prompt estructurado en español
    - Instrucciones de formato JSON
    - Reglas de gobernanza inyectadas
    - Límites de riesgo
+   - Contexto de riesgo país con severidad
+   - Data freshness warnings (VIX/CCL stale)
 
-3. LLM Call (Claude)
+4. LLM Call (Claude)
    - Modelo: configurable (default Claude 3.5 Sonnet)
    - Rate limiting: 1 análisis por hora
-   - Cost tracking en ai_usage_logs
+   - Cost tracking en ai_usage_logs con budget enforcement
 
-4. Response Processing
+5. Response Processing
    - Extrae JSON de la respuesta
    - Valida schema
    - Consistency check (no giros 180° sin justificación)
-   - Governance check (políticas de capital)
+   - Budget enforcement: si los picks exceden el capital, se escalan proporcionalmente
+   - Price verification: ≥50% de precios deben verificar o se marca low confidence
+   - Risk sanitization: límites de concentración, correlación, circuit breakers
+   - Governance check (políticas de capital, deployment mode)
+   - Audit log OBLIGATORIO de toda decisión
 
-5. Storage
+6. Storage
    - Guarda analysis_sessions
    - Guarda predictions (una por pick recomendado)
    - Actualiza state.js
+   - Auto paper trading si está habilitado
 
-6. Delivery
+7. Delivery
    - Retorna al frontend con análisis completo
    - Muestra picks, resumen de mercado, riesgos
+   - Incluye data quality warnings, investment readiness, riesgo país
 ```
 
 ---
@@ -320,12 +362,14 @@ Solicitud de quote
 
 ### Paper Trading Realista
 
-- **Slippage variable**: según liquidez del ticker
-- **Costos de broker reales**: comisiones argentinas
+- **Slippage variable**: basado en datos de liquidez reales de Yahoo Finance (volumen diario, spread estimado, impacto de mercado)
+- **Costos de broker reales**: catálogo de comisiones por broker argentino (Bull Market, PPI, IOL, Balanz, etc.) con IVA, derechos de mercado y comisión
+- **Broker seleccionable**: el usuario elige su broker real y el sistema usa sus costos específicos
 - **Lotes mínimos BYMA**: no se pueden comprar fracciones menores al lote
-- **Partial fills**: algunas órdenes pueden ejecutarse parcialmente
+- **Partial fills**: basado en ratio trade/volumen diario real del ticker
 - **Dividendos netos**: incluye dividendos con withholding tax
 - **Auto-sync**: opción para sincronizar automáticamente con cada análisis de IA
+- **Delay simulado**: 5-25 min en horario de mercado, 60-180 min fuera de horario
 
 ### Reconciliación con Broker
 
@@ -396,6 +440,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 # Datos de mercado
 FINNHUB_API_KEY=...
+FMP_API_KEY=...          # Financial Modeling Prep (fundamentals de alta calidad, 250 req/día free)
 
 # Alertas
 TELEGRAM_BOT_TOKEN=...
@@ -409,10 +454,14 @@ ENABLE_AI_ANALYSIS=true
 ENABLE_PAPER_TRADING=true
 ENABLE_INTRADAY_MONITOR=true
 ENABLE_2FA=true
+ENABLE_TELEGRAM_ALERTS=true   # Smart notifications por Telegram
 
 # Seed
 ENABLE_BOOTSTRAP_SEED=false
 ENABLE_SYNTHETIC_HISTORY_SEED=false
+
+# Presupuesto IA (opcional)
+AI_DAILY_BUDGET_USD=1.00      # Límite diario de gasto en API Claude
 ```
 
 ### Build y Deploy
@@ -432,6 +481,159 @@ ENABLE_SYNTHETIC_HISTORY_SEED=false
 
 ---
 
+## 11. Notificaciones Inteligentes por Telegram
+
+El sistema envía alertas de inversión accionables (no spam) por Telegram:
+
+### Tipos de Notificación
+
+| Tipo | Frecuencia | Qué notifica |
+|------|-----------|-------------|
+| **Stop-Loss** | Cada 4 horas | Pick que cayó por debajo de su stop-loss |
+| **Take-Profit** | Cada 4 horas | Pick que alcanzó su target de ganancia |
+| **Portfolio Tracking** | 3x/día | Posiciones con movimientos significativos (>3%), cerca del target o del stop |
+| **Movimientos Significativos** | 6x/día | Posición que se movió >5% en un día |
+| **Oportunidades Emergentes** | 1x/día | CEDEARs no en cartera con score alto + señales técnicas (RSI oversold, MACD girando, caída en activo de calidad) |
+| **Resumen Semanal** | Semanal | Portfolio value, rendimiento semanal vs SPY, alpha, mejor/peor posición |
+| **Falla de Jobs** | On failure | Job del sistema que falló 3+ veces consecutivas |
+| **Drawdown** | On trigger | Drawdown del portfolio supera umbral |
+
+### Diseño Anti-Spam
+
+- Cooldown configurable por tipo de alerta (default 15 min)
+- Solo se envían alertas accionables (posiciones relevantes, no genéricas)
+- Portfolio tracking solo incluye posiciones "notables" (movimiento >3%, cerca de target/stop)
+- Oportunidades emergentes filtradas: solo score >65 + razón técnica específica, máximo 5 por día
+
+---
+
+## 12. Jobs Programados y Monitoreo
+
+### Ciclo de Maintenance
+
+| Job | Frecuencia | Descripción |
+|-----|-----------|-------------|
+| `ratioSync` | Cada 12h | Sincroniza ratios de CEDEAR calculados vs hardcoded, snapping a ratios conocidos |
+| `autoEvaluation` | Cada 6h | Evalúa predicciones pendientes contra precios actuales |
+| `stopLossCheck` | Cada 4h | Verifica stop-loss de picks activos |
+| `takeProfitCheck` | Cada 4h | Verifica take-profit de picks activos |
+| `dailyCapitalLog` | Cada 24h | Guarda snapshot de valor del portfolio |
+| `trackRecordLog` | Cada 24h | Guarda registro diario con alpha, drawdown, Sharpe rolling |
+| `monthlyPostMortem` | Cada 24h | Genera análisis post-mortem mensual con Claude |
+| `mlPipeline` | Cada 24h | Recolecta datos para ML (features técnicos y fundamentales) |
+| `portfolioTracking` | Cada 8h | Envía notificación Telegram de posiciones notables |
+| `significantMoves` | Cada 4h | Detecta movimientos >5% en posiciones del portfolio |
+| `emergingOpps` | Cada 24h | Escanea oportunidades emergentes fuera de la cartera |
+| `ticketExpiry` | Cada 1h | Auto-expira tickets de trade pasados su `expires_at` |
+| `preflight` | Cada 15min | Chequeo de salud pre-operación (ratios + auditoría) |
+
+### Tracking de Fallos
+
+- Cada job está envuelto en `trackJobRun()` que cuenta fallos consecutivos
+- A las 3 fallos consecutivos, se envía alerta por Telegram y webhook
+- Los contadores se resetean al primer éxito
+
+---
+
+## 13. Proveedores de Datos de Mercado
+
+| Proveedor | Datos | Límites | Fallback |
+|-----------|-------|---------|----------|
+| **Yahoo Finance** | Quotes, historiales, fundamentals | Sin API key, rate limited | BYMA → Finnhub → Stooq |
+| **FMP** | P/E, EPS growth, ROE, deuda, revenue, dividend yield | 250 req/día (free) | Yahoo fundamentals |
+| **BYMA** | Precios ARS en pesos, volumen local | Scraping, inestable | Yahoo via CCL |
+| **Finnhub** | Quotes en tiempo real, fundamentals básicos | API key requerida | Stooq |
+| **Stooq** | Historiales CSV | Sin auth, último recurso | null |
+| **Argentina Datos** | Riesgo país (EMBI+), CCL | Sin auth, cache 1h | File cache → null |
+
+### Calidad de Datos
+
+- Timestamps `_fetchedAt` en VIX y CCL para detectar datos stale
+- VIX >2h old se marca como stale y se advierte en el análisis
+- CCL null causa que jobs se suspendan (no se usan fallbacks hardcodeados)
+- Price verification: si <50% de precios verifican, se marca el análisis como low confidence
+
+---
+
+## 14. CEDEAR Ratio Sync
+
+Los ratios de conversión (cuántos CEDEARs = 1 acción subyacente) se mantienen de dos formas:
+
+1. **Hardcoded** en `cedears.js`: ratio estático por CEDEAR
+2. **Dinámico** calculado por `runRatioSync()`: compara precio BYMA ARS vs precio USD × CCL
+
+El sistema usa el ratio dinámico si está disponible y tiene confidence alta. Snapping automático a ratios conocidos de BYMA para evitar drift de punto flotante. Warnings si el ratio calculado difiere >15% del snap.
+
+---
+
+## 15. Execution Assistant (Trade Tickets)
+
+Sistema de asistente de ejecución que convierte las recomendaciones del análisis de IA en tickets de trade accionables con confirmación obligatoria.
+
+### Modos de Sugerencia
+
+| Modo | Descripción | Alertas proactivas |
+|------|-------------|-------------------|
+| `manual_only` | Solo genera tickets cuando el usuario corre un análisis | No |
+| `critical_alerts` | Además puede enviar alertas para tickets críticos (alta convicción/riesgo) | Sí |
+
+### Ciclo de Vida de un Ticket
+
+```
+Análisis AI → plan_ejecucion → buildTradeTicketsFromAnalysis()
+  → pending_confirmation → confirmed → executed_manual
+                        → rejected (manual o auto-expirado)
+```
+
+- **pending_confirmation**: Ticket creado, esperando acción del usuario
+- **confirmed**: Usuario confirmó que quiere ejecutar la operación
+- **rejected**: Usuario rechazó o el sistema auto-expiró el ticket
+- **executed_manual**: Usuario marcó como ejecutada manualmente en su broker
+
+### Clasificación de Prioridad
+
+Un ticket se marca como **critical** si cumple:
+- **BUY**: conviction ≥ 85%, target ≥ 10%, shares > 0, preflight no bloqueado
+- **SELL**: rationale contiene palabras clave de riesgo (stop, riesgo, reducir, salir)
+
+### Auto-Expiración de Tickets
+
+Los tickets tienen un `expires_at` (24h para BUY, 8h para SELL). El job `runTicketExpiryCheck()` corre cada hora y marca como `rejected` los tickets expirados con nota "[Auto-expirado]".
+
+### Preflight Health Check
+
+Antes de operar, el sistema puede correr un chequeo preflight (`preflightHealth.ts`):
+1. Verifica sincronización de ratios de CEDEARs
+2. Corre auditoría de inversión (investment audit)
+3. Si falla, bloquea nuevos trades hasta resolución
+
+El preflight corre cada 15 minutos cuando `ENABLE_PREMARKET_PREFLIGHT=true`.
+
+### Archivos Clave
+
+| Archivo | Responsabilidad |
+|---------|----------------|
+| `server/executionAssistant.ts` | Lógica de construcción de tickets y payload |
+| `server/routes/execution.js` | API REST: listar, confirmar, rechazar, marcar ejecutado |
+| `server/preflightHealth.ts` | Chequeo de salud pre-operación |
+| `server/routes/ai.js` (L231-285) | Creación de tickets post-análisis |
+| `client/src/views/DashboardView.jsx` | UI de tickets en dashboard |
+| `client/src/views/InvestmentReadinessView.jsx` | Configuración de modo de sugerencia |
+| `client/src/api.js` | Funciones API del cliente |
+
+### Endpoints
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/api/system/execution-assistant` | Settings + tickets abiertos |
+| POST | `/api/system/execution-assistant` | Guardar preferencia de modo |
+| GET | `/api/execution-tickets` | Listar tickets (filtro por status) |
+| POST | `/api/execution-tickets/:id/confirm` | Confirmar ticket |
+| POST | `/api/execution-tickets/:id/reject` | Rechazar ticket |
+| POST | `/api/execution-tickets/:id/executed` | Marcar como ejecutado |
+
+---
+
 ## Referencia Rápida de Archivos Clave
 
 | Concepto | Archivo(s) |
@@ -444,12 +646,20 @@ ENABLE_SYNTHETIC_HISTORY_SEED=false
 | Servidor Express | `server/index.js` |
 | Base de datos | `server/database.ts` |
 | IA / Claude | `server/aiAdvisor.js` |
-| Datos de mercado | `server/marketData.ts` (no existe como tal, está en marketKnowledge.js + routes/market.js) |
+| Datos de mercado | `server/marketData.ts`, `server/marketFMP.js`, `server/marketFallback.js` |
 | Gobernanza | `server/governancePolicies.js`, `server/investmentReadiness.ts` |
-| Alertas | `server/alerting.js` |
-| Riesgo | `server/riskMetrics.js` |
-| Paper Trading | `server/routes/virtual.js` |
+| Alertas / Telegram | `server/alerting.js`, `server/telegramBot.ts` |
+| Riesgo | `server/riskMetrics.js`, `server/riskManager.ts` |
+| Paper Trading | `server/routes/virtual.js`, `server/executionSimulator.ts` |
+| Costos de Broker | `server/brokerCosts.js` |
 | Backtest | `server/backtest.js` |
 | Importación Broker | `server/brokerImport.js` |
 | Monitoreo Intradía | `server/intradayMonitor.js` |
 | CEDEARs | `server/cedears.js` |
+| Performance / SPY | `server/performance.js` |
+| Jobs | `server/jobs.js` |
+| Feature Flags | `server/featureFlags.js` |
+| Execution Assistant | `server/executionAssistant.ts`, `server/routes/execution.js` |
+| Preflight Health | `server/preflightHealth.ts`, `server/preflightPolicy.ts` |
+| Trade Safety | `server/tradeSafety.ts`, `server/executionGuardrails.ts` |
+| Investment Audit | `server/investmentAudit.ts` |

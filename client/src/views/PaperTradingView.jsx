@@ -155,6 +155,10 @@ export default function PaperTradingView({ virtualPortfolio, virtualRegret, rank
               </div>
             </GlassCard>
           </div>
+          <p style={{ fontSize: 12, color: T.textDim, fontStyle: 'italic', marginTop: 8, lineHeight: 1.6, marginBottom: 0 }}>
+            El regret es el costo de la aversión al riesgo. Un regret positivo NO significa que debas cambiar tu estrategia —
+            significa que el sistema acertó en este período. Evaluá sobre múltiples ciclos antes de tomar decisiones.
+          </p>
         </GlassCard>
       )}
     </div>

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import request from "supertest";
 import { app } from "../../index.js";
 import { setupTestDb, authHeader } from "./helpers.js";
+import { createExecutionTradeTicket } from "../../database.js";
 
 await setupTestDb();
 
@@ -53,6 +54,17 @@ test("GET /api/portfolio/db returns summary and positions", async () => {
   assert.equal(res.status, 200);
   assert.ok(Array.isArray(res.body.summary));
   assert.ok(Array.isArray(res.body.positions));
+});
+
+test("POST /api/portfolio/liquidity-plan returns a sell plan payload", async () => {
+  const res = await request(app)
+    .post("/api/portfolio/liquidity-plan")
+    .set(await authHeader())
+    .send({ targetArs: 100000 });
+  assert.equal(res.status, 200);
+  assert.ok(typeof res.body.feasible === "boolean");
+  assert.ok(Array.isArray(res.body.recommendations));
+  assert.ok(res.body.summary);
 });
 
 test("POST /api/portfolio/buy validates missing fields", async () => {
@@ -168,6 +180,85 @@ test("GET /api/system/policies returns catalog and current selection", async () 
   assert.ok(Array.isArray(res.body.catalog?.deploymentModes));
 });
 
+test("GET /api/system/broker-settings returns current broker and catalog", async () => {
+  const res = await request(app).get("/api/system/broker-settings").set(await authHeader());
+  assert.equal(res.status, 200);
+  assert.ok(res.body.current);
+  assert.ok(Array.isArray(res.body.catalog));
+  assert.ok(res.body.catalog.length > 0);
+});
+
+test("POST /api/system/broker-settings persists broker preference", async () => {
+  const res = await request(app)
+    .post("/api/system/broker-settings")
+    .set(await authHeader())
+    .send({ brokerKey: "default" });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.success, true);
+  assert.equal(res.body.current.brokerKey, "default");
+  assert.ok(res.body.readiness);
+});
+
+test("GET /api/system/investment-audit returns consolidated operational audit", async () => {
+  const res = await request(app).get("/api/system/investment-audit").set(await authHeader());
+  assert.equal(res.status, 200);
+  assert.ok(["blocked", "caution", "ready_incremental"].includes(res.body.verdict));
+  assert.ok(res.body.readiness);
+  assert.ok(res.body.dataQuality);
+  assert.ok(res.body.dataQuality.tradeSafety);
+  assert.ok(res.body.evidence);
+  assert.ok(res.body.generatedAt);
+});
+
+test("GET /api/system/preflight-status returns latest preflight payload", async () => {
+  const res = await request(app).get("/api/system/preflight-status").set(await authHeader());
+  assert.equal(res.status, 200);
+  assert.ok(res.body.window);
+  assert.ok(res.body.assessment);
+  assert.ok(Array.isArray(res.body.recentRuns));
+});
+
+test("GET /api/system/execution-assistant returns assistant settings and summary", async () => {
+  const res = await request(app).get("/api/system/execution-assistant").set(await authHeader());
+  assert.equal(res.status, 200);
+  assert.ok(res.body.settings);
+  assert.ok(Array.isArray(res.body.modeCatalog));
+  assert.ok(res.body.summary);
+});
+
+test("POST /api/system/execution-assistant persists suggestion mode", async () => {
+  const res = await request(app)
+    .post("/api/system/execution-assistant")
+    .set(await authHeader())
+    .send({ suggestionMode: "critical_alerts", maxCriticalAlertsPerDay: 3 });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.success, true);
+  assert.equal(res.body.settings.suggestionMode, "critical_alerts");
+  assert.equal(res.body.settings.maxCriticalAlertsPerDay, 3);
+  assert.equal(res.body.settings.confirmationRequired, true);
+});
+
+test("POST /api/execution-tickets/:id/confirm actualiza el ticket", async () => {
+  const ticket = await createExecutionTradeTicket({
+    userId: 1,
+    action: "BUY",
+    ticker: "ZZTEST1",
+    suggestionMode: "manual_only",
+    shares: 10,
+    limitPriceArs: 10000,
+    estimatedAmountArs: 100000,
+    rationale: "Test ticket",
+  });
+
+  const res = await request(app)
+    .post(`/api/execution-tickets/${ticket.id}/confirm`)
+    .set(await authHeader())
+    .send({});
+  assert.equal(res.status, 200);
+  assert.equal(res.body.success, true);
+  assert.equal(res.body.ticket.status, "confirmed");
+});
+
 test("POST /api/system/policies/preview returns impact preview", async () => {
   const res = await request(app)
     .post("/api/system/policies/preview")
@@ -193,6 +284,10 @@ test("POST /api/system/policies/apply saves selection and audit log", async () =
   assert.equal(res.body.success, true);
   assert.equal(res.body.selection.overlayKey, "capital_preservation");
   assert.equal(res.body.selection.deploymentMode, "pilot");
+  if (res.body.changed === false) {
+    assert.ok(res.body.cooldown || res.body.selection);
+    return;
+  }
   assert.ok(Array.isArray(res.body.auditLog));
   assert.ok(res.body.auditLog.length > 0);
 });

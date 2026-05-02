@@ -1,3 +1,69 @@
+// ============================================================
+// Dynamic ratio overlay: DB ratios override hardcoded defaults.
+// Call loadDynamicRatios() after DB init to populate.
+// ============================================================
+let _dynamicRatios = {}; // { ticker: { ratio, source, confidence, updated_at } }
+
+/**
+ * Load calculated ratios from DB. Call once after initDb().
+ * After this, getCedearWithRatio() returns the live ratio.
+ */
+export async function loadDynamicRatios() {
+  try {
+    const { getAllCedearRatios } = await import("./database.js");
+    _dynamicRatios = await getAllCedearRatios();
+    console.log(`[cedears] Loaded ${Object.keys(_dynamicRatios).length} dynamic ratios from DB.`);
+  } catch (err) {
+    console.warn("[cedears] Could not load dynamic ratios:", err.message);
+  }
+}
+
+/**
+ * Get the effective ratio for a ticker: DB-calculated first, hardcoded fallback.
+ * @param {string} ticker
+ * @returns {{ ratio: number, source: 'dynamic'|'hardcoded', confidence?: string, updated_at?: string }}
+ */
+export function getEffectiveRatio(ticker) {
+  const dynamic = _dynamicRatios[ticker];
+  if (dynamic && dynamic.ratio > 0) {
+    return { ratio: dynamic.ratio, source: 'dynamic', confidence: dynamic.confidence, updated_at: dynamic.updated_at };
+  }
+  const cedear = CEDEARS.find(c => c.ticker === ticker);
+  return { ratio: cedear?.ratio || 1, source: 'hardcoded' };
+}
+
+/**
+ * Get a CEDEAR definition with the effective (dynamic or hardcoded) ratio.
+ */
+export function getCedearWithRatio(ticker) {
+  const cedear = CEDEARS.find(c => c.ticker === ticker);
+  if (!cedear) return null;
+  const { ratio, source } = getEffectiveRatio(ticker);
+  return { ...cedear, ratio, _ratioSource: source };
+}
+
+/**
+ * Get all CEDEARs with effective ratios applied.
+ */
+export function getAllCedearsWithRatios() {
+  return CEDEARS.map(c => {
+    const { ratio, source } = getEffectiveRatio(c.ticker);
+    return { ...c, ratio, _ratioSource: source };
+  });
+}
+
+/** Update the in-memory cache (called after ratio sync job). */
+export function setDynamicRatios(ratios) {
+  _dynamicRatios = ratios;
+}
+
+/** Get count of dynamic vs hardcoded ratios for diagnostics. */
+export function getRatioCoverage() {
+  const total = CEDEARS.length;
+  const dynamic = CEDEARS.filter(c => _dynamicRatios[c.ticker]?.ratio > 0).length;
+  return { total, dynamic, hardcoded: total - dynamic, pct: Math.round((dynamic / total) * 100) };
+}
+
 const CEDEARS = [
   // === TECHNOLOGY ===
   { ticker: "AAPL", name: "Apple Inc.", sector: "Technology", ratio: 20 },
@@ -225,6 +291,72 @@ const CEDEARS = [
   { ticker: "VIG", name: "Vanguard Dividend Appreciation", sector: "ETF - Dividendos", ratio: 39 },
 ];
 
+// ── RATIO VERIFICATION ──
+
+/**
+ * Timestamp of last manual verification of CEDEAR ratios against BYMA official data.
+ * Ratios can change (stock splits, corporate actions). Stale ratios lead to
+ * incorrect ARS price calculations, which can mislead investment decisions.
+ */
+export const RATIOS_LAST_VERIFIED = '2025-04-15';
+
+/**
+ * Returns how long since ratios were last verified.
+ * If >90 days stale, the system should warn the user that ratios
+ * may be outdated and need re-verification against BYMA's official list.
+ *
+ * @returns {{ lastVerified: string, daysSince: number, stale: boolean, warning: string|null }}
+ */
+export function getRatioFreshness() {
+  const lastVerified = new Date(RATIOS_LAST_VERIFIED);
+  const daysSince = Math.floor((Date.now() - lastVerified.getTime()) / 86400000);
+  return {
+    lastVerified: RATIOS_LAST_VERIFIED,
+    daysSince,
+    stale: daysSince > 90,
+    warning: daysSince > 90 ? `Ratios de CEDEAR no verificados hace ${daysSince} días. Verificar en BYMA.` : null,
+  };
+}
+
+/**
+ * Validates a CEDEAR's ARS price against what it should be based on
+ * the USD price, ratio, and CCL exchange rate.
+ *
+ * A deviation > 30% strongly suggests either:
+ * - The ratio has changed (stock split, corporate action)
+ * - The price data is stale or erroneous
+ * - An arbitrage opportunity (rare, usually corrects fast)
+ *
+ * This is critical for REAL MONEY decisions: a wrong ratio means
+ * the system thinks a CEDEAR is cheap/expensive when it's not.
+ *
+ * @param {string} ticker - CEDEAR ticker
+ * @param {number} cedearPriceArs - Observed CEDEAR price in ARS
+ * @param {number} usdPrice - Underlying US stock price in USD
+ * @param {number} cclRate - CCL exchange rate (ARS per USD)
+ * @returns {{ valid: boolean, warning: string|null, expectedPrice?: number, actualPrice?: number, deviationPct?: number }}
+ */
+export function validateRatioSanity(ticker, cedearPriceArs, usdPrice, cclRate) {
+  const cedear = CEDEARS.find((c) => c.ticker === ticker);
+  if (!cedear || !usdPrice || !cclRate || cclRate <= 0) return { valid: true, warning: null };
+
+  const expectedArsPrice = (usdPrice / cedear.ratio) * cclRate;
+  if (expectedArsPrice <= 0) return { valid: true, warning: null };
+
+  const deviation = Math.abs(cedearPriceArs - expectedArsPrice) / expectedArsPrice;
+
+  if (deviation > 0.30) {
+    return {
+      valid: false,
+      warning: `${ticker}: precio CEDEAR ($${cedearPriceArs}) difiere ${(deviation * 100).toFixed(0)}% del esperado ($${expectedArsPrice.toFixed(0)}). Posible ratio desactualizado o error de datos.`,
+      expectedPrice: expectedArsPrice,
+      actualPrice: cedearPriceArs,
+      deviationPct: deviation * 100,
+    };
+  }
+  return { valid: true, warning: null };
+}
+
 const DEFAULT_LOT_SIZE = 1;
 
 /**
@@ -258,6 +390,56 @@ export function getEstimatedDailyVolumeUsd(ticker) {
     ASML: 30_000, BKNG: 25_000, NOW: 20_000, RACE: 35_000,
   };
   return volumes[ticker] || 50_000;
+}
+
+/**
+ * Estimates the total commission for a CEDEAR buy or sell operation on BYMA.
+ *
+ * The Argentine market has multiple fee layers that can significantly eat into returns,
+ * especially for smaller trades. A round-trip (buy + sell) typically costs ~1.2-1.3%
+ * of the trade amount — this means a pick needs to gain >1.3% just to break even.
+ *
+ * Fee structure:
+ * - Market rights (derechos de mercado): 0.01% of trade value
+ * - Broker commission: ~0.5% (varies by broker; some discount brokers charge less)
+ * - BYMA fee: 0.006%
+ * - CNV fee: 0.006%
+ * - IVA (VAT) on all commissions: 21%
+ *
+ * @param {'BUY'|'SELL'} operationType - Type of operation (currently unused but reserved for future asymmetric fees)
+ * @param {number} amountArs - Total trade amount in ARS
+ * @returns {{ breakdown: { marketRights: number, brokerComm: number, bymaFee: number, cnvFee: number, iva: number }, total: number, pct: number, roundTripPct: number }}
+ */
+export function estimateCommission(operationType, amountArs) {
+  if (!amountArs || amountArs <= 0) {
+    return {
+      breakdown: { marketRights: 0, brokerComm: 0, bymaFee: 0, cnvFee: 0, iva: 0 },
+      total: 0,
+      pct: 0,
+      roundTripPct: 0,
+    };
+  }
+
+  const marketRights = amountArs * 0.0001;
+  const brokerComm = amountArs * 0.005;
+  const bymaFee = amountArs * 0.00006;
+  const cnvFee = amountArs * 0.00006;
+  const subtotal = marketRights + brokerComm + bymaFee + cnvFee;
+  const iva = subtotal * 0.21;
+  const total = subtotal + iva;
+
+  return {
+    breakdown: {
+      marketRights: Math.round(marketRights * 100) / 100,
+      brokerComm: Math.round(brokerComm * 100) / 100,
+      bymaFee: Math.round(bymaFee * 100) / 100,
+      cnvFee: Math.round(cnvFee * 100) / 100,
+      iva: Math.round(iva * 100) / 100,
+    },
+    total: Math.round(total * 100) / 100,
+    pct: Math.round(((total / amountArs) * 100) * 10000) / 10000,
+    roundTripPct: Math.round(((total / amountArs) * 100) * 2 * 10000) / 10000,
+  };
 }
 
 export default CEDEARS;

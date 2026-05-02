@@ -47,6 +47,10 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
   const [historyError, setHistoryError] = useState(null);
   const [historySuccess, setHistorySuccess] = useState(null);
   const [auditLog, setAuditLog] = useState([]);
+  const [liquidityTarget, setLiquidityTarget] = useState("");
+  const [liquidityPlan, setLiquidityPlan] = useState(null);
+  const [liquidityBusy, setLiquidityBusy] = useState(false);
+  const [liquidityError, setLiquidityError] = useState(null);
   const fileInputRef = useRef(null);
 
   const totalValue = portfolioDB.summary.reduce((sum, position) => {
@@ -84,6 +88,21 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
   useEffect(() => {
     loadAuditLog();
   }, [loadAuditLog]);
+
+  const handleLiquidityPlan = async () => {
+    setLiquidityBusy(true);
+    setLiquidityError(null);
+    try {
+      const target = Number(liquidityTarget);
+      const result = await api.getLiquidityPlan(target);
+      setLiquidityPlan(result);
+    } catch (err) {
+      setLiquidityError(err.message);
+      setLiquidityPlan(null);
+    } finally {
+      setLiquidityBusy(false);
+    }
+  };
 
   const handleCsvFile = async (event) => {
     const file = event.target.files?.[0];
@@ -224,7 +243,7 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
     <div className="ca-main" style={{ padding: "32px", maxWidth: 1200, margin: "0 auto", animation: "fadeUp 0.5s ease" }}>
       <SectionHeader title="Operaciones" subtitle="Portfolio real, reconciliación con broker e historial de transacciones" />
 
-      <div style={{ ...S.grid(240), gap: 16, marginBottom: 28 }}>
+      <div style={{ ...S.grid(240), gap: 16, marginBottom: 16 }}>
         <GlassCard glowColor={T.blue}>
           <div style={S.label}>Valor del Portfolio</div>
           <div style={{ ...S.value, fontSize: 26 }}><AnimatedNumber value={totalValue} prefix="$" /></div>
@@ -244,6 +263,150 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
           <div style={{ ...S.value, fontSize: 26 }}>{transactions.length}</div>
         </GlassCard>
       </div>
+
+      {/* ── Commission estimates & net P&L ── */}
+      {(() => {
+        const estCommissionPct = 0.6;
+        const estCommissionArs = totalValue * (estCommissionPct / 100);
+        const netPnlPct = totalPnl - estCommissionPct;
+        const netPnlArs = (totalValue - totalCost) - estCommissionArs;
+        const profitBelowCommission = totalPnl > 0 && totalPnl < estCommissionPct;
+        return (
+          <div style={{
+            background: T.bgCard,
+            border: `1px solid ${T.border}`,
+            borderRadius: 14,
+            padding: "14px 20px",
+            marginBottom: 28,
+          }}>
+            <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center", fontSize: 13, color: T.textMuted }}>
+              <span>
+                Comisiones estimadas: <strong style={{ color: T.text, fontFamily: T.fontMono }}>{formatMoney(estCommissionArs)} ARS ({estCommissionPct}%)</strong>
+              </span>
+              <span>
+                P&L neto (después de comisiones): <strong style={{ color: netPnlPct >= 0 ? T.green : T.red, fontFamily: T.fontMono }}>{formatMoney(netPnlArs)} ARS</strong>
+              </span>
+            </div>
+            {profitBelowCommission && (
+              <div style={{ marginTop: 8, fontSize: 12, color: T.yellow, fontWeight: 600 }}>
+                Atención: la ganancia no cubre las comisiones estimadas
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      <GlassCard glowColor={T.orange} style={{ marginBottom: 28 }}>
+        <SectionHeader
+          title="Liquidez Rápida"
+          subtitle="Ingresá cuánto querés tener en caja y el sistema propone qué vender primero, descontando costos."
+        />
+
+        {liquidityError && <StatusMsg type="error">{liquidityError}</StatusMsg>}
+
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 320px) auto", gap: 12, alignItems: "end", marginBottom: 16 }}>
+          <div>
+            <div style={{ ...S.label, marginBottom: 8 }}>Objetivo Neto ARS</div>
+            <input
+              type="number"
+              min="0"
+              step="1000"
+              value={liquidityTarget}
+              onChange={(event) => setLiquidityTarget(event.target.value)}
+              placeholder="Ej: 500000"
+              style={S.input}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button
+              onClick={handleLiquidityPlan}
+              disabled={liquidityBusy}
+              style={{ ...S.btn("secondary"), opacity: liquidityBusy ? 0.7 : 1 }}
+            >
+              {liquidityBusy ? "Calculando..." : "Calcular ventas"}
+            </button>
+            <button
+              onClick={() => {
+                setLiquidityTarget("");
+                setLiquidityPlan(null);
+                setLiquidityError(null);
+              }}
+              style={S.btn("ghost")}
+            >
+              Limpiar
+            </button>
+          </div>
+        </div>
+
+        {liquidityPlan && (
+          <>
+            <div style={{ ...S.grid(220), gap: 16, marginBottom: 18 }}>
+              <MetricCard label="Objetivo" value={liquidityPlan.targetNetArs || 0} prefix="$" color={T.orange} glowColor={T.orange} icon={DollarSign} />
+              <MetricCard label="Caja Actual" value={liquidityPlan.availableCashArs || 0} prefix="$" color={T.blue} glowColor={T.blue} icon={DollarSign} />
+              <MetricCard label="A Vender Neto" value={liquidityPlan.targetNetFromSalesArs || 0} prefix="$" color={T.yellow} glowColor={T.yellow} icon={TrendingDown} />
+              <MetricCard label="Plan Neto" value={liquidityPlan.summary?.netPlannedArs || 0} prefix="$" color={liquidityPlan.feasible ? T.green : T.red} glowColor={liquidityPlan.feasible ? T.green : T.red} icon={liquidityPlan.feasible ? TrendingUp : TrendingDown} />
+            </div>
+
+            <div style={{
+              padding: "14px 18px",
+              borderRadius: 14,
+              marginBottom: 16,
+              background: liquidityPlan.feasible ? `${T.green}08` : `${T.yellow}08`,
+              border: `1px solid ${liquidityPlan.feasible ? `${T.green}20` : `${T.yellow}20`}`,
+              color: liquidityPlan.feasible ? T.green : T.yellow,
+              fontSize: 13,
+              fontWeight: 700,
+            }}>
+              {liquidityPlan.feasible
+                ? `Plan viable: con estas ventas estimadas llegarías a ${formatMoney(liquidityPlan.summary?.netPlannedArs || 0)} netos.`
+                : `No alcanza con las posiciones sugeridas. Gap estimado: ${formatMoney(liquidityPlan.summary?.remainingGapArs || 0)}.`}
+            </div>
+
+            {liquidityPlan.notes?.length > 0 && (
+              <div style={{ fontSize: 12, color: T.textDim, lineHeight: 1.7, marginBottom: 14 }}>
+                {liquidityPlan.notes[0]}
+              </div>
+            )}
+
+            {liquidityPlan.recommendations?.length > 0 ? (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th style={S.th}>Ticker</th>
+                      <th style={S.th}>Vender</th>
+                      <th style={S.th}>Precio</th>
+                      <th style={S.th}>Neto Est.</th>
+                      <th style={S.th}>P&L</th>
+                      <th style={S.th}>Peso</th>
+                      <th style={S.th}>Por qué</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {liquidityPlan.recommendations.map((item) => (
+                      <tr key={item.ticker}>
+                        <td style={{ ...S.td, fontFamily: T.fontMono, fontWeight: 700, color: T.text }}>{item.ticker}</td>
+                        <td style={{ ...S.td, fontFamily: T.fontMono }}>{item.sharesToSell} / {item.sharesAvailable}</td>
+                        <td style={{ ...S.td, fontFamily: T.fontMono }}>{formatMoney(item.currentPriceArs)}</td>
+                        <td style={{ ...S.td, fontFamily: T.fontMono, color: T.text }}>{formatMoney(item.estimatedNetAmountArs)}</td>
+                        <td style={{ ...S.td, fontFamily: T.fontMono, color: item.pnlPct >= 0 ? T.green : T.red }}>
+                          {item.pnlPct >= 0 ? "+" : ""}{item.pnlPct?.toFixed(1)}%
+                        </td>
+                        <td style={{ ...S.td, fontFamily: T.fontMono }}>{item.weightPct?.toFixed(1)}%</td>
+                        <td style={{ ...S.td, color: T.textMuted }}>{item.reasons?.[0] || item.latestActionReason || "Liberar caja con el menor daño posible."}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: T.textDim }}>
+                No hace falta vender nada o no hay posiciones suficientes para armar un plan.
+              </div>
+            )}
+          </>
+        )}
+      </GlassCard>
 
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         <button onClick={api.exportPortfolio} style={{ ...S.btn("ghost"), fontSize: 11, padding: "8px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}><Download size={12} /> Exportar Portfolio CSV</button>
@@ -681,26 +844,32 @@ export default function OperationsView({ portfolioDB, ranking, transactions, onR
                   <th style={S.th}>Cantidad</th>
                   <th style={S.th}>Precio</th>
                   <th style={S.th}>Total</th>
+                  <th style={S.th}>Comisión Est.</th>
                 </tr>
               </thead>
               <tbody>
-                {transactions.slice(0, 20).map((transaction) => (
-                  <tr
-                    key={transaction.id}
-                    style={{ transition: "background 0.2s" }}
-                    onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(148,163,184,0.03)"; }}
-                    onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
-                  >
-                    <td style={{ ...S.td, fontFamily: T.fontMono, color: T.textDim }}>{transaction.date_executed}</td>
-                    <td style={S.td}>
-                      <span style={{ ...S.badge(transaction.type === "BUY" ? T.green : T.red), fontSize: 9 }}>{transaction.type}</span>
-                    </td>
-                    <td style={S.td}><strong style={{ color: T.text, fontFamily: T.fontMono }}>{transaction.ticker}</strong></td>
-                    <td style={{ ...S.td, fontFamily: T.fontMono }}>{transaction.shares}</td>
-                    <td style={{ ...S.td, fontFamily: T.fontMono }}>{formatMoney(transaction.price_ars)}</td>
-                    <td style={{ ...S.td, fontFamily: T.fontMono, fontWeight: 700, color: T.text }}>{formatMoney(transaction.total_ars)}</td>
-                  </tr>
-                ))}
+                {transactions.slice(0, 20).map((transaction) => {
+                  const txTotal = transaction.total_ars || (transaction.price_ars * transaction.shares) || 0;
+                  const estComm = txTotal * 0.003; // 0.3% one-way
+                  return (
+                    <tr
+                      key={transaction.id}
+                      style={{ transition: "background 0.2s" }}
+                      onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(148,163,184,0.03)"; }}
+                      onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+                    >
+                      <td style={{ ...S.td, fontFamily: T.fontMono, color: T.textDim }}>{transaction.date_executed}</td>
+                      <td style={S.td}>
+                        <span style={{ ...S.badge(transaction.type === "BUY" ? T.green : T.red), fontSize: 9 }}>{transaction.type}</span>
+                      </td>
+                      <td style={S.td}><strong style={{ color: T.text, fontFamily: T.fontMono }}>{transaction.ticker}</strong></td>
+                      <td style={{ ...S.td, fontFamily: T.fontMono }}>{transaction.shares}</td>
+                      <td style={{ ...S.td, fontFamily: T.fontMono }}>{formatMoney(transaction.price_ars)}</td>
+                      <td style={{ ...S.td, fontFamily: T.fontMono, fontWeight: 700, color: T.text }}>{formatMoney(txTotal)}</td>
+                      <td style={{ ...S.td, fontFamily: T.fontMono, color: T.textDim }}>{formatMoney(estComm)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

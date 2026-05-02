@@ -91,7 +91,9 @@ export async function runAiAnalyzeSelfCheck({ force = false } = {}) {
         forwardPE: 18,
         beta: 1.1,
         dividendYield: 2.1,
-      }
+      },
+      "Technology",
+      tech?.indicators
     );
     const score = compositeScore(
       tech,

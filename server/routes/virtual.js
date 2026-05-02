@@ -3,7 +3,7 @@ import {
   getVirtualPortfolioSummary, getVirtualPortfolio, resetVirtualPortfolio,
   addVirtualPosition, removeVirtualPosition, logVirtualTransaction,
   getAdherenceStats, getAnalysisSessions,
-  getPaperTradingConfig, setPaperTradingConfig,
+  getPaperTradingConfig, setPaperTradingConfig, getBrokerPreference,
   getTrackRecord, getPortfolio, getTransactions, getCapitalHistory,
 } from "../database.js";
 import { fetchQuote, fetchAllQuotes, fetchBymaPrices, fetchCCL } from "../marketData.js";
@@ -72,7 +72,9 @@ router.post("/virtual-portfolio/sync", async (req, res) => {
     const { picks } = req.body;
     if (!Array.isArray(picks)) return res.status(400).json({ error: "picks debe ser array" });
 
-    const ccl = await fetchCCL().catch(() => ({ venta: 1200 }));
+    const ccl = await fetchCCL();
+    const brokerPreference = await getBrokerPreference(req.user?.userId ?? null);
+    const brokerKey = brokerPreference?.brokerKey || "default";
     const results = [];
 
     await resetVirtualPortfolio([]);
@@ -86,7 +88,9 @@ router.post("/virtual-portfolio/sync", async (req, res) => {
         pick.cantidad_cedears,
         pick.precio_aprox_ars,
         tradeAmountArs,
-        true
+        true,
+        ccl?.venta || 0,
+        brokerKey
       );
 
       // Guardar transacción virtual con slippage real
@@ -103,7 +107,7 @@ router.post("/virtual-portfolio/sync", async (req, res) => {
         partialFill: simulated.partialFill,
         brokerCostsArs: simulated.brokerCosts.totalCosts,
         totalCostArs: simulated.totalCostArs,
-        notes: simulated.liquidityWarning || `Paper buy ${pick.ticker}`,
+        notes: simulated.liquidityWarning || `Paper buy ${pick.ticker} (${brokerKey})`,
       });
 
       if (simulated.executedShares > 0) {
@@ -229,7 +233,7 @@ router.get("/track-record/real", async (req, res) => {
       return res.json({ series: [], metrics: null, message: "No hay transacciones reales cargadas todavia." });
     }
 
-    const ccl = await fetchCCL().catch(() => ({ venta: 1200 }));
+    const ccl = await fetchCCL();
     const tickers = [...new Set(transactions.map((t) => t.ticker))];
     const quotesMap = await fetchAllQuotes(tickers).catch(() => ({}));
 

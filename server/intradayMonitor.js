@@ -17,9 +17,18 @@ import {
 } from "./database.js";
 import { fetchAllQuotes, fetchBymaPrices, fetchCCL, fetchVIX } from "./marketData.js";
 import { calcPriceARS } from "./utils.js";
+import { calculateDynamicStopLoss } from "./riskManager.js";
 
 const CEDAR_MAP = new Map(CEDEARS.map((cedear) => [cedear.ticker, cedear]));
 const WEEKEND_DAYS = new Set(["Sat", "Sun"]);
+
+/**
+ * Track the highest price (in ARS) seen for each ticker since the active prediction.
+ * Used for trailing stop calculation. Reset when the monitor session restarts
+ * or when a new prediction is issued for the ticker.
+ * Key: ticker, Value: { peakPriceArs: number, predictionId: number|null }
+ */
+const trailingStopPeaks = new Map();
 
 const runtime = {
   running: false,
@@ -228,8 +237,31 @@ export async function runIntradayMonitorOnce({ source = "manual" } = {}) {
       const sincePredictionPct = priceAtPredictionArs && priceAtPredictionArs > 0 && priceArs
         ? ((priceArs - priceAtPredictionArs) / priceAtPredictionArs) * 100
         : null;
-      const stopLossPct = prediction?.stop_loss_pct == null ? null : Number(prediction.stop_loss_pct);
+
+      // ── DYNAMIC STOP-LOSS ──
+      // Use ATR-based stop if ENABLE_DYNAMIC_STOPS is on and ATR data available
+      let stopLossPct = prediction?.stop_loss_pct == null ? null : Number(prediction.stop_loss_pct);
+      let trailingStopPct = null;
+      let stopLossRationale = null;
+
+      if (FLAGS.ENABLE_DYNAMIC_STOPS && quote?.price > 0) {
+        const atr = quote.atr ?? null;
+        if (atr != null && atr > 0) {
+          const dynamicStop = calculateDynamicStopLoss(atr, quote.price, vix?.price ?? null);
+          stopLossPct = dynamicStop.stopLossPct;
+          trailingStopPct = dynamicStop.trailingStopPct;
+          stopLossRationale = dynamicStop.rationale;
+        } else if (stopLossPct != null) {
+          // No ATR data: use static stop-loss from prediction, derive trailing
+          trailingStopPct = round2(stopLossPct * 0.6);
+        }
+      } else if (stopLossPct != null) {
+        // Dynamic stops disabled: still derive trailing from static stop
+        trailingStopPct = round2(stopLossPct * 0.6);
+      }
+
       const targetPct = prediction?.target_pct == null ? null : Number(prediction.target_pct);
+
       const stopLossBreach = (
         prediction?.action === "COMPRAR" &&
         stopLossPct != null &&
@@ -242,6 +274,39 @@ export async function runIntradayMonitorOnce({ source = "manual" } = {}) {
         sincePredictionPct != null &&
         sincePredictionPct >= targetPct
       );
+
+      // ── TRAILING STOP ──
+      // Track peak price since prediction and detect trailing stop breaches.
+      let trailingStopBreach = false;
+      let peakPriceArs = null;
+      let fromPeakPct = null;
+
+      if (prediction?.action === "COMPRAR" && trailingStopPct != null && priceArs > 0 && priceAtPredictionArs > 0) {
+        const predictionId = prediction.id ?? null;
+        const peakKey = position.ticker;
+        const existing = trailingStopPeaks.get(peakKey);
+
+        // Reset peak if prediction changed
+        if (existing && existing.predictionId !== predictionId) {
+          trailingStopPeaks.delete(peakKey);
+        }
+
+        const currentPeak = trailingStopPeaks.get(peakKey);
+        if (!currentPeak || priceArs > currentPeak.peakPriceArs) {
+          trailingStopPeaks.set(peakKey, { peakPriceArs: priceArs, predictionId });
+        }
+
+        const trackedPeak = trailingStopPeaks.get(peakKey);
+        peakPriceArs = trackedPeak.peakPriceArs;
+        fromPeakPct = peakPriceArs > 0
+          ? round2(((priceArs - peakPriceArs) / peakPriceArs) * 100)
+          : null;
+
+        // Trailing stop breach: price dropped more than trailingStopPct from peak
+        if (fromPeakPct != null && fromPeakPct <= trailingStopPct) {
+          trailingStopBreach = true;
+        }
+      }
 
       return {
         ticker: position.ticker,
@@ -257,9 +322,14 @@ export async function runIntradayMonitorOnce({ source = "manual" } = {}) {
         predictionConfidence: prediction?.confidence == null ? null : Number(prediction.confidence),
         stopLossBreach,
         takeProfitBreach,
+        trailingStopBreach,
         sincePredictionPct: round2(sincePredictionPct),
         stopLossPct,
+        trailingStopPct,
         targetPct,
+        peakPriceArs: round2(peakPriceArs),
+        fromPeakPct,
+        stopLossRationale,
       };
     });
 
@@ -311,6 +381,22 @@ export async function runIntradayMonitorOnce({ source = "manual" } = {}) {
           payload: {
             sincePredictionPct: snapshot.sincePredictionPct,
             targetPct: snapshot.targetPct,
+            priceArs: snapshot.priceArs,
+          },
+        });
+      }
+
+      if (snapshot.trailingStopBreach) {
+        events.push({
+          eventKey: buildEventKey(runtime.sessionId, market.dateKey, "trailing_stop_breach", snapshot.ticker),
+          eventType: "trailing_stop_breach",
+          severity: "critical",
+          ticker: snapshot.ticker,
+          message: `${snapshot.ticker} perforó el trailing stop (${Number(snapshot.fromPeakPct || 0).toFixed(2)}% desde máximo de $${Number(snapshot.peakPriceArs || 0).toLocaleString()}).`,
+          payload: {
+            fromPeakPct: snapshot.fromPeakPct,
+            trailingStopPct: snapshot.trailingStopPct,
+            peakPriceArs: snapshot.peakPriceArs,
             priceArs: snapshot.priceArs,
           },
         });

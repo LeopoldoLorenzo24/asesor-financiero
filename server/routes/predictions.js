@@ -6,12 +6,13 @@ import { fetchQuote, fetchHistory } from "../marketData.js";
 import { getClient, extractJSON } from "../aiAdvisor.js";
 import { assertAiBudgetAvailable, recordAnthropicUsage } from "../aiUsage.js";
 import { AI_CONFIG } from "../config.js";
+import { sendInternalError } from "../http.js";
 
 const router = Router();
 
 router.get("/", async (req, res) => {
   try { res.json(await getPredictions(req.query.ticker || null, req.query.unevaluated === "true", parseInt(req.query.limit) || 100)); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  catch (err) { sendInternalError(res, "predictions.list", err); }
 });
 
 router.post("/evaluate", async (req, res) => {
@@ -27,7 +28,7 @@ router.post("/evaluate", async (req, res) => {
     if (!quote && !quoteBa) return res.status(404).json({ error: "No se pudo obtener precio" });
     const results = await evaluatePredictionsForTicker(t, quote?.price ?? null, quoteBa?.price ?? null, history);
     res.json({ ticker: t, currentPriceUsd: quote?.price, currentPriceArs: quoteBa?.price, evaluated: results.length, results });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "predictions.evaluate", err); }
 });
 
 router.post("/evaluate-all", async (req, res) => {
@@ -46,7 +47,7 @@ router.post("/evaluate-all", async (req, res) => {
       } catch (e) { console.error(`Eval error ${t}:`, e.message); }
     }
     res.json({ tickersProcessed: tickers.length, totalEvaluated: allResults.length, results: allResults });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "predictions.evaluateAll", err); }
 });
 
 router.post("/:id/conclude", async (req, res) => {
@@ -115,8 +116,7 @@ Respondé SOLO con JSON válido:
 
     res.json({ prediction: { id: prediction.id, ticker: prediction.ticker, action: prediction.action, confidence: prediction.confidence, reasoning: prediction.reasoning, date: prediction.prediction_date, priceAtPrediction: predictionPriceUsd }, actual: { currentPrice: currentPriceUsd, changePct, daysSince }, conclusion });
   } catch (err) {
-    console.error("Conclusion error:", err);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, `predictions.conclude.${req.params.id}`, err);
   }
 });
 

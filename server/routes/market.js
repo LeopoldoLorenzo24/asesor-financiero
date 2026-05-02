@@ -8,12 +8,13 @@ import {
 import { diversifiedSelection, portfolioExposure } from "../diversifier.js";
 import { RANKING_CONFIG } from "../config.js";
 import { calcPriceARS, chunkArray, sleep } from "../utils.js";
-import CEDEARS from "../cedears.js";
+import CEDEARS, { getEffectiveRatio } from "../cedears.js";
+import { sendInternalError } from "../http.js";
 
 const router = Router();
 
 router.get("/ccl", async (req, res) => {
-  try { res.json(await fetchCCL()); } catch (err) { res.status(500).json({ error: err.message }); }
+  try { res.json(await fetchCCL()); } catch (err) { sendInternalError(res, "market.ccl", err); }
 });
 
 router.get("/cedears", (req, res) => { res.json(CEDEARS); });
@@ -51,12 +52,12 @@ router.get("/ranking", async (req, res) => {
       const history = historyMap[cedear.ticker] || [];
       const financials = financialsMap[cedear.ticker] || null;
       const tech = technicalAnalysis(history);
-      const fund = fundamentalAnalysis(financials, quote);
+      const fund = fundamentalAnalysis(financials, quote, cedear.sector, tech?.indicators);
       const tickerPerf = tech?.indicators?.performance || null;
       const rsRatio = spyPerf ? calcRelativeStrength(tickerPerf, spyPerf) : null;
       return {
         cedear, quote, technical: tech, fundamentals: fund, byma, rsRatio,
-        priceARS: byma?.priceARS || calcPriceARS(quote?.price, ccl.venta, cedear.ratio),
+        priceARS: byma?.priceARS || calcPriceARS(quote?.price, ccl.venta, getEffectiveRatio(cedear.ticker).ratio),
       };
     });
 
@@ -74,8 +75,7 @@ router.get("/ranking", async (req, res) => {
     results.sort((a, b) => b.scores.composite - a.scores.composite);
     res.json({ ccl, timestamp: new Date().toISOString(), count: results.length, ranking: results.slice(0, limit) });
   } catch (err) {
-    console.error("Ranking error:", err);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "market.ranking", err);
   }
 });
 
@@ -91,18 +91,17 @@ router.get("/cedear/:ticker", async (req, res) => {
       fetchFinancials(ticker), fetchBymaPrices([ticker]),
     ]);
     const tech = technicalAnalysis(history);
-    const fund = fundamentalAnalysis(financials, quote);
+    const fund = fundamentalAnalysis(financials, quote, cedear.sector, tech?.indicators);
     const profileId = req.query.profile || RANKING_CONFIG.defaultProfile;
     const scores = compositeScore(tech, fund, quote, cedear.sector, profileId);
     const byma = bymaPrices[ticker];
 
     res.json({
       cedear, quote, history, technical: tech, fundamentals: fund, scores, ccl,
-      priceARS: byma?.priceARS || calcPriceARS(quote?.price, ccl.venta, cedear.ratio),
+      priceARS: byma?.priceARS || calcPriceARS(quote?.price, ccl.venta, getEffectiveRatio(cedear.ticker).ratio),
     });
   } catch (err) {
-    console.error(`Detail error for ${req.params.ticker}:`, err);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, `market.cedear.${req.params.ticker}`, err);
   }
 });
 
@@ -112,7 +111,7 @@ router.get("/history/:ticker", async (req, res) => {
     const months = parseInt(req.query.months) || RANKING_CONFIG.historyMonths;
     const history = await fetchHistory(ticker, months);
     res.json({ ticker, months, count: history.length, prices: history });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, `market.history.${req.params.ticker}`, err); }
 });
 
 router.get("/benchmarks", async (req, res) => {
@@ -122,13 +121,12 @@ router.get("/benchmarks", async (req, res) => {
     const rankingForBench = CEDEARS.map((cedear) => {
       const quote = quotesMap[cedear.ticker];
       const byma = bymaPrices[cedear.ticker];
-      return { cedear, quote, priceARS: byma?.priceARS || calcPriceARS(quote?.price, ccl.venta, cedear.ratio) };
+      return { cedear, quote, priceARS: byma?.priceARS || calcPriceARS(quote?.price, ccl.venta, getEffectiveRatio(cedear.ticker).ratio) };
     });
     const { calculateBenchmarks } = await import("../benchmarks.js");
     res.json(await calculateBenchmarks(rankingForBench));
   } catch (err) {
-    console.error("Benchmarks error:", err);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "market.benchmarks", err);
   }
 });
 
@@ -142,7 +140,7 @@ router.get("/portfolio/exposure", async (req, res) => {
     const tickers = CEDEARS.map((c) => c.ticker);
     const [quotesMap, bymaPrices, ccl] = await Promise.all([fetchAllQuotes(tickers), fetchBymaPrices(tickers), fetchCCL()]);
     res.json(await portfolioExposure(quotesMap, bymaPrices, ccl.venta));
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "market.portfolioExposure", err); }
 });
 
 export default router;

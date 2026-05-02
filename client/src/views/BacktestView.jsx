@@ -47,6 +47,34 @@ export default function BacktestView({
               <StatusMsg type="error">{backtest.error}</StatusMsg>
             ) : (
               <>
+                {/* ── Reliability indicator ── */}
+                {(() => {
+                  const reliable = backtest.reliable;
+                  const biasFreePeriods = backtest.biasFreePeriods;
+                  const totalPeriods = backtest.totalPeriods;
+                  const hasReliabilityData = reliable != null || (biasFreePeriods != null && totalPeriods != null);
+                  if (!hasReliabilityData) return null;
+                  const isUnreliable = reliable === false || (biasFreePeriods != null && totalPeriods != null && biasFreePeriods < totalPeriods * 0.7);
+                  const bannerColor = isUnreliable ? T.red : T.yellow;
+                  return (
+                    <div style={{
+                      padding: "14px 18px",
+                      borderRadius: 12,
+                      background: `${bannerColor}08`,
+                      border: `1px solid ${bannerColor}25`,
+                      marginBottom: 16,
+                      color: bannerColor,
+                      fontSize: 13,
+                      fontWeight: 600,
+                    }}>
+                      {isUnreliable
+                        ? `Backtest NO CONFIABLE: más del 30% de períodos tienen sesgo de datos.`
+                        : `Backtest con confiabilidad reducida: ${biasFreePeriods ?? "?"} de ${totalPeriods ?? "?"} períodos libres de sesgo.`
+                      }
+                    </div>
+                  );
+                })()}
+
                 <div className="ca-perf-grid" style={{ ...S.grid(180), gap: 12, marginBottom: 20 }}>
                   <MetricCard
                     label="Portfolio Total"
@@ -136,6 +164,25 @@ export default function BacktestView({
                     </GlassCard>
                   </div>
                 )}
+
+                {/* ── Backtest assumptions ── */}
+                <div style={{
+                  marginTop: 20,
+                  padding: "16px 20px",
+                  background: T.bgCard,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 12,
+                  fontSize: 12,
+                  color: T.textDim,
+                  lineHeight: 1.8,
+                }}>
+                  <div style={{ fontWeight: 700, color: T.textMuted, marginBottom: 6 }}>Supuestos del backtest:</div>
+                  <div>Comisiones: 0.5% por operación</div>
+                  <div>Slippage: 0.5% estimado</div>
+                  <div>Dividendos: no reinvertidos</div>
+                  <div>DCA mensual al cierre del primer día hábil</div>
+                  <div>Stop-loss y take-profit aplicados al cierre diario</div>
+                </div>
               </>
             )}
           </div>

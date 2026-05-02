@@ -1,6 +1,9 @@
-import { getAdherenceStats, getCapitalHistory, getGovernancePolicySelection, getTrackRecord } from "./database.js";
+import {
+  getAdherenceStats, getAllCedearRatios, getBrokerPreference, getCapitalHistory,
+  getGovernancePolicySelection, getIntradayMonitorSettings, getLatestPreflightCheckRun, getTrackRecord,
+} from "./database.js";
 import { calculatePortfolioRiskMetrics } from "./riskMetrics.js";
-import { fetchHistory, fetchCCL } from "./marketData.js";
+import { fetchHistory, fetchCCL, getDataProviderStatus } from "./marketData.js";
 import { calculateSpyBenchmark, getRealPicksAlpha } from "./performance.js";
 import { toFiniteNumber } from "./utils.js";
 import { checkMacroCircuitBreakers } from "./macroCircuitBreakers.js";
@@ -16,6 +19,9 @@ import {
   normalizeGovernanceSelection,
 } from "./governancePolicies.js";
 import db from "./database.js";
+import { getRatioCoverage } from "./cedears.js";
+import { buildRatioSyncHealth, buildTradeSafetyStatus } from "./tradeSafety.js";
+import { assessPreflightReadiness } from "./preflightPolicy.js";
 
 interface ReadinessRule {
   name: string;
@@ -300,6 +306,7 @@ export async function getInvestmentReadiness(
       overlayKey?: string;
       deploymentMode?: string;
     } | null;
+    brokerKeyOverride?: string | null;
   } = {}
 ) {
   const alphaStats = await getRealPicksAlpha().catch(() => null);
@@ -315,6 +322,11 @@ export async function getInvestmentReadiness(
     overlayKey: options.policySelectionOverride?.overlayKey ?? storedPolicySelection.overlayKey,
     deploymentMode: options.policySelectionOverride?.deploymentMode ?? storedPolicySelection.deploymentMode,
   });
+  const storedBrokerPreference = await getBrokerPreference(userId ?? null).catch(() => ({
+    brokerKey: "default",
+    updatedAt: null,
+  }));
+  const brokerKey = String(options.brokerKeyOverride || storedBrokerPreference.brokerKey || "default");
   const effectiveGovernancePolicy = buildEffectiveGovernancePolicy(normalizedPolicySelection);
   const governanceCooldown = getGovernanceCooldownStatus(storedPolicySelection.updatedAt);
   const governanceCatalog = getGovernancePolicyCatalog();
@@ -324,6 +336,32 @@ export async function getInvestmentReadiness(
   const macroCB = await checkMacroCircuitBreakers().catch(() => ({ severity: "none" as const, shouldHaltNewCapital: false, reason: null, cclSpikePct: null, estimatedGapPct: null, marketFrozen: false, cclVolatilityHigh: false, exchangeRateGapHigh: false }));
 
   const cclNow = await fetchCCL().catch(() => null);
+  const marketProviders = getDataProviderStatus();
+  const ratioCoverage = getRatioCoverage();
+  const dynamicRatios = await getAllCedearRatios().catch(() => ({}));
+  const ratioHealth = buildRatioSyncHealth({ ratios: dynamicRatios, coverage: ratioCoverage });
+  const [intradaySettings, latestPreflightRun] = await Promise.all([
+    getIntradayMonitorSettings().catch(() => ({
+      timezone: "America/Argentina/Cordoba",
+      marketOpenLocal: "10:30",
+      marketCloseLocal: "17:00",
+    })),
+    getLatestPreflightCheckRun().catch(() => null),
+  ]);
+  const preflightAssessment = assessPreflightReadiness({
+    latestRun: latestPreflightRun,
+    settings: {
+      timezone: intradaySettings.timezone,
+      marketOpenLocal: intradaySettings.marketOpenLocal,
+      marketCloseLocal: intradaySettings.marketCloseLocal,
+    },
+  });
+  const tradeSafety = buildTradeSafetyStatus({
+    ccl: cclNow,
+    marketProviders,
+    ratioHealth,
+    preflightStatus: preflightAssessment,
+  });
   const currentPortfolioValue = typedCapitalHistory.length > 0 ? toFiniteNumber(typedCapitalHistory[0]?.total_value_ars, 0) : 0;
 
   // Stress tests
@@ -335,7 +373,7 @@ export async function getInvestmentReadiness(
 
   // Transaction costs viability
   const sampleTradeAmount = 100_000; // $100k ARS sample
-  const roundTrip = calculateRoundTripCosts(sampleTradeAmount);
+  const roundTrip = calculateRoundTripCosts(sampleTradeAmount, brokerKey);
   const costsViable = roundTrip.totalEffectiveCostPct <= 3.0;
 
   // 2FA check
@@ -432,6 +470,22 @@ export async function getInvestmentReadiness(
       message: macroCB.reason || `Circuit breaker macro activo: ${macroCB.severity}.`,
     },
     {
+      name: "critical_data_integrity",
+      passed: !tradeSafety.mustStandAside,
+      value: tradeSafety.mustStandAside ? 1 : 0,
+      threshold: 0,
+      message: tradeSafety.mustStandAside
+        ? tradeSafety.summary
+        : "Integridad de datos operativa.",
+    },
+    {
+      name: "daily_preflight_check",
+      passed: !preflightAssessment.blocksNewTrading,
+      value: preflightAssessment.hasRunToday ? 1 : 0,
+      threshold: 1,
+      message: preflightAssessment.summary,
+    },
+    {
       name: "stress_tests",
       passed: allStressSurvived,
       value: worstStressDrawdown,
@@ -504,6 +558,12 @@ export async function getInvestmentReadiness(
     trackAlphaPct != null && trackAlphaPct <= 0 ? `track_record_no_supera_benchmark:${trackAlphaPct}%` : null,
     benchmark?.beatsSpy === false ? `cartera_real_bajo_spy:${benchmark.alphaArs}` : null,
     macroCB.severity === "critical" ? `macro_crisis:${macroCB.reason}` : null,
+    tradeSafety.cclStale ? "ccl_stale" : null,
+    tradeSafety.providersDegraded ? "market_providers_degraded" : null,
+    tradeSafety.ratioHealth?.severity === "critical" ? `ratio_sync_critical:${tradeSafety.ratioHealth.summary}` : null,
+    tradeSafety.ratioHealth?.severity === "warning" ? `ratio_sync_warning:${tradeSafety.ratioHealth.summary}` : null,
+    preflightAssessment.status === "blocked" ? `preflight_blocked:${preflightAssessment.summary}` : null,
+    preflightAssessment.status === "caution" ? `preflight_caution:${preflightAssessment.summary}` : null,
     !allStressSurvived ? `stress_test_failed:${worstStressDrawdown}%` : null,
     !costsViable ? `costos_alto:${roundTrip.totalEffectiveCostPct}%` : null,
     evidenceQuality.analysisSessions < 12 ? `pocas_sesiones_auditables:${evidenceQuality.analysisSessions}` : null,
@@ -563,11 +623,18 @@ export async function getInvestmentReadiness(
       results: stressResults,
     },
     transactionCosts: {
+      brokerKey,
       sampleAmount: sampleTradeAmount,
       roundTripCostPct: roundTrip.totalEffectiveCostPct,
       requiredReturnToBreakEven: roundTrip.requiredReturnToBreakEvenPct,
       viable: costsViable,
     },
+    brokerPreference: {
+      brokerKey,
+      updatedAt: storedBrokerPreference.updatedAt,
+    },
+    dataIntegrity: tradeSafety,
+    preflight: preflightAssessment,
     evidence: {
       alphaStats,
       trackRecord: {
@@ -579,6 +646,10 @@ export async function getInvestmentReadiness(
       benchmark,
       riskMetrics,
       evidenceQuality,
+      marketProviders,
+      ratioCoverage,
+      ratioHealth,
+      latestPreflightRun,
     },
     generatedAt: new Date().toISOString(),
   };

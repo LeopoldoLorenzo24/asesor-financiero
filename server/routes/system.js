@@ -2,14 +2,20 @@ import { Router } from "express";
 import { runBacktest } from "../backtest.js";
 import { BACKTEST_CONFIG } from "../config.js";
 import { getObservabilitySnapshot } from "../observability.js";
-import { getDataProviderStatus } from "../marketData.js";
+import { getDataProviderStatus, fetchRiesgoPais } from "../marketData.js";
 import { getAlertingStatus, getRecentAlerts } from "../alerting.js";
 import { getAiBudgetStatus } from "../aiUsage.js";
 import { FLAGS } from "../featureFlags.js";
+import { getRatioFreshness, getRatioCoverage } from "../cedears.js";
+import { getAllCedearRatios } from "../database.js";
+import { runRatioSync } from "../jobs.js";
 import { getInvestmentReadiness } from "../investmentReadiness.js";
+import { getInvestmentAudit } from "../investmentAudit.js";
+import { getPreflightStatusPayload, runPreflightHealthCheck } from "../preflightHealth.js";
 import { authMiddleware } from "../auth.js";
-import { getGovernancePolicyAuditLog, saveGovernancePolicySelection } from "../database.js";
+import { getBrokerPreference, getGovernancePolicyAuditLog, saveBrokerPreference, saveGovernancePolicySelection } from "../database.js";
 import { runDailyMaintenanceCycle } from "../jobs.js";
+import { BROKER_CONFIGS } from "../brokerCosts.js";
 import {
   getIntradayMonitorStatusPayload,
   runIntradayMonitorOnce,
@@ -18,6 +24,7 @@ import {
 } from "../intradayMonitor.js";
 import { updateIntradayMonitorSettings } from "../database.js";
 import CEDEARS from "../cedears.js";
+import { sendInternalError } from "../http.js";
 
 const router = Router();
 
@@ -48,7 +55,7 @@ router.get("/internal/metrics", async (req, res) => {
       alerting: getAlertingStatus(),
       timestamp: new Date().toISOString(),
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "system.internalMetrics", err); }
 });
 
 router.get("/metrics", async (req, res) => {
@@ -71,19 +78,22 @@ router.get("/metrics", async (req, res) => {
       marketProviders: getDataProviderStatus(),
       timestamp: new Date().toISOString(),
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "system.metrics", err); }
 });
 
 router.get("/alerts/recent", async (req, res) => {
   try {
     res.json({ alerts: getRecentAlerts(parseInt(req.query.limit) || 20), timestamp: new Date().toISOString() });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "system.alerts", err); }
 });
 
 router.get("/system/health", async (req, res) => {
   try {
-    const aiBudget = await getAiBudgetStatus();
-    const investmentReadiness = await getInvestmentReadiness();
+    const [aiBudget, investmentReadiness, riesgoPais] = await Promise.all([
+      getAiBudgetStatus(),
+      getInvestmentReadiness(),
+      fetchRiesgoPais().catch(() => null),
+    ]);
     const obs = getObservabilitySnapshot({ aiBudget, aiUsageTodayUsd: aiBudget.todayCostUsd });
     const mem = process.memoryUsage();
     const uptimeSec = Math.floor(process.uptime());
@@ -111,10 +121,11 @@ router.get("/system/health", async (req, res) => {
       recentWindow: obs.recentWindow,
       selfChecks: obs.selfChecks,
       featureFlags: FLAGS,
+      riesgoPais: riesgoPais || undefined,
       investmentReadiness,
       timestamp: new Date().toISOString(),
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "system.health", err); }
 });
 
 router.get("/system/readiness", authMiddleware, async (req, res) => {
@@ -122,7 +133,32 @@ router.get("/system/readiness", authMiddleware, async (req, res) => {
     const userId = req.user?.userId;
     res.json(await getInvestmentReadiness(userId));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "system.readiness", err);
+  }
+});
+
+router.get("/system/investment-audit", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+    res.json(await getInvestmentAudit(userId));
+  } catch (err) {
+    sendInternalError(res, "system.investmentAudit", err);
+  }
+});
+
+router.get("/system/preflight-status", authMiddleware, async (req, res) => {
+  try {
+    res.json(await getPreflightStatusPayload());
+  } catch (err) {
+    sendInternalError(res, "system.preflightStatus", err);
+  }
+});
+
+router.post("/system/preflight/run-now", authMiddleware, async (req, res) => {
+  try {
+    res.json(await runPreflightHealthCheck({ source: "manual", force: true }));
+  } catch (err) {
+    sendInternalError(res, "system.preflightRunNow", err);
   }
 });
 
@@ -142,7 +178,44 @@ router.get("/system/policies", authMiddleware, async (req, res) => {
       readiness,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "system.policies", err);
+  }
+});
+
+router.get("/system/broker-settings", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+    const preference = await getBrokerPreference(userId);
+    res.json({
+      current: preference,
+      catalog: Object.entries(BROKER_CONFIGS).map(([key, cfg]) => ({
+        key,
+        name: cfg.name,
+        commissionPct: cfg.commissionPct,
+        commissionMinArs: cfg.commissionMinArs,
+        marketRightsPct: cfg.marketRightsPct,
+        selladoPct: cfg.selladoPct,
+        clearingPct: cfg.clearingPct,
+        otherPct: cfg.otherPct,
+      })),
+    });
+  } catch (err) {
+    sendInternalError(res, "system.brokerSettings", err);
+  }
+});
+
+router.post("/system/broker-settings", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+    const brokerKey = String(req.body?.brokerKey || "").trim();
+    if (!brokerKey || !BROKER_CONFIGS[brokerKey]) {
+      return res.status(400).json({ error: "brokerKey inválido" });
+    }
+    const saved = await saveBrokerPreference(userId, brokerKey);
+    const readiness = await getInvestmentReadiness(userId, { brokerKeyOverride: brokerKey });
+    res.json({ success: true, current: saved, readiness });
+  } catch (err) {
+    sendInternalError(res, "system.saveBrokerSettings", err);
   }
 });
 
@@ -247,7 +320,7 @@ router.get("/system/monitor/status", authMiddleware, async (req, res) => {
   try {
     res.json(await getIntradayMonitorStatusPayload());
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "system.monitor.status", err);
   }
 });
 
@@ -313,7 +386,7 @@ router.post("/system/monitor/run-now", authMiddleware, async (req, res) => {
       status: await getIntradayMonitorStatusPayload(),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "system.monitor.runNow", err);
   }
 });
 
@@ -328,7 +401,30 @@ router.post("/system/run-maintenance", async (req, res) => {
     runDailyMaintenanceCycle().catch((err) => console.error("[maintenance] Error:", err.message));
     res.json({ ok: true, message: "Mantenimiento diario iniciado", timestamp: new Date().toISOString() });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "system.runMaintenance", err);
+  }
+});
+
+// ── CEDEAR Ratios ──
+
+router.get("/system/ratios", authMiddleware, async (req, res) => {
+  try {
+    const freshness = getRatioFreshness();
+    const coverage = getRatioCoverage();
+    const ratios = await getAllCedearRatios();
+    res.json({ freshness, coverage, ratios });
+  } catch (err) {
+    sendInternalError(res, "system.ratios", err);
+  }
+});
+
+router.post("/system/ratios/sync", authMiddleware, async (req, res) => {
+  try {
+    const result = await runRatioSync();
+    const coverage = getRatioCoverage();
+    res.json({ success: true, ...result, coverage });
+  } catch (err) {
+    sendInternalError(res, "system.ratios.sync", err);
   }
 });
 
@@ -340,8 +436,7 @@ router.get("/backtest", async (req, res) => {
     const picksPerMonth = Math.min(BACKTEST_CONFIG.maxPicksPerMonth, Math.max(BACKTEST_CONFIG.minPicksPerMonth, parseInt(req.query.picks) || BACKTEST_CONFIG.defaultPicksPerMonth));
     res.json(await runBacktest({ months, monthlyDeposit, profile, picksPerMonth }));
   } catch (err) {
-    console.error("Backtest error:", err);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "system.backtest", err);
   }
 });
 

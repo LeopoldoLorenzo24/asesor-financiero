@@ -314,9 +314,50 @@ export function technicalAnalysis(prices) {
   };
 }
 
+// ── SECTOR AVERAGE P/E MAP ──
+/**
+ * Sector-average trailing P/E ratios for relative valuation.
+ * Based on historical median P/E by GICS-like sector.
+ * A stock's P/E is only meaningful relative to its sector peers —
+ * e.g. P/E 25 is cheap for Tech but expensive for Energy.
+ */
+const SECTOR_AVG_PE = {
+  'Technology': 30, 'Healthcare': 22, 'Financial': 12, 'Energy': 10,
+  'Consumer': 20, 'Industrial': 18, 'Materials': 14, 'Utilities': 16,
+  'Real Estate': 20, 'Communication': 18, 'E-Commerce': 35,
+  'Semiconductor': 28, 'Automotive': 12, 'Aerospace': 22,
+  'Crypto': 50, 'ETF': 20, 'Conglomerate': 15, 'Entertainment': 25,
+  'Tobacco': 10, 'Food & Beverage': 18, 'Pharmaceutical': 20,
+  'Agriculture': 14, 'Fintech': 35, 'Payments': 30, 'Travel': 22,
+  'Consumer Cyclical': 22, 'Consumer Defensive': 20, 'Industrials': 18,
+};
+
+/**
+ * Resolves the sector-average P/E for a given sector string.
+ * Falls back to 20 (broad market average) if sector is unknown.
+ * @param {string} sector
+ * @returns {number}
+ */
+function getSectorAvgPE(sector) {
+  if (!sector) return 20;
+  // Direct match
+  if (SECTOR_AVG_PE[sector] != null) return SECTOR_AVG_PE[sector];
+  // Partial match (e.g. "ETF - Índices" → "ETF")
+  for (const [key, val] of Object.entries(SECTOR_AVG_PE)) {
+    if (sector.startsWith(key) || sector.includes(key)) return val;
+  }
+  return 20;
+}
+
 // ── FUNDAMENTAL ANALYSIS ──
 
-export function fundamentalAnalysis(financials, quote) {
+/**
+ * @param {object} financials - Financial data from data provider
+ * @param {object} quote - Quote data (price, PE, etc.)
+ * @param {string} [sector] - Sector string for relative P/E scoring
+ * @param {object} [technicalIndicators] - Technical indicators for value trap detection (sma200, rsi)
+ */
+export function fundamentalAnalysis(financials, quote, sector = null, technicalIndicators = null) {
   let score = 50;
   const signals = [];
 
@@ -336,24 +377,57 @@ export function fundamentalAnalysis(financials, quote) {
   const analystRec = fd.recommendationMean;
   const currentPrice = quote?.price;
 
+  // Sector-relative P/E scoring: a stock's P/E is only meaningful vs its sector average.
+  // E.g. P/E 25 is cheap for Technology (avg 30) but expensive for Energy (avg 10).
+  const sectorAvgPE = getSectorAvgPE(sector);
+  let peScoreContribution = 0;
+
   if (pe !== null && pe !== undefined) {
-    if (pe > 0 && pe < 15) {
-      score += 18;
-      signals.push({ type: "bullish", text: `P/E bajo (${pe.toFixed(1)}) - potencialmente subvaluado` });
-    } else if (pe >= 15 && pe < 25) {
-      score += 10;
-      signals.push({ type: "bullish", text: `P/E razonable (${pe.toFixed(1)})` });
-    } else if (pe >= 25 && pe < 40) {
-      score += 2;
-    } else if (pe >= 40 && pe < 80) {
-      score -= 5;
-      signals.push({ type: "bearish", text: `P/E elevado (${pe.toFixed(1)})` });
-    } else if (pe >= 80) {
-      score -= 12;
-      signals.push({ type: "bearish", text: `P/E muy alto (${pe.toFixed(1)}) - caro` });
-    } else if (pe < 0) {
-      score -= 15;
+    if (pe < 0) {
+      peScoreContribution = -15;
+      score += peScoreContribution;
       signals.push({ type: "bearish", text: "P/E negativo - empresa sin ganancias" });
+    } else {
+      const relPE = pe / sectorAvgPE;
+      if (relPE < 0.5) {
+        peScoreContribution = 20;
+        score += peScoreContribution;
+        signals.push({ type: "bullish", text: `P/E ${pe.toFixed(1)} muy barato vs sector (avg ${sectorAvgPE}, relPE ${relPE.toFixed(2)})` });
+      } else if (relPE < 0.8) {
+        peScoreContribution = 12;
+        score += peScoreContribution;
+        signals.push({ type: "bullish", text: `P/E ${pe.toFixed(1)} barato vs sector (avg ${sectorAvgPE}, relPE ${relPE.toFixed(2)})` });
+      } else if (relPE <= 1.2) {
+        peScoreContribution = 3;
+        score += peScoreContribution;
+        signals.push({ type: "neutral", text: `P/E ${pe.toFixed(1)} en valor justo vs sector (avg ${sectorAvgPE})` });
+      } else if (relPE <= 1.8) {
+        peScoreContribution = -5;
+        score += peScoreContribution;
+        signals.push({ type: "bearish", text: `P/E ${pe.toFixed(1)} caro vs sector (avg ${sectorAvgPE}, relPE ${relPE.toFixed(2)})` });
+      } else {
+        peScoreContribution = -12;
+        score += peScoreContribution;
+        signals.push({ type: "bearish", text: `P/E ${pe.toFixed(1)} muy caro vs sector (avg ${sectorAvgPE}, relPE ${relPE.toFixed(2)})` });
+      }
+
+      // Value trap detector: low P/E + price below SMA200 + low RSI = potential value trap.
+      // A cheap stock in a downtrend with weak momentum often stays cheap or gets cheaper.
+      const sma200 = technicalIndicators?.sma200;
+      const rsi = technicalIndicators?.rsi;
+      const currentPriceVal = technicalIndicators?.currentPrice || currentPrice;
+      if (
+        pe < sectorAvgPE * 0.4 &&
+        sma200 && currentPriceVal && currentPriceVal < sma200 &&
+        rsi != null && rsi < 40
+      ) {
+        // Cap P/E contribution to +5 max to avoid overweighting a potential value trap
+        if (peScoreContribution > 5) {
+          const capped = peScoreContribution - 5;
+          score -= capped;
+          signals.push({ type: "bearish", text: `Posible value trap: P/E ${pe.toFixed(1)} muy bajo pero precio bajo SMA200 y RSI ${rsi.toFixed(0)} débil. Bonus P/E limitado.` });
+        }
+      }
     }
   }
 

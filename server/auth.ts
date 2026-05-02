@@ -305,8 +305,7 @@ function verifyToken(token: string): VerifiedToken | null {
 export async function canRegister(): Promise<boolean> {
   if (process.env.AUTH_PASSWORD) return false;
   const count = (await db.execute("SELECT COUNT(*) as count FROM users")).rows[0] as unknown as { count: number } | undefined;
-  if ((count?.count || 0) === 0) return true;
-  return envBool("ALLOW_INITIAL_REGISTER", false);
+  return (count?.count || 0) === 0;
 }
 
 export async function register(email: string, password: string): Promise<string> {
@@ -345,6 +344,10 @@ export async function login(email: string, password: string, totpCode?: string):
     ).rows[0] as unknown as { id: number; email: string; totp_secret?: string } | undefined;
 
     if (!user) {
+      const count = (await db.execute("SELECT COUNT(*) as count FROM users")).rows[0] as unknown as { count: number } | undefined;
+      if ((count?.count || 0) > 0) {
+        throw new Error("Usuario no encontrado.");
+      }
       const salt = generateSalt();
       const hash = await hashPassword(normalizedPassword, salt);
       const result = await db.execute({

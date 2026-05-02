@@ -10,6 +10,7 @@ import { assertAiBudgetAvailable, recordAnthropicUsage } from "../aiUsage.js";
 import { recordSelfCheckResult } from "../observability.js";
 import { AI_CONFIG } from "../config.js";
 import { safeJsonParse } from "../utils.js";
+import { sendInternalError } from "../http.js";
 
 const router = Router();
 
@@ -22,8 +23,7 @@ router.post("/seed-historical-lessons", async (req, res) => {
     const stats = await autoSeedHistoricalLessons();
     res.json({ message: "Lecciones históricas generadas exitosamente", stats });
   } catch (err) {
-    console.error("Seed historical lessons error:", err);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "postmortem.seedHistoricalLessons", err);
   }
 });
 
@@ -115,8 +115,7 @@ Respondé SOLO con JSON válido:
 
     res.json({ stats: { total, correct, accuracy, avgReturn: Math.round(avgReturn * 100) / 100 }, postmortem: pmResult, monthLabel });
   } catch (err) {
-    console.error("Post-mortem error:", err);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "postmortem.generate", err);
   }
 });
 
@@ -128,7 +127,7 @@ router.get("/history", async (req, res) => {
       patterns_detected: safeJsonParse(pm.patterns_detected, []),
       raw_ai_response: safeJsonParse(pm.raw_ai_response, null),
     })));
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendInternalError(res, "postmortem.history", err); }
 });
 
 export default router;

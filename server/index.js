@@ -22,6 +22,7 @@ import { apiMetricsMiddleware } from "./observability.js";
 import { checkAndIncrementRateLimit, cleanExpiredRateLimits, initDb, getTransactions } from "./database.js";
 import { FLAGS } from "./featureFlags.js";
 import { APP_CONFIG, RATE_LIMIT_CONFIG, DB_CONFIG } from "./config.js";
+import { createCorsOptionsDelegate, sendInternalError } from "./http.js";
 
 import createAuthRouter from "./routes/auth.js";
 import marketRouter from "./routes/market.js";
@@ -35,15 +36,42 @@ import virtualRouter from "./routes/virtual.js";
 import tradingRouter from "./routes/trading.js";
 import exportRouter from "./routes/export.js";
 import chartsRouter from "./routes/charts.js";
+import executionRouter from "./routes/execution.js";
 
 import {
   seedIfEmpty, autoSeedHistoricalLessons,
   runAutoEvaluation, runStopLossCheck, runDailyCapitalLog,
   runMonthlyPostMortem, runTakeProfitCheck, runMLPipeline,
-  runTrackRecordLog,
+  runTrackRecordLog, runRatioSync,
+  runPortfolioTrackingNotification, runEmergingOpportunitiesNotification,
+  runSignificantMoveCheck, runTicketExpiryCheck,
 } from "./jobs.js";
+import { loadDynamicRatios, getRatioCoverage } from "./cedears.js";
 import { initTelegramBot } from "./telegramBot.js";
 import { resumeIntradayMonitorIfEnabled, stopIntradayMonitor } from "./intradayMonitor.js";
+import { dispatchAlerts } from "./alerting.js";
+import { runScheduledPreflightCheck } from "./preflightHealth.js";
+
+// ── Job failure tracking ──
+const jobFailures = {};
+function trackJobRun(name, fn) {
+  return async () => {
+    try {
+      await fn();
+      jobFailures[name] = 0; // reset on success
+    } catch (err) {
+      jobFailures[name] = (jobFailures[name] || 0) + 1;
+      console.error(`[job] ${name} failed (${jobFailures[name]}x consecutive):`, err.message);
+      if (jobFailures[name] >= 3) {
+        dispatchAlerts([{
+          level: "warning",
+          code: `job_failure_${name}`,
+          message: `Job "${name}" falló ${jobFailures[name]} veces consecutivas. Último error: ${err.message}`,
+        }]).catch(() => {});
+      }
+    }
+  };
+}
 
 // ── Validate required environment variables ──
 function validateEnv() {
@@ -77,7 +105,7 @@ function validateEnv() {
   }
 
   if (APP_CONFIG.isProduction && process.env.ALLOW_INITIAL_REGISTER === "true") {
-    console.warn("[env] ALLOW_INITIAL_REGISTER está activo en producción. Desactivalo después del alta inicial.");
+    console.warn("[env] ALLOW_INITIAL_REGISTER está activo, pero el registro vuelve a cerrarse después del primer usuario.");
   }
 
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -136,18 +164,7 @@ if (existsSync(clientDist)) {
   console.warn("[static] client/dist not found. Frontend will not be served.");
 }
 
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.size === 0 || allowedOrigins.has(origin)) return callback(null, true);
-    // In production, if no explicit CLIENT_ORIGIN, allow the request host
-    if (APP_CONFIG.isProduction) return callback(null, true);
-    return callback(new Error("CORS no permitido"));
-  },
-  allowedHeaders: ["Content-Type", "Authorization"],
-  methods: ["GET", "POST", "DELETE", "OPTIONS"],
-  maxAge: 600,
-}));
+app.use(cors(createCorsOptionsDelegate(allowedOrigins)));
 app.use(express.json({ limit: "100kb" }));
 app.use(apiMetricsMiddleware);
 
@@ -182,11 +199,12 @@ app.use("/api", virtualRouter);                        // /virtual-portfolio, /a
 app.use("/api", tradingRouter);                        // /trading/signals, /trading/validate, /trading/check-exit
 app.use("/api", exportRouter);                         // /export/portfolio, /export/transactions, /export/predictions, /export/capital-history
 app.use("/api", chartsRouter);                         // /charts/portfolio-evolution
+app.use("/api", executionRouter);                      // /system/execution-assistant, /execution-tickets
 
 // Legacy routes not covered by domain routers
 app.get("/api/transactions", async (req, res) => {
   try { res.json(await getTransactions(req.query.ticker || null, parseInt(req.query.limit) || 50)); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  catch (err) { sendInternalError(res, "transactions.list", err); }
 });
 
 // SPA fallback: serve index.html for any non-API route
@@ -202,44 +220,77 @@ app.get("*", (req, res) => {
 // ── START SERVER ──
 export async function startServer() {
   await initDb();
+  await loadDynamicRatios();
   await seedIfEmpty();
   autoSeedHistoricalLessons().catch((err) => console.warn("[seed] No se pudo generar experiencia histórica:", err.message));
   initTelegramBot();
   await resumeIntradayMonitorIfEnabled().catch((err) => console.warn("[intraday-monitor] No se pudo reanudar:", err.message));
 
+  // Wrap jobs with failure tracking
+  const trackedJobs = {
+    ratioSync: trackJobRun("ratioSync", runRatioSync),
+    autoEval: trackJobRun("autoEvaluation", runAutoEvaluation),
+    capitalLog: trackJobRun("dailyCapitalLog", runDailyCapitalLog),
+    stopLoss: trackJobRun("stopLossCheck", runStopLossCheck),
+    takeProfit: trackJobRun("takeProfitCheck", runTakeProfitCheck),
+    postMortem: trackJobRun("monthlyPostMortem", runMonthlyPostMortem),
+    mlPipeline: trackJobRun("mlPipeline", runMLPipeline),
+    trackRecord: trackJobRun("trackRecordLog", runTrackRecordLog),
+    portfolioTracking: trackJobRun("portfolioTracking", runPortfolioTrackingNotification),
+    emergingOpps: trackJobRun("emergingOpportunities", runEmergingOpportunitiesNotification),
+    significantMoves: trackJobRun("significantMoves", runSignificantMoveCheck),
+    ticketExpiry: trackJobRun("ticketExpiry", runTicketExpiryCheck),
+    preflight: trackJobRun("preflight", runScheduledPreflightCheck),
+  };
+
   if (FLAGS.ENABLE_INTERNAL_SCHEDULER) {
     setTimeout(() => {
-      runAutoEvaluation();
-      runDailyCapitalLog();
-      runStopLossCheck();
-      runTakeProfitCheck();
-      runMonthlyPostMortem();
-      runMLPipeline();
-      runTrackRecordLog();
+      if (FLAGS.ENABLE_PREMARKET_PREFLIGHT) trackedJobs.preflight();
+      trackedJobs.ratioSync();
+      trackedJobs.autoEval();
+      trackedJobs.capitalLog();
+      trackedJobs.stopLoss();
+      trackedJobs.takeProfit();
+      trackedJobs.postMortem();
+      trackedJobs.mlPipeline();
+      trackedJobs.trackRecord();
+      trackedJobs.portfolioTracking();
+      trackedJobs.significantMoves();
+      trackedJobs.ticketExpiry();
     }, DB_CONFIG.serverSettleDelayMs);
+    // Emerging opportunities run less frequently (every 24h, delayed 2 min after startup)
+    setTimeout(() => trackedJobs.emergingOpps(), DB_CONFIG.serverSettleDelayMs + 120_000);
   } else {
     console.log("[scheduler] ENABLE_INTERNAL_SCHEDULER=false. El proceso web no ejecutará jobs periódicos.");
   }
 
   const intervals = FLAGS.ENABLE_INTERNAL_SCHEDULER ? [
-    setInterval(runAutoEvaluation, DB_CONFIG.autoEvalIntervalMs),
-    setInterval(runStopLossCheck, DB_CONFIG.stopLossCheckIntervalMs),
-    setInterval(runTakeProfitCheck, DB_CONFIG.stopLossCheckIntervalMs),
-    setInterval(runDailyCapitalLog, DB_CONFIG.dailyCapitalLogIntervalMs),
-    setInterval(runMonthlyPostMortem, 24 * 60 * 60 * 1000), // check once a day
-    setInterval(runMLPipeline, 24 * 60 * 60 * 1000), // collect ML data daily
-    setInterval(runTrackRecordLog, 24 * 60 * 60 * 1000), // track record daily
+    ...(FLAGS.ENABLE_PREMARKET_PREFLIGHT ? [setInterval(trackedJobs.preflight, 15 * 60 * 1000)] : []),
+    setInterval(trackedJobs.autoEval, DB_CONFIG.autoEvalIntervalMs),
+    setInterval(trackedJobs.stopLoss, DB_CONFIG.stopLossCheckIntervalMs),
+    setInterval(trackedJobs.takeProfit, DB_CONFIG.stopLossCheckIntervalMs),
+    setInterval(trackedJobs.capitalLog, DB_CONFIG.dailyCapitalLogIntervalMs),
+    setInterval(trackedJobs.postMortem, 24 * 60 * 60 * 1000),
+    setInterval(trackedJobs.mlPipeline, 24 * 60 * 60 * 1000),
+    setInterval(trackedJobs.trackRecord, 24 * 60 * 60 * 1000),
+    setInterval(trackedJobs.ratioSync, 12 * 60 * 60 * 1000),
+    setInterval(trackedJobs.portfolioTracking, 8 * 60 * 60 * 1000),  // 3x/day
+    setInterval(trackedJobs.significantMoves, 4 * 60 * 60 * 1000),   // 6x/day
+    setInterval(trackedJobs.emergingOpps, 24 * 60 * 60 * 1000),      // 1x/day
+    setInterval(trackedJobs.ticketExpiry, 60 * 60 * 1000),           // 1x/hour
     setInterval(() => cleanExpiredRateLimits(60 * 60 * 1000).catch(() => {}), DB_CONFIG.cleanRateLimitIntervalMs),
   ] : [
     setInterval(() => cleanExpiredRateLimits(60 * 60 * 1000).catch(() => {}), DB_CONFIG.cleanRateLimitIntervalMs),
   ];
 
+  const ratioCov = getRatioCoverage();
   const server = app.listen(PORT, () => {
     console.log(`
 ╔══════════════════════════════════════════════╗
 ║     CEDEAR ADVISOR API - v3.0                ║
 ║     Running on port ${PORT}                     ║
 ║     CEDEARs loaded: ${CEDEARS.length}                      ║
+║     Ratios: ${ratioCov.dynamic} dynamic / ${ratioCov.hardcoded} hardcoded  ║
 ║     AI: ${process.env.ANTHROPIC_API_KEY ? "✓ Configured" : "✗ Missing API key"}               ║
 ╚══════════════════════════════════════════════╝
     `);

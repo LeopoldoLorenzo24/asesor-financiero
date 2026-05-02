@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ShieldCheck, Brain, Trophy, TrendingUp, Activity, CalendarCheck, FileCheck, CheckCircle, Gauge, Target, CheckCircle2, XCircle, AlertTriangle, Lock, Unlock } from "lucide-react";
+import { ShieldCheck, Brain, Trophy, TrendingUp, Activity, CalendarCheck, FileCheck, CheckCircle, Gauge, Target, CheckCircle2, XCircle, AlertTriangle, Lock, Unlock, Zap } from "lucide-react";
 import { T, S } from "../theme";
 import {   GlassCard, MetricCard, PulseDot, ScoreBar, SectionHeader, Skeleton, StatusMsg, BlockerList } from "../components/common";
 import api, { auth } from "../api";
@@ -30,7 +30,7 @@ function regimeLabel(regime) {
   return "Desconocido";
 }
 
-export default function InvestmentReadinessView({ readiness, onRefresh }) {
+export default function InvestmentReadinessView({ readiness, executionAssistant, onRefresh }) {
   const [twoFactorStatus, setTwoFactorStatus] = useState({ loading: true, enabled: false });
   const [twoFactorSetup, setTwoFactorSetup] = useState(null);
   const [disableCode, setDisableCode] = useState("");
@@ -43,6 +43,20 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
   const [policyBusy, setPolicyBusy] = useState(false);
   const [policyError, setPolicyError] = useState(null);
   const [policySuccess, setPolicySuccess] = useState(null);
+  const [brokerSettings, setBrokerSettings] = useState({ current: { brokerKey: "default" }, catalog: [] });
+  const [selectedBrokerKey, setSelectedBrokerKey] = useState("default");
+  const [brokerBusy, setBrokerBusy] = useState(false);
+  const [brokerError, setBrokerError] = useState(null);
+  const [brokerSuccess, setBrokerSuccess] = useState(null);
+  const [preflightStatus, setPreflightStatus] = useState(null);
+  const [preflightBusy, setPreflightBusy] = useState(false);
+  const [preflightError, setPreflightError] = useState(null);
+  const [preflightSuccess, setPreflightSuccess] = useState(null);
+  const [assistantMode, setAssistantMode] = useState("manual_only");
+  const [assistantMaxAlerts, setAssistantMaxAlerts] = useState(2);
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantError, setAssistantError] = useState(null);
+  const [assistantSuccess, setAssistantSuccess] = useState(null);
 
   const loadTwoFactorStatus = useCallback(async () => {
     setTwoFactorError(null);
@@ -59,6 +73,17 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
     loadTwoFactorStatus();
   }, [loadTwoFactorStatus]);
 
+  const loadBrokerSettings = useCallback(async () => {
+    setBrokerError(null);
+    try {
+      const data = await api.getBrokerSettings();
+      setBrokerSettings(data);
+      setSelectedBrokerKey(data.current?.brokerKey || "default");
+    } catch (err) {
+      setBrokerError(err.message);
+    }
+  }, []);
+
   const loadPolicySettings = useCallback(async () => {
     setPolicyError(null);
     try {
@@ -73,6 +98,16 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
     }
   }, []);
 
+  const loadPreflightStatus = useCallback(async () => {
+    setPreflightError(null);
+    try {
+      const data = await api.getPreflightStatus();
+      setPreflightStatus(data);
+    } catch (err) {
+      setPreflightError(err.message);
+    }
+  }, []);
+
   useEffect(() => {
     if (!readiness) return;
     setPolicySelection({
@@ -80,7 +115,15 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
       deploymentMode: readiness.policySelection?.deploymentMode || "system_auto",
     });
     loadPolicySettings();
-  }, [readiness, loadPolicySettings]);
+    loadBrokerSettings();
+    loadPreflightStatus();
+  }, [readiness, loadPolicySettings, loadBrokerSettings, loadPreflightStatus]);
+
+  useEffect(() => {
+    if (!executionAssistant?.settings) return;
+    setAssistantMode(executionAssistant.settings.suggestionMode || "manual_only");
+    setAssistantMaxAlerts(executionAssistant.settings.maxCriticalAlertsPerDay || 2);
+  }, [executionAssistant]);
 
   if (!readiness) {
     return (
@@ -172,6 +215,54 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
     }
   };
 
+  const handleSaveBroker = async () => {
+    setBrokerBusy(true);
+    setBrokerError(null);
+    setBrokerSuccess(null);
+    try {
+      const result = await api.saveBrokerSettings(selectedBrokerKey);
+      setBrokerSettings((prev) => ({ ...prev, current: result.current }));
+      setBrokerSuccess("Broker de costos actualizado.");
+      if (onRefresh) await onRefresh();
+      await loadBrokerSettings();
+    } catch (err) {
+      setBrokerError(err.message);
+    } finally {
+      setBrokerBusy(false);
+    }
+  };
+
+  const handleRunPreflight = async () => {
+    setPreflightBusy(true);
+    setPreflightError(null);
+    setPreflightSuccess(null);
+    try {
+      await api.runPreflightNow();
+      setPreflightSuccess("Preflight ejecutado y actualizado.");
+      if (onRefresh) await onRefresh();
+      await loadPreflightStatus();
+    } catch (err) {
+      setPreflightError(err.message);
+    } finally {
+      setPreflightBusy(false);
+    }
+  };
+
+  const handleSaveExecutionAssistant = async () => {
+    setAssistantBusy(true);
+    setAssistantError(null);
+    setAssistantSuccess(null);
+    try {
+      await api.saveExecutionAssistant(assistantMode, assistantMaxAlerts);
+      setAssistantSuccess("Modo operativo actualizado.");
+      if (onRefresh) await onRefresh();
+    } catch (err) {
+      setAssistantError(err.message);
+    } finally {
+      setAssistantBusy(false);
+    }
+  };
+
   const ringSize = 180;
   const ringStroke = 13;
   const ringR = (ringSize - ringStroke) / 2;
@@ -179,6 +270,11 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
   const ringOffset = ringCircumference - ((scorePct || 0) / 100) * ringCircumference;
   const readinessColor = scorePct >= 85 ? T.green : scorePct >= 70 ? T.yellow : T.red;
   const isRealCapital = mode === "real_capital_ok";
+  const preflightAssessment = preflightStatus?.assessment || readiness?.preflight || null;
+  const preflightLatestRun = preflightStatus?.latestRun || readiness?.evidence?.latestPreflightRun || null;
+  const preflightTone = preflightAssessment?.status === "blocked" ? T.red : preflightAssessment?.status === "caution" ? T.yellow : T.green;
+  const assistantSettings = executionAssistant?.settings || null;
+  const assistantCatalog = executionAssistant?.modeCatalog || [];
 
   return (
     <div className="ca-main" style={{ padding: "32px", maxWidth: 1240, margin: "0 auto", animation: "fadeUp 0.5s ease" }}>
@@ -287,17 +383,280 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
         </div>
       </GlassCard>
 
+      {/* ── Deployment Policy ── */}
       <GlassCard glowColor={policyColor} style={{ marginBottom: 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
-          <div>
-            <div style={{ fontSize: 12, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1px" }}>Politica de despliegue</div>
-            <div style={{ fontSize: 20, fontWeight: 800, color: policyColor, marginTop: 6 }}>{capitalPolicy?.summary || summary}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: 12,
+            background: `linear-gradient(135deg, ${policyColor}30, ${policyColor}10)`,
+            border: `1px solid ${policyColor}20`,
+            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+          }}>
+            <ShieldCheck size={18} color={policyColor} strokeWidth={2} />
           </div>
-          <div style={{ minWidth: 220 }}>
-            <ScoreBar value={capitalPolicy?.maxCapitalPct ?? 0} label="Capital maximo habilitado" color={policyColor} h={8} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.text, letterSpacing: "-0.2px" }}>Politica de Despliegue</div>
+            <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>Control de capital y etapa operativa</div>
+          </div>
+          <div style={{
+            padding: "5px 14px", borderRadius: 12,
+            background: `${policyColor}12`, border: `1px solid ${policyColor}20`,
+            fontSize: 11, fontWeight: 800, color: policyColor,
+            fontFamily: T.fontMono, textTransform: "uppercase",
+          }}>
+            {capitalPolicy?.stage || "paper_only"}
           </div>
         </div>
-        {summary && <div style={{ fontSize: 13, color: T.textMuted, lineHeight: 1.7 }}>{summary}</div>}
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <ScoreBar value={capitalPolicy?.maxCapitalPct ?? 0} label="Capital maximo habilitado" color={policyColor} h={8} />
+          </div>
+          <div style={{ fontSize: 24, fontWeight: 900, color: policyColor, fontFamily: T.fontMono, flexShrink: 0 }}>
+            {capitalPolicy?.maxCapitalPct ?? 0}%
+          </div>
+        </div>
+        {summary && (
+          <div style={{
+            fontSize: 12, color: T.textMuted, lineHeight: 1.6, padding: "10px 14px",
+            background: "rgba(148,163,184,0.03)", borderRadius: 10,
+            border: `1px solid rgba(148,163,184,0.06)`,
+          }}>
+            {summary}
+          </div>
+        )}
+      </GlassCard>
+
+      {/* ── Preflight Operativo ── */}
+      <GlassCard style={{ marginBottom: 24 }} glowColor={preflightTone}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: 12,
+            background: `linear-gradient(135deg, ${preflightTone}30, ${preflightTone}10)`,
+            border: `1px solid ${preflightTone}20`,
+            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+          }}>
+            <Activity size={18} color={preflightTone} strokeWidth={2} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.text, letterSpacing: "-0.2px" }}>Preflight Operativo</div>
+            <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>Chequeo de ratios, datos y semaforo del dia</div>
+          </div>
+          <button onClick={handleRunPreflight} disabled={preflightBusy} style={{ ...S.btn("secondary"), fontSize: 11, padding: "8px 14px", opacity: preflightBusy ? 0.7 : 1 }}>
+            {preflightBusy ? "Corriendo..." : "Correr Ahora"}
+          </button>
+        </div>
+        {preflightError && <StatusMsg type="error">{preflightError}</StatusMsg>}
+        {preflightSuccess && <StatusMsg type="success">{preflightSuccess}</StatusMsg>}
+
+        {/* Status + metrics grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 14 }}>
+          <div style={{
+            padding: "12px 14px", borderRadius: 12,
+            background: `${preflightTone}08`, border: `1px solid ${preflightTone}12`,
+            textAlign: "center",
+          }}>
+            <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 6 }}>
+              Estado
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: preflightTone }}>
+              {preflightAssessment?.status ? String(preflightAssessment.status).toUpperCase() : "SIN DATO"}
+            </div>
+          </div>
+          <div style={{
+            padding: "12px 14px", borderRadius: 12,
+            background: "rgba(148,163,184,0.03)", border: `1px solid rgba(148,163,184,0.06)`,
+            textAlign: "center",
+          }}>
+            <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 6 }}>
+              Corrida Hoy
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: preflightAssessment?.hasRunToday ? T.green : T.textDim }}>
+              {preflightAssessment?.hasRunToday ? "SI" : "NO"}
+            </div>
+          </div>
+          <div style={{
+            padding: "12px 14px", borderRadius: 12,
+            background: "rgba(148,163,184,0.03)", border: `1px solid rgba(148,163,184,0.06)`,
+            textAlign: "center",
+          }}>
+            <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 6 }}>
+              Ratios Sync
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: T.text }}>
+              {preflightLatestRun ? preflightLatestRun.ratioSyncUpdated : "—"}
+            </div>
+          </div>
+          <div style={{
+            padding: "12px 14px", borderRadius: 12,
+            background: preflightLatestRun?.ratioSyncWarningCount > 0 ? "rgba(251,191,36,0.06)" : "rgba(148,163,184,0.03)",
+            border: `1px solid ${preflightLatestRun?.ratioSyncWarningCount > 0 ? "rgba(251,191,36,0.12)" : "rgba(148,163,184,0.06)"}`,
+            textAlign: "center",
+          }}>
+            <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 6 }}>
+              Warnings
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: preflightLatestRun?.ratioSyncWarningCount > 0 ? T.yellow : T.textDim }}>
+              {preflightLatestRun ? preflightLatestRun.ratioSyncWarningCount : "—"}
+            </div>
+          </div>
+        </div>
+
+        {preflightAssessment?.summary && (
+          <div style={{
+            fontSize: 12, color: T.textMuted, lineHeight: 1.6, padding: "10px 14px",
+            background: "rgba(148,163,184,0.03)", borderRadius: 10,
+            border: `1px solid rgba(148,163,184,0.06)`,
+          }}>
+            {preflightAssessment.summary}
+          </div>
+        )}
+        {preflightLatestRun?.createdAt && (
+          <div style={{ fontSize: 10, color: T.textDim, fontFamily: T.fontMono, marginTop: 10, textAlign: "right" }}>
+            Ultima: {new Date(preflightLatestRun.createdAt).toLocaleString("es-AR")}
+          </div>
+        )}
+      </GlassCard>
+
+      {/* ── Execution Assistant ── */}
+      <GlassCard style={{ marginBottom: 24 }} glowColor={T.cyan}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: 12,
+            background: `linear-gradient(135deg, ${T.cyan}30, ${T.cyan}10)`,
+            border: `1px solid ${T.cyan}20`,
+            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+          }}>
+            <Zap size={18} color={T.cyan} strokeWidth={2} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.text, letterSpacing: "-0.2px" }}>Asistente de Ejecucion</div>
+            <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>El sistema sugiere, vos confirmas antes de operar</div>
+          </div>
+          {assistantSettings?.confirmationRequired && (
+            <div style={{
+              padding: "4px 10px", borderRadius: 10,
+              background: "rgba(0,245,160,0.08)", border: "1px solid rgba(0,245,160,0.15)",
+              fontSize: 9, fontWeight: 700, color: T.green,
+              fontFamily: T.fontMono, textTransform: "uppercase",
+              display: "flex", alignItems: "center", gap: 4,
+            }}>
+              <ShieldCheck size={10} strokeWidth={2.5} />
+              Confirmacion Obligatoria
+            </div>
+          )}
+        </div>
+        {assistantError && <StatusMsg type="error">{assistantError}</StatusMsg>}
+        {assistantSuccess && <StatusMsg type="success">{assistantSuccess}</StatusMsg>}
+
+        {/* Mode cards instead of raw dropdown */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10, marginBottom: 14 }}>
+          {assistantCatalog.map((mode) => {
+            const isActive = assistantMode === mode.key;
+            const modeColor = mode.key === "critical_alerts" ? T.orange : T.blue;
+            return (
+              <div
+                key={mode.key}
+                onClick={() => setAssistantMode(mode.key)}
+                style={{
+                  padding: "14px 16px", borderRadius: 14, cursor: "pointer",
+                  background: isActive ? `${modeColor}10` : "rgba(148,163,184,0.03)",
+                  border: `1px solid ${isActive ? `${modeColor}30` : "rgba(148,163,184,0.06)"}`,
+                  transition: "all 0.2s ease",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <div style={{
+                    width: 8, height: 8, borderRadius: "50%",
+                    background: isActive ? modeColor : T.textDark,
+                    boxShadow: isActive ? `0 0 8px ${modeColor}50` : "none",
+                    transition: "all 0.2s ease",
+                  }} />
+                  <span style={{ fontSize: 12, fontWeight: 700, color: isActive ? modeColor : T.textMuted }}>
+                    {mode.label}
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, color: T.textDim, lineHeight: 1.5 }}>
+                  {mode.description}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: T.textDim }}>Max alertas/dia:</span>
+            <input
+              type="number" min="1" max="5"
+              value={assistantMaxAlerts}
+              onChange={(e) => setAssistantMaxAlerts(e.target.value)}
+              style={{ ...S.input, width: 60, textAlign: "center", fontSize: 13 }}
+            />
+          </div>
+          <button onClick={handleSaveExecutionAssistant} disabled={assistantBusy} style={{ ...S.btn("secondary"), fontSize: 12, padding: "8px 18px", opacity: assistantBusy ? 0.7 : 1 }}>
+            {assistantBusy ? "Guardando..." : "Guardar Preferencias"}
+          </button>
+        </div>
+      </GlassCard>
+
+      <GlassCard style={{ marginBottom: 24 }} glowColor={T.orange}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: 12,
+            background: `linear-gradient(135deg, ${T.orange}30, ${T.orange}10)`,
+            border: `1px solid ${T.orange}20`,
+            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+          }}>
+            <Activity size={18} color={T.orange} strokeWidth={2} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.text, letterSpacing: "-0.2px" }}>Broker Real</div>
+            <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>Costos, break-even y guardrails de ejecucion</div>
+          </div>
+        </div>
+        {brokerError && <StatusMsg type="error">{brokerError}</StatusMsg>}
+        {brokerSuccess && <StatusMsg type="success">{brokerSuccess}</StatusMsg>}
+
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
+          <select value={selectedBrokerKey} onChange={(e) => setSelectedBrokerKey(e.target.value)} style={{ ...S.input, width: 200 }}>
+            {(brokerSettings.catalog || []).map((item) => (
+              <option key={item.key} value={item.key}>{item.name}</option>
+            ))}
+          </select>
+          <button
+            onClick={handleSaveBroker}
+            disabled={brokerBusy || selectedBrokerKey === (brokerSettings.current?.brokerKey || "default")}
+            style={{ ...S.btn("secondary"), fontSize: 12, padding: "8px 18px", opacity: brokerBusy || selectedBrokerKey === (brokerSettings.current?.brokerKey || "default") ? 0.7 : 1 }}
+          >
+            {brokerBusy ? "Guardando..." : "Guardar"}
+          </button>
+        </div>
+
+        {/* Broker metrics as visual cards */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
+          <div style={{
+            padding: "12px 14px", borderRadius: 12, textAlign: "center",
+            background: "rgba(148,163,184,0.03)", border: `1px solid rgba(148,163,184,0.06)`,
+          }}>
+            <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 6 }}>Broker</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.text }}>{readiness?.brokerPreference?.brokerKey || brokerSettings.current?.brokerKey || "default"}</div>
+          </div>
+          <div style={{
+            padding: "12px 14px", borderRadius: 12, textAlign: "center",
+            background: readiness?.transactionCosts?.viable ? "rgba(0,245,160,0.04)" : "rgba(255,51,102,0.04)",
+            border: `1px solid ${readiness?.transactionCosts?.viable ? "rgba(0,245,160,0.12)" : "rgba(255,51,102,0.12)"}`,
+          }}>
+            <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 6 }}>Round-Trip</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: readiness?.transactionCosts?.viable ? T.green : T.red, fontFamily: T.fontMono }}>{readiness?.transactionCosts?.roundTripCostPct ?? "—"}%</div>
+          </div>
+          <div style={{
+            padding: "12px 14px", borderRadius: 12, textAlign: "center",
+            background: "rgba(148,163,184,0.03)", border: `1px solid rgba(148,163,184,0.06)`,
+          }}>
+            <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 6 }}>Break-Even</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.text, fontFamily: T.fontMono }}>{readiness?.transactionCosts?.requiredReturnToBreakEven ?? "—"}%</div>
+          </div>
+        </div>
       </GlassCard>
 
       <GlassCard style={{ marginBottom: 28 }} glowColor={T.cyan}>
@@ -629,6 +988,33 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
           {rules.map((rule) => {
             const c = rule.passed ? T.green : T.red;
+            // Rule-specific explanations
+            const ruleExplanations = {
+              win_rate_vs_spy: "(Si cae por debajo, se bloquea el acceso a capital real)",
+              avg_alpha_positive: "(Mide si tus picks le ganan a SPY. Si es negativo, no justifica la complejidad)",
+              two_factor_authentication: "(Obligatorio para operar con capital real)",
+              minimum_track_record: null, // handled dynamically below
+              cooldown_period: null, // handled dynamically below
+            };
+            const explanation = ruleExplanations[rule.name] || null;
+
+            // Dynamic explanations for specific rules
+            let dynamicNote = null;
+            if (rule.name === "minimum_track_record" || rule.name === "track_record_days") {
+              const daysVal = typeof rule.value === "number" ? rule.value : parseInt(rule.value, 10);
+              if (!isNaN(daysVal) && daysVal < 180) {
+                dynamicNote = `(Recomendado: mínimo 180 días para significancia estadística. Actual: ${daysVal} días)`;
+              }
+            }
+            if ((rule.name === "cooldown_period" || rule.name === "cooldown") && !rule.passed && rule.value != null) {
+              const cooldownDays = typeof rule.value === "number" ? rule.value : parseInt(rule.value, 10);
+              if (!isNaN(cooldownDays) && cooldownDays > 0) {
+                const expiryDate = new Date();
+                expiryDate.setDate(expiryDate.getDate() + cooldownDays);
+                dynamicNote = `(Expira: ${expiryDate.toLocaleDateString("es-AR")})`;
+              }
+            }
+
             return (
               <div key={rule.name} style={{
                 padding: "14px 16px",
@@ -653,6 +1039,11 @@ export default function InvestmentReadinessView({ readiness, onRefresh }) {
                       {rule.name.replace(/_/g, " ")}
                     </div>
                     <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.5 }}>{rule.message}</div>
+                    {(explanation || dynamicNote) && (
+                      <div style={{ fontSize: 10, color: T.textDim, marginTop: 4, fontStyle: "italic", lineHeight: 1.5 }}>
+                        {explanation || dynamicNote}
+                      </div>
+                    )}
                     {(rule.value != null || rule.threshold != null) && (
                       <div style={{ display: "flex", gap: 12, marginTop: 7 }}>
                         {rule.value != null && <span style={{ fontSize: 10, color: T.textDim, fontFamily: T.fontMono }}>val: <span style={{ color: c }}>{rule.value}</span></span>}

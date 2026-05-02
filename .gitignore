@@ -14,3 +14,4 @@ server/stderr.txt
 server/stdout.txt
 server/data/
 .claude/
+*.xlsx

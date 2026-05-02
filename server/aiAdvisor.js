@@ -8,15 +8,19 @@ import Anthropic from "@anthropic-ai/sdk";
 import NodeCache from "node-cache";
 import {
   logPrediction, logAnalysisSession, buildAIContext, getLatestLessons, logDecisionAudit, logCapital, logAdherenceEntries,
+  getCapitalHistory,
 } from "./database.js";
 import { buildMonthlyCycleContext } from "./investmentCycle.js";
 import { runBacktest } from "./backtest.js";
 import { getMarketKnowledge } from "./marketKnowledge.js";
 import { assertAiBudgetAvailable, recordAnthropicUsage } from "./aiUsage.js";
 import { FLAGS } from "./featureFlags.js";
-import { fetchQuote, fetchVIX } from "./marketData.js";
-import CEDEARS from "./cedears.js";
-import { PROFILE_CONFIG, AI_CONFIG, RISK_CONFIG } from "./config.js";
+import { fetchQuote, fetchVIX, fetchRiesgoPais } from "./marketData.js";
+import CEDEARS, { getEffectiveRatio } from "./cedears.js";
+import { PROFILE_CONFIG, AI_CONFIG, RISK_CONFIG, BACKTEST_CONFIG } from "./config.js";
+import { checkCircuitBreakers, calculateDynamicStopLoss, checkPortfolioDrawdown } from "./riskManager.js";
+import { computeLiquidityProfiles } from "./liquidityProfile.js";
+import { applyExecutionGuardrails } from "./executionGuardrails.js";
 import {
   toFiniteNumber, roundMoney, clampPct, isSellAction,
   getPriceArsFromRankingItem, getFundData, sleep, safeJsonParse,
@@ -48,6 +52,116 @@ function buildPriceMap({ ranking = [], cycleData, ccl }) {
     if (priceArs && priceArs > 0) map[ticker] = priceArs;
   }
   return map;
+}
+
+export function applyRealMoneyGuardrails({
+  result,
+  profile,
+  coreETF,
+  backtestSummary,
+  circuitBreakerResult = null,
+}) {
+  const notes = [];
+  if (!result || typeof result !== "object") return { changed: false, notes };
+
+  if (!result.decision_mensual || typeof result.decision_mensual !== "object") {
+    result.decision_mensual = {};
+  }
+  if (!result.decision_mensual.distribucion || typeof result.decision_mensual.distribucion !== "object") {
+    result.decision_mensual.distribucion = {};
+  }
+
+  const decision = result.decision_mensual;
+  const minConviction = toFiniteNumber(profile?.minConviction, 70);
+  const originalPicks = Array.isArray(decision.picks_activos) ? decision.picks_activos : [];
+  let filteredPicks = [];
+
+  for (const pick of originalPicks) {
+    const ticker = String(pick?.ticker || "").toUpperCase();
+    const reason = String(pick?.por_que_le_gana_a_spy || pick?.razon || "").trim();
+    const horizonte = String(pick?.horizonte || "").trim();
+    const targetPct = Number(pick?.target_pct);
+    const stopLossPct = Number(pick?.stop_loss_pct);
+    const conviction = toFiniteNumber(pick?.conviction, 0);
+
+    if (!ticker) continue;
+    if (conviction < minConviction) {
+      notes.push(`[GUARDRAIL] ${ticker} eliminado: conviction ${conviction} < mínimo ${minConviction}.`);
+      continue;
+    }
+    if (reason.length < 25 || !Number.isFinite(targetPct) || !Number.isFinite(stopLossPct) || horizonte.length === 0) {
+      notes.push(`[GUARDRAIL] ${ticker} eliminado: tesis insuficiente o incompleta vs ${coreETF}.`);
+      continue;
+    }
+    filteredPicks.push(pick);
+  }
+
+  let maxSatellitePct = 100;
+  let forceCoreOnlyReason = null;
+
+  if (result._price_data_warning) {
+    forceCoreOnlyReason = "Menos de la mitad de los picks pudieron validarse con precios reales.";
+  }
+
+  if (backtestSummary?.biasReliability?.reliable === false) {
+    forceCoreOnlyReason = `Backtest no confiable (${backtestSummary.biasReliability.biasPct}% de períodos con bias).`;
+  }
+
+  if (
+    forceCoreOnlyReason == null &&
+    Number.isFinite(backtestSummary?.satelliteAlpha) &&
+    backtestSummary.satelliteAlpha <= -3
+  ) {
+    forceCoreOnlyReason = `El satellite reciente perdió ${Math.abs(backtestSummary.satelliteAlpha).toFixed(1)}pp vs ${coreETF}.`;
+  }
+
+  if (
+    Number.isFinite(backtestSummary?.satelliteAlpha) &&
+    backtestSummary.satelliteAlpha <= 0
+  ) {
+    maxSatellitePct = Math.min(maxSatellitePct, 25);
+    notes.push(`[GUARDRAIL] Satellite capado a 25%: el alpha reciente vs ${coreETF} no es positivo.`);
+  }
+
+  if (circuitBreakerResult?.triggered && circuitBreakerResult.action === "reduce_satellite") {
+    maxSatellitePct = Math.min(maxSatellitePct, toFiniteNumber(circuitBreakerResult.maxSatellitePct, 100));
+  }
+
+  filteredPicks.sort((a, b) => toFiniteNumber(b?.conviction, 0) - toFiniteNumber(a?.conviction, 0));
+
+  if (maxSatellitePct <= 25 && filteredPicks.length > 2) {
+    notes.push(`[GUARDRAIL] Solo se conservan los 2 picks de mayor conviction por régimen defensivo.`);
+    filteredPicks = filteredPicks.slice(0, 2);
+  }
+
+  if (filteredPicks.length === 0 && originalPicks.length > 0 && forceCoreOnlyReason == null) {
+    forceCoreOnlyReason = "Ningún pick superó los filtros mínimos de calidad para desplazar al core ETF.";
+  }
+
+  decision.picks_activos = filteredPicks;
+
+  if (forceCoreOnlyReason) {
+    decision.picks_activos = [];
+    decision.distribucion.core_pct = 100;
+    decision.distribucion.satellite_pct = 0;
+    notes.push(`[GUARDRAIL] 100% ${coreETF}: ${forceCoreOnlyReason}`);
+    return { changed: true, notes };
+  }
+
+  const currentSatellitePct = clampPct(decision.distribucion.satellite_pct);
+  if (currentSatellitePct > maxSatellitePct) {
+    decision.distribucion.satellite_pct = maxSatellitePct;
+    decision.distribucion.core_pct = 100 - maxSatellitePct;
+    notes.push(`[GUARDRAIL] Satellite reducido de ${currentSatellitePct}% a ${maxSatellitePct}% por evidencia insuficiente/régimen.`);
+  }
+
+  if (filteredPicks.length === 0) {
+    decision.distribucion.core_pct = 100;
+    decision.distribucion.satellite_pct = 0;
+    return { changed: true, notes };
+  }
+
+  return { changed: notes.length > 0 || filteredPicks.length !== originalPicks.length, notes };
 }
 
 export function enforceAnalysisConsistency({ result, capital, coreETF, profile, cycleData, ranking, ccl }) {
@@ -222,8 +336,24 @@ export function enforceAnalysisConsistency({ result, capital, coreETF, profile, 
 
   const totalCompras = finalPlan.filter((s) => s.tipo === "COMPRAR").reduce((sum, s) => sum + roundMoney(s.monto_estimado_ars), 0);
   if (totalCompras > capitalDisponiblePost) {
-    result._budget_warning = `Las compras planificadas ($${totalCompras.toLocaleString()}) superan el capital real disponible ($${capitalDisponiblePost.toLocaleString()}).`;
-    notes.push("Compras por encima del capital disponible.");
+    // Hard enforcement: scale down buy orders proportionally to fit within budget
+    const scaleFactor = capitalDisponiblePost > 0 ? capitalDisponiblePost / totalCompras : 0;
+    for (const step of finalPlan) {
+      if (step.tipo !== "COMPRAR") continue;
+      const price = step.monto_estimado_ars / (step.cantidad_cedears || 1);
+      step.cantidad_cedears = Math.floor(step.cantidad_cedears * scaleFactor);
+      step.monto_estimado_ars = roundMoney(step.cantidad_cedears * price);
+      // Update corresponding pick
+      const pick = picks.find(p => p.ticker === step.ticker);
+      if (pick) {
+        pick.cantidad_cedears = step.cantidad_cedears;
+        pick.monto_total_ars = step.monto_estimado_ars;
+      }
+    }
+    // Remove buys that became 0
+    result.plan_ejecucion = finalPlan.filter(s => s.tipo !== "COMPRAR" || s.cantidad_cedears > 0);
+    result._budget_warning = `Compras ajustadas: planificadas $${totalCompras.toLocaleString()} excedían capital $${capitalDisponiblePost.toLocaleString()}. Factor de escala: ${(scaleFactor * 100).toFixed(0)}%.`;
+    notes.push(`Compras escaladas al ${(scaleFactor * 100).toFixed(0)}% para no exceder capital disponible.`);
   } else {
     delete result._budget_warning;
   }
@@ -322,13 +452,17 @@ function buildBacktestSection(backtestSummary, coreETF) {
     ? backtestSummary.picksGanadores.map((p) => `- ${p.ticker} (${p.sector}) -> vs ${coreETF}: ${p.vsSpy != null ? (p.vsSpy >= 0 ? "+" : "") + p.vsSpy + "pp" : "N/A"}`).join("\n")
     : `Ninguno de los picks actuales aparece como ganador claro vs ${coreETF} en el backtest; sé extremadamente selectivo con el satellite.`;
 
+  const reliabilityTxt = backtestSummary.biasReliability
+    ? `\n- Confiabilidad del backtest: ${backtestSummary.biasReliability.reliable ? "confiable" : "NO confiable"} (${backtestSummary.biasReliability.biasPct}% de períodos con bias detectado).`
+    : "";
+
   return `
 BACKTEST RECIENTE (estrategia vs ${coreETF}):
 - Principal: ${backtestSummary.months || 6}m | Bot: ${backtestSummary.returnPct != null ? backtestSummary.returnPct + "%" : "N/A"} | ${coreETF}: ${backtestSummary.spyReturnPct != null ? backtestSummary.spyReturnPct + "%" : "N/A"} | Satellite: ${backtestSummary.satelliteReturnPct != null ? backtestSummary.satelliteReturnPct + "%" : "N/A"} (alfa: ${backtestSummary.satelliteAlpha != null ? backtestSummary.satelliteAlpha + "pp" : "N/A"})
-- Veredicto: ${backtestSummary.veredicto || "N/A"}${horizonsTxt}
+- Veredicto: ${backtestSummary.veredicto || "N/A"}${reliabilityTxt}${horizonsTxt}
 - Picks ganadores en backtest que están en ranking actual:
 ${picksTxt}
-INSTRUCCIÓN: Si el backtest muestra que el satellite NO le gana a ${coreETF}, reducir satellite al mínimo (10-25%). Si hay alfa positivo consistente, justificar satellite más grande dentro del perfil.`;
+INSTRUCCIÓN: Si el backtest muestra que el satellite NO le gana a ${coreETF}, o si el backtest es poco confiable, reducir satellite al mínimo (0-25%). Si hay alfa positivo consistente, justificar satellite más grande dentro del perfil.`;
 }
 
 function buildTickerDetails(topPicks, ccl) {
@@ -347,7 +481,7 @@ function buildTickerDetails(topPicks, ccl) {
    Score:${p.scores.composite}/100 T:${p.scores.techScore} F:${p.scores.fundScore} S:${p.scores.sentScore}${rsTag} | Signal:${p.scores.signal} | Horizon:${p.scores.horizon}
    USD:$${p.quote?.price?.toFixed(2) || "N/A"} | P/E:${fund.pe?.toFixed(1) || "N/A"} EPSg:${fund.epsGrowth?.toFixed(1) || "N/A"}% | Div:${p.quote?.dividendYield?.toFixed(2) || 0}% Beta:${p.quote?.beta?.toFixed(2) || "N/A"}
    1M:${perf.month1?.toFixed(1) || "N/A"}% 3M:${perf.month3?.toFixed(1) || "N/A"}% RSI:${p.technical?.indicators?.rsi || "N/A"} MACD:${p.technical?.indicators?.macd?.histogram || "N/A"}
-   Target:$${fund.targetMeanPrice?.toFixed(2) || "N/A"} Rec:${fund.recommendationKey || "N/A"} | Ratio ${p.cedear.ratio}:1 ARS:~$${p.quote?.price ? Math.round(p.quote.price * ccl.venta / p.cedear.ratio) : "N/A"}`;
+   Target:$${fund.targetMeanPrice?.toFixed(2) || "N/A"} Rec:${fund.recommendationKey || "N/A"} | Ratio ${getEffectiveRatio(p.cedear.ticker).ratio}:1 ARS:~$${p.quote?.price ? Math.round(p.quote.price * ccl.venta / getEffectiveRatio(p.cedear.ticker).ratio) : "N/A"}`;
   }).join("\n\n");
 }
 
@@ -382,16 +516,148 @@ ${rows.map((s) => {
 INSTRUCCIÓN: Priorizar picks en sectores LIDERANDO. Evitar agregar exposición a REZAGADOS salvo catalizador concreto.`;
 }
 
-export async function generateAnalysis({ topPicks, capital, ccl, diversification, warnings, ranking, profileId = "moderate" }) {
+export async function generateAnalysis({ topPicks, capital, ccl, diversification, warnings, ranking, profileId = "moderate", brokerKey = "default" }) {
   const profile = getProfileConfig(profileId);
   const coreETF = profile.coreETF;
 
-  const [cycleData, vix] = await Promise.all([
+  const [cycleData, vix, capitalHistory, riesgoPais] = await Promise.all([
     buildMonthlyCycleContext({ capital, ccl, ranking: ranking || topPicks }),
     fetchVIX().catch(() => null),
+    getCapitalHistory(6).catch(() => []),
+    fetchRiesgoPais().catch(() => null),
   ]);
   const monthlyContext = cycleData.context;
   const cartEraYaAlineada = cycleData.cartEraYaAlineada;
+
+  // ── CIRCUIT BREAKER CHECK ──
+  // Evaluate market stress before committing to an expensive AI call.
+  let circuitBreakerResult = null;
+  let _dataFreshnessWarning = null;
+  if (FLAGS.ENABLE_CIRCUIT_BREAKERS) {
+    // Check data freshness: if VIX data is >2h old, treat as stale
+    const MAX_VIX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+    const vixFetchedAt = vix?._fetchedAt || 0;
+    const vixAge = vixFetchedAt > 0 ? Date.now() - vixFetchedAt : Infinity;
+    const vixIsStale = vixAge > MAX_VIX_AGE_MS;
+    if (vixIsStale && vix) {
+      _dataFreshnessWarning = `VIX data is ${Math.round(vixAge / 60000)}min old (max ${MAX_VIX_AGE_MS / 60000}min). Using cautious defaults.`;
+      console.warn(`[advisor] ${_dataFreshnessWarning}`);
+    }
+
+    const drawdownResult = checkPortfolioDrawdown(capitalHistory);
+    // Estimate consecutive loss months from capital history
+    let consecutiveLossMonths = 0;
+    if (capitalHistory && capitalHistory.length >= 2) {
+      for (let i = 0; i < capitalHistory.length - 1; i++) {
+        const current = toFiniteNumber(capitalHistory[i]?.total_value_ars, 0);
+        const previous = toFiniteNumber(capitalHistory[i + 1]?.total_value_ars, 0);
+        if (current > 0 && previous > 0 && current < previous) {
+          consecutiveLossMonths++;
+        } else {
+          break;
+        }
+      }
+    }
+    // Estimate trailing alpha from backtest if available (will be computed later, use cached)
+    const cachedBt = backtestCache.get(`minibt_${profileId}`);
+    const trailingAlpha30d = cachedBt?.satelliteAlpha ?? null;
+
+    circuitBreakerResult = checkCircuitBreakers({
+      vixLevel: vixIsStale ? null : (vix?.price ?? null), // Don't trust stale VIX
+      portfolioDrawdownPct: drawdownResult.drawdownPct,
+      trailingAlpha30d,
+      consecutiveLossMonths,
+    });
+
+    if (circuitBreakerResult.triggered) {
+      console.warn(`[advisor] CIRCUIT BREAKER TRIGGERED: action=${circuitBreakerResult.action}, reasons=${circuitBreakerResult.reasons.join(" | ")}`);
+    }
+
+    // full_core_only → skip Claude API call entirely to save money
+    if (circuitBreakerResult.action === 'full_core_only') {
+      console.warn("[advisor] Circuit breaker full_core_only: skipping Claude API call.");
+
+      // Build SELL orders for existing satellite positions
+      const sellPlan = [];
+      let paso = 1;
+      for (const pos of cycleData?.positionsWithData || []) {
+        const ticker = String(pos?.ticker || "").toUpperCase();
+        // Core ETFs are not satellite
+        if (ticker === coreETF || ticker === "SPY" || ticker === "QQQ") continue;
+        const shares = toFiniteNumber(pos?.shares || pos?.total_shares, 0);
+        const price = roundMoney(pos?.currentPrice || 0);
+        if (shares <= 0 || price <= 0) continue;
+        sellPlan.push({
+          paso: paso++,
+          tipo: "VENDER",
+          subtipo: "SATELLITE",
+          ticker,
+          cantidad_cedears: shares,
+          monto_estimado_ars: roundMoney(shares * price),
+          nota: `Circuit breaker: liquidar satellite. ${circuitBreakerResult.reasons[0] || "Condiciones de estrés."}`,
+        });
+      }
+
+      const circuitBreakerResponse = {
+        resumen_mercado: `Circuit breaker activado: ${circuitBreakerResult.reasons.join(". ")}. Recomendación: 100% core (${coreETF}). No se recomienda satellite hasta que las condiciones mejoren.`,
+        diagnostico_cartera: {
+          estado_general: "CIRCUIT BREAKER ACTIVO - Modo defensivo total",
+          exposicion_sectorial: {},
+          problemas_detectados: circuitBreakerResult.reasons,
+          fortalezas: [`Protección automática activada. Core ${coreETF} como refugio.`],
+        },
+        acciones_cartera_actual: (cycleData?.positionsWithData || [])
+          .filter(pos => {
+            const ticker = String(pos?.ticker || "").toUpperCase();
+            return ticker !== coreETF && ticker !== "SPY" && ticker !== "QQQ" && toFiniteNumber(pos?.shares || pos?.total_shares, 0) > 0;
+          })
+          .map(pos => ({
+            ticker: String(pos?.ticker || "").toUpperCase(),
+            accion: "VENDER TODO",
+            cantidad_actual: toFiniteNumber(pos?.shares || pos?.total_shares, 0),
+            cantidad_ajustar: -toFiniteNumber(pos?.shares || pos?.total_shares, 0),
+            razon: `Circuit breaker: ${circuitBreakerResult.reasons[0] || "Condiciones de estrés."}`,
+            urgencia: "alta",
+          })),
+        decision_mensual: {
+          resumen: `Circuit breaker activado. 100% ${coreETF}. Satellite suspendido.`,
+          core_etf: coreETF,
+          distribucion: { core_pct: 100, satellite_pct: 0, core_monto_ars: roundMoney(capital), satellite_monto_ars: 0 },
+          picks_activos: [],
+        },
+        resumen_operaciones: {
+          capital_disponible_actual: roundMoney(capital),
+          total_a_vender_ars: sellPlan.reduce((sum, s) => sum + s.monto_estimado_ars, 0),
+          capital_disponible_post_ventas: roundMoney(capital + sellPlan.reduce((sum, s) => sum + s.monto_estimado_ars, 0)),
+          a_core_ars: roundMoney(capital + sellPlan.reduce((sum, s) => sum + s.monto_estimado_ars, 0)),
+          a_satellite_ars: 0,
+        },
+        plan_ejecucion: sellPlan,
+        riesgos: circuitBreakerResult.reasons,
+        sin_cambios_necesarios: false,
+        mensaje_sin_cambios: null,
+        honestidad: "Circuit breaker automático activado por condiciones de estrés de mercado. No se consultó a la IA para ahorrar costos.",
+        proximo_review: "cuando las condiciones de mercado se normalicen",
+        _circuit_breaker: circuitBreakerResult,
+      };
+
+      // Audit log is MANDATORY for all investment decisions (no flag check)
+      logDecisionAudit({
+        route: "/api/ai/analyze",
+        profile: profileId,
+        capitalArs: capital,
+        tickersConsidered: (topPicks || []).map((p) => p.cedear?.ticker).filter(Boolean),
+        rawOutput: null,
+        normalizedOutput: circuitBreakerResponse,
+        consistencyNotes: [`CIRCUIT BREAKER: ${circuitBreakerResult.action}`],
+        schemaErrors: [],
+        retryAttempted: false,
+      }).catch((e) => console.error("[audit] Error:", e.message));
+
+      return circuitBreakerResponse;
+    }
+  }
+
   const selfEvalContext = await buildAIContext();
   const lessons = await getLatestLessons();
 
@@ -446,6 +712,7 @@ export async function generateAnalysis({ topPicks, capital, ccl, diversification
           returnPct: bt.resultado?.returnPct,
           spyReturnPct: bt.resultado?.spyReturnPct,
           beatsSPY: bt.resultado?.beatsSPY,
+          biasReliability: bt.biasReliability || null,
           satelliteReturnPct: bt.satellite?.returnPct,
           satelliteAlpha: bt.satellite?.alpha,
           satelliteGeneraAlfa: bt.satellite?.generaAlfa,
@@ -479,6 +746,22 @@ export async function generateAnalysis({ topPicks, capital, ccl, diversification
     ? `\nVIX ACTUAL: ${vix.price} (${vix.changePct >= 0 ? "+" : ""}${vix.changePct}% hoy) → Regimen: ${vix.regime === "crisis" ? "🚨 CRISIS (VIX>35): ultra-defensivo, satellite mínimo" : vix.regime === "elevated" ? "⚠ ELEVADO (25-35): reducir satellite" : vix.regime === "normal" ? "✅ NORMAL (15-25): operar normal" : "⚡ COMPLACENCIA (<15): no exceder satellite"}`
     : "";
 
+  const riesgoPaisSection = riesgoPais?.valor
+    ? `\nRIESGO PAÍS (EMBI+): ${riesgoPais.valor} puntos (${riesgoPais.fecha || "hoy"})${riesgoPais._stale ? " [dato en caché, puede no ser actual]" : ""}
+${riesgoPais.valor > 2000 ? "🚨 CRISIS: riesgo país extremo (>2000pb). El CCL puede ser muy volátil. Máxima cautela con CEDEARs en ARS." : riesgoPais.valor > 1000 ? "⚠ ELEVADO: riesgo país alto (>1000pb). Posible presión sobre CCL. Considerar que los precios en ARS pueden moverse bruscamente por tipo de cambio, no por fundamentals del subyacente." : riesgoPais.valor > 600 ? "↗ MODERADO-ALTO: riesgo país por encima de la media histórica reciente. Monitorear CCL." : "✅ CONTENIDO: riesgo país en niveles manejables. Menor presión cambiaria esperada."}
+INSTRUCCIÓN: El riesgo país afecta el CCL y por ende el precio en ARS de TODOS los CEDEARs. Si el riesgo país está en crisis, advertir al inversor que la volatilidad del tipo de cambio puede dominar el retorno por encima de los fundamentals del subyacente.`
+    : "";
+
+  // Circuit breaker constraint for reduce_satellite mode
+  const circuitBreakerConstraint = (circuitBreakerResult?.triggered && circuitBreakerResult.action === 'reduce_satellite')
+    ? `\nRESTRICCIÓN DE CIRCUIT BREAKER: El satellite NO puede exceder ${circuitBreakerResult.maxSatellitePct}% del capital. Razones: ${circuitBreakerResult.reasons.join("; ")}. Esto NO es negociable.`
+    : "";
+
+  // VIX-based hard safety rules injected into the prompt
+  const vixSafetyRules = `
+Si VIX > 35: PROHIBIDO recomendar satellite. 100% core obligatorio.
+Si drawdown del portfolio > -8%: Reducir satellite al mínimo (máx 15-20%).`;
+
   const prompt = `Sos el asesor financiero personal de un inversor argentino que opera CEDEARs.
 
 FILOSOFÍA FUNDAMENTAL: ${coreETF} ES TU DEFAULT
@@ -499,7 +782,8 @@ Tu trabajo:
 4. Plan de acción CONCRETO con tickers, cantidades y montos en ARS
 
 Sesión mensual de ${new Date().toLocaleString("es-AR", { month: "long", year: "numeric" })}:
-${vixSection}
+${vixSection}${riesgoPaisSection}
+${vixSafetyRules}${circuitBreakerConstraint}
 
 ${monthlyContext}
 
@@ -531,6 +815,14 @@ INSTRUCCIONES:
    - Si no hay convicción, 100% ${coreETF} está PERFECTO
 6. HONESTIDAD: si no tenés idea, decilo y recomendá ${coreETF}
 7. CARTERA YA ALINEADA: ${cartEraYaAlineada ? `El inversor ejecutó TODO lo recomendado anteriormente. Si el mercado no cambió significativamente, respondé sin_cambios_necesarios:true y plan_ejecucion:[].` : `Revisá operaciones pendientes de sesiones anteriores.`}
+8. SOLO stock picking cuando exista una tesis superior al core ETF:
+   - cada pick debe tener un catalizador concreto para 1-3 meses
+   - cada pick debe explicar por qué desplaza a ${coreETF} ahora y no solo por gusto
+   - si la evidencia es floja, ambigua o depende de acertar timing fino, NO lo incluyas
+9. MODO PLATA REAL:
+   - preferí falso negativo antes que falso positivo
+   - si no podés validar precio/tamaño/stop/target, mandá 100% ${coreETF}
+   - no uses más de 2 picks cuando el régimen sea defensivo o el backtest no apoye el satellite
 
 Respondé EXCLUSIVAMENTE con JSON válido (sin markdown, sin backticks):
 {
@@ -665,21 +957,27 @@ REGLA CRÍTICA DEL CICLO MENSUAL: El inversor ejecuta HOY y no toca la cartera h
     }
     if (!result.honestidad && result.autoevaluacion) result.honestidad = result.autoevaluacion;
 
-    const consistency = enforceAnalysisConsistency({ result, capital, coreETF, profile, cycleData, ranking: ranking || topPicks, ccl });
+    let consistency = enforceAnalysisConsistency({ result, capital, coreETF, profile, cycleData, ranking: ranking || topPicks, ccl });
     console.log(`CONSISTENCY: efectivo=$${roundMoney(capital).toLocaleString()} + ventas=$${roundMoney(consistency.totalVentasARS).toLocaleString()} = $${roundMoney(consistency.capitalDisponiblePost).toLocaleString()}`);
 
     // Async price verification for unverified picks
     const unverifiedPicks = (result.decision_mensual?.picks_activos || []).filter((p) => !p._price_verified && p.ticker);
+    let verificationFailures = 0;
     if (unverifiedPicks.length > 0) {
       await Promise.all(
         unverifiedPicks.map(async (pick) => {
           try {
-            const cedearInfo = CEDEARS.find((c) => c.ticker === pick.ticker);
-            const ratio = cedearInfo?.ratio || 1;
+            const ratio = getEffectiveRatio(pick.ticker).ratio;
             const quote = await fetchQuote(pick.ticker).catch(() => null);
-            if (!quote?.price || !ccl?.venta) return;
+            if (!quote?.price || !ccl?.venta) {
+              verificationFailures++;
+              return;
+            }
             const realPriceArs = Math.round((quote.price * ccl.venta) / ratio);
-            if (realPriceArs <= 0) return;
+            if (realPriceArs <= 0) {
+              verificationFailures++;
+              return;
+            }
             const aiPrice = pick.precio_aprox_ars || 0;
             const discrepancyPct = aiPrice > 0 ? (Math.abs(realPriceArs - aiPrice) / realPriceArs) * 100 : 100;
             if (discrepancyPct > 20) {
@@ -691,12 +989,96 @@ REGLA CRÍTICA DEL CICLO MENSUAL: El inversor ejecuta HOY y no toca la cartera h
               pick.monto_total_ars = newCantidad * realPriceArs;
               pick._price_verified = true;
               console.warn(`[advisor] Precio corregido ${pick.ticker}: AI $${aiPrice?.toLocaleString()} → real $${realPriceArs.toLocaleString()}`);
+            } else {
+              pick._price_verified = true;
             }
           } catch (e) {
+            verificationFailures++;
             console.warn(`[advisor] No se pudo verificar precio de ${pick.ticker}:`, e.message);
           }
         })
       );
+
+      // If >50% of picks couldn't be price-verified, flag prominently
+      const totalPicks = (result.decision_mensual?.picks_activos || []).length;
+      const verifiedCount = (result.decision_mensual?.picks_activos || []).filter(p => p._price_verified).length;
+      if (totalPicks > 0 && verifiedCount < totalPicks * 0.5) {
+        result._price_data_warning = `Solo ${verifiedCount}/${totalPicks} picks pudieron verificarse contra precios de mercado. Las cantidades y montos pueden ser inexactos.`;
+        consistency.notes.push(`[DATA QUALITY] Solo ${verifiedCount}/${totalPicks} precios verificados. Recomendación de baja confianza.`);
+        console.warn(`[advisor] LOW DATA QUALITY: only ${verifiedCount}/${totalPicks} picks price-verified`);
+      }
+    }
+
+    // ── DYNAMIC STOP-LOSS ──
+    // Replace flat stop-loss with ATR-based dynamic stops for each pick
+    if (FLAGS.ENABLE_DYNAMIC_STOPS) {
+      const allPicks = result.decision_mensual?.picks_activos || [];
+      for (const pick of allPicks) {
+        if (!pick.ticker) continue;
+        const pickData = topPicks.find((p) => p.cedear?.ticker === pick.ticker);
+        const atr = pickData?.technical?.indicators?.atr;
+        const priceUsd = pickData?.quote?.price;
+        if (atr && priceUsd) {
+          const dynamicStop = calculateDynamicStopLoss(atr, priceUsd, vix?.price ?? null);
+          const oldStop = pick.stop_loss_pct;
+          pick.stop_loss_pct = dynamicStop.stopLossPct;
+          pick._trailing_stop_pct = dynamicStop.trailingStopPct;
+          pick._stop_loss_rationale = dynamicStop.rationale;
+          if (oldStop != null && oldStop !== dynamicStop.stopLossPct) {
+            consistency.notes.push(`[DYNAMIC STOP] ${pick.ticker}: stop ajustado de ${oldStop}% → ${dynamicStop.stopLossPct}% (trailing: ${dynamicStop.trailingStopPct}%). ${dynamicStop.rationale}`);
+          }
+        }
+      }
+    }
+
+    const executionPicks = result.decision_mensual?.picks_activos || [];
+    if (executionPicks.length > 0) {
+      try {
+        const liquidityProfiles = await computeLiquidityProfiles(
+          executionPicks.map((pick) => String(pick?.ticker || "").toUpperCase()).filter(Boolean)
+        );
+        const executionGuardrails = applyExecutionGuardrails({
+          picks: executionPicks,
+          cclRate: ccl?.venta || 0,
+          liquidityProfiles,
+          brokerKey,
+        });
+        result.decision_mensual.picks_activos = executionGuardrails.sanitizedPicks;
+        if (executionGuardrails.executionNotes.length > 0) {
+          result._execution_notes = executionGuardrails.executionNotes;
+          console.log("[advisor] Execution guardrails:", executionGuardrails.executionNotes);
+        }
+        if (executionGuardrails.executionWarnings.length > 0) {
+          result._execution_warnings = executionGuardrails.executionWarnings;
+        }
+      } catch (executionErr) {
+        console.warn("[advisor] No se pudieron aplicar execution guardrails:", executionErr.message);
+      }
+    }
+
+    const guardrailResult = applyRealMoneyGuardrails({
+      result,
+      profile,
+      coreETF,
+      backtestSummary,
+      circuitBreakerResult,
+    });
+    if (guardrailResult.notes.length > 0) {
+      const priorNotes = Array.isArray(result._consistency_notes) ? result._consistency_notes : [];
+      consistency = enforceAnalysisConsistency({ result, capital, coreETF, profile, cycleData, ranking: ranking || topPicks, ccl });
+      const mergedNotes = [...new Set([...priorNotes, ...guardrailResult.notes, ...(consistency.notes || [])])];
+      result._consistency_notes = mergedNotes;
+      result._guardrail_notes = guardrailResult.notes;
+      consistency.notes = mergedNotes;
+      console.log("[advisor] Guardrails aplicados:", guardrailResult.notes);
+    }
+
+    // Attach circuit breaker info to response if triggered
+    if (circuitBreakerResult?.triggered) {
+      result._circuit_breaker = circuitBreakerResult;
+    }
+    if (_dataFreshnessWarning) {
+      result._data_freshness_warning = _dataFreshnessWarning;
     }
 
     if (FLAGS.STRICT_CONSISTENCY && consistency.notes.length > 0) {
@@ -704,19 +1086,18 @@ REGLA CRÍTICA DEL CICLO MENSUAL: El inversor ejecuta HOY y no toca la cartera h
       return { error: "La respuesta IA requirió correcciones automáticas.", consistencyNotes: consistency.notes };
     }
 
-    if (FLAGS.ENABLE_AUDIT_LOG) {
-      logDecisionAudit({
-        route: "/api/ai/analyze",
-        profile: profileId,
-        capitalArs: capital,
-        tickersConsidered: (topPicks || []).map((p) => p.cedear?.ticker).filter(Boolean),
-        rawOutput,
-        normalizedOutput: result,
-        consistencyNotes: consistency.notes,
-        schemaErrors,
-        retryAttempted,
-      }).catch((e) => console.error("[audit] Error:", e.message));
-    }
+    // Audit log is MANDATORY for all investment decisions (no flag check)
+    logDecisionAudit({
+      route: "/api/ai/analyze",
+      profile: profileId,
+      capitalArs: capital,
+      tickersConsidered: (topPicks || []).map((p) => p.cedear?.ticker).filter(Boolean),
+      rawOutput,
+      normalizedOutput: result,
+      consistencyNotes: consistency.notes,
+      schemaErrors,
+      retryAttempted,
+    }).catch((e) => console.error("[audit] Error:", e.message));
 
     // Log predictions
     let savedCount = 0;
@@ -822,7 +1203,7 @@ export async function analyzeSingle({ ticker, name, sector, scores, technical, f
   const prompt = `Análisis COMPLETO del CEDEAR ${ticker} (${name}, ${sector}) para inversor argentino.
 
 DATOS:
-Precio USD: $${quote?.price?.toFixed(2) || "N/A"} | ARS: $${quote?.price ? Math.round((quote.price * ccl.venta) / scores.ratio) : "N/A"} | Δ${quote?.changePercent?.toFixed(2) || "N/A"}%
+Precio USD: $${quote?.price?.toFixed(2) || "N/A"} | ARS: $${quote?.price ? Math.round((quote.price * ccl.venta) / getEffectiveRatio(ticker).ratio) : "N/A"} | Δ${quote?.changePercent?.toFixed(2) || "N/A"}%
 52w: $${quote?.fiftyTwoWeekLow?.toFixed(2) || "N/A"}-$${quote?.fiftyTwoWeekHigh?.toFixed(2) || "N/A"} | Cap: ${quote?.marketCap ? `$${(quote.marketCap / 1e9).toFixed(1)}B` : "N/A"} | Beta: ${quote?.beta?.toFixed(2) || "N/A"}
 
 SCORING: Comp:${scores.composite}/100 T:${scores.techScore} F:${scores.fundScore} S:${scores.sentScore} | Signal:${scores.signal} | Horizon:${scores.horizon}

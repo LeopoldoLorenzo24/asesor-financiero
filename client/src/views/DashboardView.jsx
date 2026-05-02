@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import {
   Wallet, DollarSign, TrendingUp, TrendingDown, PieChart,
   Brain, Zap, Play, X, ChevronRight, ArrowUpRight,
@@ -11,10 +11,23 @@ import {
 } from "../components/common";
 import Tooltip, { InfoBadge } from "../components/Tooltip";
 import WelcomeView from "./WelcomeView";
+import api from "../api";
 
 function getReadinessColor(readiness) {
   if (!readiness) return T.textDim;
   return readiness.mode === "real_capital_ok" ? T.green : T.red;
+}
+
+function getPreflightMeta(preflight) {
+  const status = preflight?.status || "ready";
+  if (status === "blocked") return { color: T.red, label: "Preflight Blocked" };
+  if (status === "caution") return { color: T.yellow, label: "Preflight Caution" };
+  return { color: T.green, label: "Preflight Ready" };
+}
+
+function formatMoney(value) {
+  if (value == null || Number.isNaN(Number(value))) return "—";
+  return `$${Number(value).toLocaleString("es-AR", { maximumFractionDigits: 0 })}`;
 }
 
 // Hero card — total wealth displayed prominently
@@ -153,54 +166,123 @@ function HeroCard({ totalWealth, portfolioValue, capital, portfolioPct, portfoli
 // Readiness banner
 function ReadinessBanner({ readiness, readinessColor }) {
   const isOk = readiness?.mode === "real_capital_ok";
+  const scorePct = readiness?.scorePct ?? 0;
+  const stage = readiness?.capitalPolicy?.stage;
+  const blockers = readiness?.blockers || [];
+
+  // Stage progression steps
+  const STAGES = ["paper_only", "minimal", "pilot", "cautious", "scaled", "full"];
+  const stageIdx = STAGES.indexOf(stage || "paper_only");
+
   return (
     <div style={{
-      background: isOk ? `rgba(0,245,160,0.06)` : `rgba(255,51,102,0.05)`,
-      border: `1px solid ${readinessColor}20`,
-      borderLeft: `3px solid ${readinessColor}`,
-      borderRadius: 16,
-      padding: "16px 20px",
+      background: isOk ? "rgba(0,245,160,0.04)" : "rgba(255,51,102,0.03)",
+      border: `1px solid ${readinessColor}15`,
+      borderRadius: 20,
+      padding: "20px 24px",
       marginBottom: 20,
-      display: "flex",
-      alignItems: "center",
-      gap: 16,
-      flexWrap: "wrap",
+      overflow: "hidden",
+      position: "relative",
     }}>
+      {/* Subtle glow accent */}
       <div style={{
-        width: 44, height: 44,
-        borderRadius: 12,
-        background: `linear-gradient(135deg, ${readinessColor}, ${readinessColor}80)`,
-        display: "flex", flexDirection: "column",
-        alignItems: "center", justifyContent: "center",
-        flexShrink: 0,
-        boxShadow: `0 4px 16px ${readinessColor}25`,
-      }}>
-        <span style={{ fontSize: 8, fontWeight: 800, color: "#000", fontFamily: T.fontMono, lineHeight: 1 }}>GRADE</span>
-        <span style={{ fontSize: 20, fontWeight: 900, color: "#000", fontFamily: T.fontMono, lineHeight: 1 }}>{readiness?.grade || "—"}</span>
-      </div>
-      <div style={{ flex: 1, minWidth: 180 }}>
-        <div style={{ fontSize: 12, fontWeight: 800, color: readinessColor, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 4 }}>
-          {isOk ? "Capital Real Habilitado" : "Paper Only"}
-          {readiness?.capitalPolicy?.stage && (
-            <span style={{
-              marginLeft: 10,
-              fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 10,
-              background: `${readinessColor}18`, border: `1px solid ${readinessColor}30`,
-              fontFamily: T.fontMono, letterSpacing: "1px",
-            }}>
-              {readiness.capitalPolicy.stage}
+        position: "absolute", top: 0, left: 0, right: 0, height: 2,
+        background: `linear-gradient(90deg, transparent, ${readinessColor}60, transparent)`,
+      }} />
+
+      <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+        {/* Grade badge */}
+        <div style={{
+          width: 52, height: 52, borderRadius: 16,
+          background: `linear-gradient(135deg, ${readinessColor}, ${readinessColor}70)`,
+          display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center",
+          flexShrink: 0,
+          boxShadow: `0 6px 20px ${readinessColor}25`,
+        }}>
+          <span style={{ fontSize: 7, fontWeight: 800, color: "#000", fontFamily: T.fontMono, lineHeight: 1, opacity: 0.7 }}>GRADE</span>
+          <span style={{ fontSize: 22, fontWeight: 900, color: "#000", fontFamily: T.fontMono, lineHeight: 1 }}>{readiness?.grade || "—"}</span>
+        </div>
+
+        {/* Info column */}
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 800, color: readinessColor, letterSpacing: "-0.2px" }}>
+              {isOk ? "Capital Real Habilitado" : "Modo Paper Trading"}
             </span>
+            {stage && (
+              <span style={{
+                fontSize: 9, fontWeight: 800, padding: "3px 10px", borderRadius: 12,
+                background: `${readinessColor}12`, border: `1px solid ${readinessColor}20`,
+                fontFamily: T.fontMono, letterSpacing: "0.5px", textTransform: "uppercase",
+                color: readinessColor,
+              }}>
+                {stage}
+              </span>
+            )}
+          </div>
+
+          {/* Stage progression dots */}
+          <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+            {STAGES.map((s, i) => (
+              <div key={s} style={{
+                flex: 1, height: 3, borderRadius: 2,
+                background: i <= stageIdx ? readinessColor : "rgba(148,163,184,0.1)",
+                opacity: i <= stageIdx ? (i === stageIdx ? 1 : 0.5) : 1,
+                transition: "all 0.4s ease",
+              }} />
+            ))}
+          </div>
+
+          {/* Summary - compact */}
+          <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
+            {readiness?.capitalPolicy?.summary || readiness?.summary || "Evaluando readiness..."}
+          </div>
+
+          {/* Inline blockers */}
+          {blockers.length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+              {blockers.slice(0, 3).map((b, i) => (
+                <span key={i} style={{
+                  fontSize: 10, fontWeight: 600, padding: "3px 10px", borderRadius: 10,
+                  background: "rgba(255,51,102,0.08)", border: "1px solid rgba(255,51,102,0.15)",
+                  color: T.red, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>
+                  {b}
+                </span>
+              ))}
+              {blockers.length > 3 && (
+                <span style={{ fontSize: 10, color: T.textDim, alignSelf: "center" }}>
+                  +{blockers.length - 3} mas
+                </span>
+              )}
+            </div>
           )}
         </div>
-        <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>
-          {readiness?.capitalPolicy?.summary || readiness?.summary || "Evaluando readiness..."}
-        </div>
-        <BlockerList blockers={readiness?.blockers} />
-      </div>
-      <div style={{ textAlign: "right", minWidth: 80, flexShrink: 0 }}>
-        <div style={{ fontSize: 10, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 4 }}>Score</div>
-        <div style={{ fontSize: 28, fontWeight: 900, color: readinessColor, fontFamily: T.fontMono, lineHeight: 1 }}>
-          {readiness?.scorePct ?? 0}%
+
+        {/* Score with mini ring */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          <div style={{ position: "relative", width: 56, height: 56 }}>
+            <svg width={56} height={56} style={{ transform: "rotate(-90deg)" }}>
+              <circle cx={28} cy={28} r={22} fill="none" stroke="rgba(148,163,184,0.08)" strokeWidth={4} />
+              <circle cx={28} cy={28} r={22} fill="none"
+                stroke={readinessColor} strokeWidth={4}
+                strokeDasharray={2 * Math.PI * 22}
+                strokeDashoffset={2 * Math.PI * 22 * (1 - scorePct / 100)}
+                strokeLinecap="round"
+                style={{ transition: "stroke-dashoffset 1s ease" }}
+              />
+            </svg>
+            <div style={{
+              position: "absolute", inset: 0,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              <span style={{ fontSize: 15, fontWeight: 900, color: readinessColor, fontFamily: T.fontMono }}>
+                {scorePct}
+              </span>
+            </div>
+          </div>
+          <span style={{ fontSize: 8, color: T.textDim, fontFamily: T.fontMono, textTransform: "uppercase", letterSpacing: "1.5px" }}>Score</span>
         </div>
       </div>
     </div>
@@ -330,14 +412,83 @@ export default function DashboardView({
   systemReadiness,
   topPicks,
   setView,
+  executionAssistant,
+  executionTickets,
+  onRefreshExecutionTickets,
+  onConfirmState,
 }) {
+  const [ticketBusyId, setTicketBusyId] = useState(null);
+  const [ticketError, setTicketError] = useState(null);
   const totalWealth = portfolioValue + capital;
   const portfolioPct = totalWealth > 0 ? (portfolioValue / totalWealth) * 100 : 0;
   const readiness = aiAnalysis?._governance || systemReadiness;
   const readinessColor = getReadinessColor(readiness);
+  const preflight = readiness?.preflight || null;
+  const preflightMeta = getPreflightMeta(preflight);
+  const preflightBlocked = preflight?.status === "blocked";
+
+  const circuitBreaker = aiAnalysis?._circuit_breaker || aiAnalysis?.circuitBreaker;
+  const spyReturn = aiAnalysis?.spyReturn ?? aiAnalysis?.benchmark?.spyReturn ?? aiAnalysis?.resultado?.spyReturnPct;
+  const portfolioReturn = aiAnalysis?.portfolioReturn ?? aiAnalysis?.resultado?.returnPct;
+  const alpha = (portfolioReturn != null && spyReturn != null) ? (portfolioReturn - spyReturn) : null;
+  const commissionPct = aiAnalysis?.commissionPct ?? 0.6;
+  const ticketSummary = executionAssistant?.summary || null;
+
+  const runTicketAction = async (action, ticketId) => {
+    setTicketBusyId(ticketId);
+    setTicketError(null);
+    try {
+      if (action === "confirm") await api.confirmExecutionTicket(ticketId);
+      if (action === "reject") await api.rejectExecutionTicket(ticketId);
+      if (action === "executed") await api.markExecutionTicketExecuted(ticketId);
+      if (onRefreshExecutionTickets) await onRefreshExecutionTickets();
+    } catch (err) {
+      setTicketError(err.message);
+    } finally {
+      setTicketBusyId(null);
+    }
+  };
+
+  // Worst performers from portfolio
+  const worstPerformers = useMemo(() => {
+    if (!topPicks || topPicks.length === 0) return [];
+    const withPerf = topPicks
+      .map((item) => ({
+        ticker: item.cedear.ticker,
+        name: item.cedear.name,
+        month1: item.technical?.indicators?.performance?.month1 || 0,
+        daysHeld: item.daysHeld || null,
+      }))
+      .sort((a, b) => a.month1 - b.month1);
+    return withPerf.slice(0, 3);
+  }, [topPicks]);
 
   return (
     <div style={{ padding: "28px 32px 40px", maxWidth: 1440, margin: "0 auto" }}>
+
+      {/* ── Circuit Breaker Banner ── */}
+      {circuitBreaker && (circuitBreaker.active || circuitBreaker.severity === "critical") && (
+        <div style={{
+          background: "rgba(255,51,102,0.12)",
+          border: `2px solid ${T.red}`,
+          borderRadius: 14,
+          padding: "16px 22px",
+          marginBottom: 20,
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+        }}>
+          <AlertTriangle size={22} color={T.red} strokeWidth={2.5} />
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.red }}>
+              Circuit Breaker Activo: {circuitBreaker.reason || "Condiciones de mercado extremas"}
+            </div>
+            <div style={{ fontSize: 12, color: T.textMuted, marginTop: 4 }}>
+              Operaciones satellite suspendidas. Solo se mantiene el core (SPY/QQQ).
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Hero: total wealth ── */}
       <HeroCard
@@ -348,8 +499,84 @@ export default function DashboardView({
         portfolioCount={portfolioCount}
       />
 
+      {/* ── Benchmark comparison + Commission estimate ── */}
+      {(alpha != null || totalWealth > 0) && (
+        <div style={{
+          display: "flex", gap: 14, marginBottom: 20, flexWrap: "wrap",
+        }}>
+          {alpha != null && (
+            <div style={{
+              flex: 1, minWidth: 280,
+              background: "rgba(15,23,42,0.55)",
+              border: `1px solid ${T.border}`,
+              borderRadius: 14,
+              padding: "14px 18px",
+              display: "flex", alignItems: "center", gap: 14,
+            }}>
+              <TrendingUp size={16} color={alpha >= 0 ? T.green : T.red} />
+              <div style={{ fontSize: 13, color: T.textMuted, fontFamily: T.fontMono }}>
+                Tu portfolio: <span style={{ color: portfolioReturn >= 0 ? T.green : T.red, fontWeight: 700 }}>{portfolioReturn >= 0 ? "+" : ""}{portfolioReturn?.toFixed(2)}%</span>
+                {" | "}
+                SPY (benchmark): <span style={{ fontWeight: 700, color: T.textMuted }}>{spyReturn >= 0 ? "+" : ""}{spyReturn?.toFixed(2)}%</span>
+                {" | "}
+                Alpha: <span style={{ color: alpha >= 0 ? T.green : T.red, fontWeight: 800 }}>{alpha >= 0 ? "+" : ""}{alpha.toFixed(2)}%</span>
+              </div>
+            </div>
+          )}
+          <div style={{
+            minWidth: 220,
+            background: "rgba(15,23,42,0.55)",
+            border: `1px solid ${T.border}`,
+            borderRadius: 14,
+            padding: "14px 18px",
+            display: "flex", alignItems: "center", gap: 10,
+          }}>
+            <DollarSign size={14} color={T.textDim} />
+            <span style={{ fontSize: 12, color: T.textDim }}>
+              Comisiones estimadas (round trip): ~{commissionPct}%
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* ── Readiness banner ── */}
       <ReadinessBanner readiness={readiness} readinessColor={readinessColor} />
+
+      {preflight && (
+        <div style={{
+          background: `${preflightMeta.color}06`,
+          border: `1px solid ${preflightMeta.color}12`,
+          borderRadius: 16,
+          padding: "12px 18px",
+          marginBottom: 20,
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+        }}>
+          <div style={{
+            width: 8, height: 8, borderRadius: "50%",
+            background: preflightMeta.color,
+            boxShadow: `0 0 8px ${preflightMeta.color}60`,
+            flexShrink: 0,
+          }} />
+          <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: preflightMeta.color }}>
+              {preflightMeta.label}
+            </span>
+            <span style={{ fontSize: 11, color: T.textDim }}>
+              {preflight.summary ? (preflight.summary.length > 80 ? preflight.summary.slice(0, 80) + "..." : preflight.summary) : "Sin estado disponible"}
+            </span>
+          </div>
+          <span style={{
+            fontSize: 9, fontWeight: 700, padding: "3px 10px", borderRadius: 10,
+            background: `${preflightMeta.color}12`, border: `1px solid ${preflightMeta.color}20`,
+            color: preflightMeta.color, fontFamily: T.fontMono, textTransform: "uppercase",
+            whiteSpace: "nowrap",
+          }}>
+            {preflight.latestStatus ? String(preflight.latestStatus).toUpperCase() : "—"}
+          </span>
+        </div>
+      )}
 
       {/* ── Welcome / Quick Start (no data yet) ── */}
       {!aiAnalysis && !aiLoading && (
@@ -407,10 +634,10 @@ export default function DashboardView({
                 />
                 <button
                   onClick={() => runAI(parseFloat(capitalToInvest) || 0)}
-                  disabled={aiLoading}
+                  disabled={aiLoading || preflightBlocked}
                   style={{
                     ...S.btn("primary"),
-                    opacity: aiLoading ? 0.6 : 1,
+                    opacity: aiLoading || preflightBlocked ? 0.6 : 1,
                     fontSize: 13, padding: "10px 18px",
                   }}
                 >
@@ -427,7 +654,8 @@ export default function DashboardView({
             ) : (
               <button
                 onClick={() => setShowCapitalInput(true)}
-                style={{ ...S.btn("primary"), fontSize: 13, padding: "10px 18px" }}
+                disabled={preflightBlocked}
+                style={{ ...S.btn("primary"), fontSize: 13, padding: "10px 18px", opacity: preflightBlocked ? 0.6 : 1 }}
               >
                 <Zap size={13} strokeWidth={2.5} />
                 Nuevo Análisis
@@ -439,6 +667,14 @@ export default function DashboardView({
         {cooldownInfo && (
           <div style={{ marginTop: 14 }}>
             <StatusMsg type="warning">{cooldownInfo.message}</StatusMsg>
+          </div>
+        )}
+
+        {preflightBlocked && (
+          <div style={{ marginTop: 14 }}>
+            <StatusMsg type="error">
+              {preflight?.summary || "Preflight bloqueado. No abras posiciones nuevas hasta normalizar el sistema."}
+            </StatusMsg>
           </div>
         )}
 
@@ -487,6 +723,117 @@ export default function DashboardView({
         {aiAnalysis?.error && (
           <div style={{ marginTop: 14 }}>
             <StatusMsg type="error">Error: {aiAnalysis.error}</StatusMsg>
+          </div>
+        )}
+      </div>
+
+      <div style={{
+        background: "rgba(15,23,42,0.62)",
+        border: `1px solid ${T.border}`,
+        borderRadius: 18,
+        padding: "20px 24px",
+        marginBottom: 28,
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: T.text }}>Tickets de Confirmación</div>
+            <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
+              {executionAssistant?.modeMeta?.label || "Manual por Demanda"} · Confirmación obligatoria antes de mover plata real.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ ...S.badge(T.blue), fontSize: 10 }}>
+              Abiertos: {ticketSummary?.openTickets ?? executionTickets?.length ?? 0}
+            </span>
+            <span style={{ ...S.badge(T.red), fontSize: 10 }}>
+              Críticos: {ticketSummary?.criticalOpen ?? 0}
+            </span>
+          </div>
+        </div>
+
+        {ticketError && <StatusMsg type="error">{ticketError}</StatusMsg>}
+
+        {!executionTickets || executionTickets.length === 0 ? (
+          <div style={{ fontSize: 13, color: T.textDim, lineHeight: 1.7 }}>
+            No hay tickets abiertos. Corré un análisis para que el sistema te deje operaciones confirmables.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            {executionTickets.slice(0, 6).map((ticket) => {
+              const actionColor = ticket.action === "BUY" ? T.green : T.red;
+              const priorityColor = ticket.priority === "critical" ? T.red : T.blue;
+              const isBusy = ticketBusyId === ticket.id;
+              return (
+                <div
+                  key={ticket.id}
+                  style={{
+                    padding: "16px 18px",
+                    borderRadius: 16,
+                    border: `1px solid ${ticket.priority === "critical" ? `${T.red}25` : T.border}`,
+                    background: ticket.priority === "critical" ? `${T.red}07` : "rgba(148,163,184,0.03)",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+                    <div style={{ flex: 1, minWidth: 220 }}>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+                        <span style={{ fontSize: 15, fontWeight: 900, color: T.text, fontFamily: T.fontMono }}>{ticket.ticker}</span>
+                        <span style={{ ...S.badge(actionColor), fontSize: 9 }}>{ticket.action}</span>
+                        <span style={{ ...S.badge(priorityColor), fontSize: 9 }}>{ticket.priority === "critical" ? "CRÍTICO" : "NORMAL"}</span>
+                        {ticket.subtype && <span style={{ ...S.badge(T.textDim), fontSize: 9 }}>{ticket.subtype}</span>}
+                      </div>
+                      <div style={{ fontSize: 13, color: T.textMuted, lineHeight: 1.7, marginBottom: 10 }}>
+                        {ticket.rationale || ticket.execution_note || "Sin tesis resumida."}
+                      </div>
+                      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>
+                        <span>Cant: {ticket.shares || 0}</span>
+                        <span>Precio: {formatMoney(ticket.limit_price_ars)}</span>
+                        <span>Monto: {formatMoney(ticket.estimated_amount_ars)}</span>
+                        {ticket.target_pct != null && <span>Target: +{Number(ticket.target_pct).toFixed(1)}%</span>}
+                        {ticket.stop_loss_pct != null && <span>Stop: {Number(ticket.stop_loss_pct).toFixed(1)}%</span>}
+                        {ticket.conviction != null && <span>Convicción: {ticket.conviction}</span>}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {ticket.status === "pending_confirmation" && (
+                        <>
+                          <button
+                            onClick={() => onConfirmState?.({
+                              title: `${ticket.action} ${ticket.ticker}`,
+                              description: "Vas a confirmar este ticket para ejecución manual posterior. El sistema no enviará la orden al broker por su cuenta.",
+                              confirmLabel: "Confirmar ticket",
+                              variant: ticket.action === "BUY" ? "blue" : "danger",
+                              tokenWarning: "Esta acción no consume IA. Solo cambia el estado operativo del ticket.",
+                              onConfirm: () => runTicketAction("confirm", ticket.id),
+                            })}
+                            disabled={isBusy}
+                            style={{ ...S.btn("secondary"), opacity: isBusy ? 0.7 : 1, fontSize: 12 }}
+                          >
+                            Confirmar
+                          </button>
+                          <button
+                            onClick={() => runTicketAction("reject", ticket.id)}
+                            disabled={isBusy}
+                            style={{ ...S.btn("ghost"), opacity: isBusy ? 0.7 : 1, fontSize: 12 }}
+                          >
+                            Rechazar
+                          </button>
+                        </>
+                      )}
+                      {ticket.status === "confirmed" && (
+                        <button
+                          onClick={() => runTicketAction("executed", ticket.id)}
+                          disabled={isBusy}
+                          style={{ ...S.btn("primary"), opacity: isBusy ? 0.7 : 1, fontSize: 12 }}
+                        >
+                          Marcar Ejecutada
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -556,6 +903,58 @@ export default function DashboardView({
           </div>
         )}
       </div>
+
+      {/* ── Worst Performers ── */}
+      {worstPerformers.length > 0 && worstPerformers[0].month1 < 0 && (
+        <div style={{ marginTop: 28 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <div style={{
+              width: 3, height: 20,
+              background: `linear-gradient(180deg, ${T.red}, ${T.orange})`,
+              borderRadius: 2,
+            }} />
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: T.text, letterSpacing: "-0.4px" }}>
+              Peores Performers del Mes
+            </h2>
+            <span style={{ fontSize: 12, color: T.textDim, marginLeft: 8 }}>
+              Educarse sobre el riesgo es clave
+            </span>
+          </div>
+
+          <div style={{ ...S.grid(220), gap: 14 }}>
+            {worstPerformers.map((item) => (
+              <div
+                key={item.ticker}
+                style={{
+                  background: "rgba(255,51,102,0.04)",
+                  border: `1px solid rgba(255,51,102,0.15)`,
+                  borderTop: `2px solid ${T.red}`,
+                  borderRadius: 18,
+                  padding: "18px 20px",
+                }}
+              >
+                <div style={{ fontSize: 17, fontWeight: 900, color: T.text, fontFamily: T.fontMono, letterSpacing: "-0.5px", marginBottom: 4 }}>
+                  {item.ticker}
+                </div>
+                <div style={{ fontSize: 11, color: T.textDim, marginBottom: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {item.name}
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 13, fontWeight: 800, fontFamily: T.fontMono, color: T.red, display: "flex", alignItems: "center", gap: 4 }}>
+                    <TrendingDown size={13} strokeWidth={2.5} />
+                    {item.month1.toFixed(1)}%
+                  </span>
+                  {item.daysHeld != null && (
+                    <span style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>
+                      {item.daysHeld}d en cartera
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,12 +3,12 @@ const DEFAULT_DEPLOYMENT_MODE = "system_auto";
 
 export const GOVERNANCE_BASE_POLICY = {
   version: "2026-04-24",
-  cooldownDays: 7,
+  cooldownDays: 14,
   thresholds: {
     evaluatedPredictions: 50,
     winRateVsSpyPct: 60,
     averageAlphaPct: 2,
-    trackRecordDays: 90,
+    trackRecordDays: 180,
     trackRecordAlphaPct: 3,
     maxDrawdownPct: 15,
     sharpeRatio: 1.0,
@@ -284,4 +284,107 @@ export function describeGovernanceSelection(selection, updatedAt = null) {
     deploymentModeDescription: deploymentMode.description,
     updatedAt,
   };
+}
+
+// ── DEPLOYMENT MODE HIERARCHY (ordered from most permissive to most restrictive) ──
+const MODE_HIERARCHY = ['system_auto', 'scaled', 'cautious', 'pilot', 'paper_only'];
+
+/**
+ * Determines if the system should automatically downgrade the deployment mode
+ * based on trailing performance metrics. This is a safety mechanism that
+ * protects capital when the model is underperforming.
+ *
+ * Downgrade Rules (any single trigger is sufficient):
+ * 1. Alpha < 0 for trailing 30d AND current mode > 'pilot' → downgrade one level
+ * 2. Alpha < -5% trailing 30d → downgrade to 'paper_only' immediately
+ * 3. maxDrawdown30d > -15% → downgrade to 'paper_only' immediately
+ * 4. winRate30d < 40% with >10 predictions → downgrade one level
+ * 5. sharpe30d < 0.3 → downgrade one level
+ *
+ * Cooldown: will not downgrade more than once per 14 days.
+ *
+ * @param {{ deploymentMode: string, lastDowngradeAt?: string|null }} currentSelection - Current governance selection
+ * @param {{ trailingAlpha30d: number, winRate30d: number, maxDrawdown30d: number, sharpe30d: number, predictionCount30d?: number }} metrics - Trailing 30-day performance metrics
+ * @returns {{ shouldDowngrade: boolean, newMode: string, reason: string, rules: string[] }}
+ */
+export function checkAutoDowngrade(currentSelection, metrics) {
+  const currentMode = currentSelection?.deploymentMode || 'system_auto';
+  const lastDowngrade = currentSelection?.lastDowngradeAt;
+  const cooldownDays = GOVERNANCE_BASE_POLICY.cooldownDays; // 14 days
+  const result = {
+    shouldDowngrade: false,
+    newMode: currentMode,
+    reason: '',
+    rules: [],
+  };
+
+  // Respect cooldown: don't downgrade more than once per cooldownDays
+  if (lastDowngrade) {
+    const lastMs = new Date(lastDowngrade).getTime();
+    if (Number.isFinite(lastMs)) {
+      const daysSince = (Date.now() - lastMs) / 86400000;
+      if (daysSince < cooldownDays) {
+        result.reason = `Cooldown activo: último downgrade hace ${Math.round(daysSince)} días (mínimo ${cooldownDays}).`;
+        return result;
+      }
+    }
+  }
+
+  if (!metrics) return result;
+
+  const currentIdx = MODE_HIERARCHY.indexOf(currentMode);
+  if (currentIdx === -1 || currentIdx >= MODE_HIERARCHY.length - 1) {
+    // Already at paper_only or unknown mode — can't downgrade further
+    return result;
+  }
+
+  let targetIdx = currentIdx;
+  const triggeredRules = [];
+
+  // Rule 2 (checked first — immediate paper_only override)
+  if (metrics.trailingAlpha30d != null && metrics.trailingAlpha30d < -5) {
+    targetIdx = MODE_HIERARCHY.length - 1; // paper_only
+    triggeredRules.push(`Alpha trailing 30d (${metrics.trailingAlpha30d.toFixed(2)}%) < -5% → paper_only inmediato`);
+  }
+
+  // Rule 3 (immediate paper_only override)
+  if (metrics.maxDrawdown30d != null && metrics.maxDrawdown30d < -15) {
+    targetIdx = MODE_HIERARCHY.length - 1; // paper_only
+    triggeredRules.push(`Max drawdown 30d (${metrics.maxDrawdown30d.toFixed(2)}%) > -15% → paper_only inmediato`);
+  }
+
+  // Rule 1: alpha < 0 AND mode > pilot → downgrade one level
+  if (metrics.trailingAlpha30d != null && metrics.trailingAlpha30d < 0 && currentIdx < MODE_HIERARCHY.indexOf('pilot')) {
+    const oneDown = currentIdx + 1;
+    if (oneDown > targetIdx) { /* already going further down */ }
+    else targetIdx = Math.max(targetIdx, oneDown);
+    triggeredRules.push(`Alpha trailing 30d (${metrics.trailingAlpha30d.toFixed(2)}%) < 0 → downgrade un nivel`);
+  }
+
+  // Rule 4: winRate < 40% with enough predictions
+  const predCount = metrics.predictionCount30d || 0;
+  if (metrics.winRate30d != null && metrics.winRate30d < 40 && predCount > 10) {
+    const oneDown = currentIdx + 1;
+    targetIdx = Math.max(targetIdx, oneDown);
+    triggeredRules.push(`Win rate 30d (${metrics.winRate30d.toFixed(1)}%) < 40% con ${predCount} predicciones → downgrade un nivel`);
+  }
+
+  // Rule 5: sharpe < 0.3
+  if (metrics.sharpe30d != null && metrics.sharpe30d < 0.3) {
+    const oneDown = currentIdx + 1;
+    targetIdx = Math.max(targetIdx, oneDown);
+    triggeredRules.push(`Sharpe 30d (${metrics.sharpe30d.toFixed(2)}) < 0.3 → downgrade un nivel`);
+  }
+
+  // Clamp to valid range
+  targetIdx = Math.min(targetIdx, MODE_HIERARCHY.length - 1);
+
+  if (targetIdx > currentIdx) {
+    result.shouldDowngrade = true;
+    result.newMode = MODE_HIERARCHY[targetIdx];
+    result.reason = `Auto-downgrade de ${currentMode} a ${result.newMode} por bajo rendimiento.`;
+    result.rules = triggeredRules;
+  }
+
+  return result;
 }

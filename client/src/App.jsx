@@ -23,7 +23,8 @@ import TrackRecordView from "./views/TrackRecordView";
 import TradingSignalsView from "./views/TradingSignalsView";
 import RiskMetricsView from "./views/RiskMetricsView";
 import AdherenceView from "./views/AdherenceView";
-import ToastSystem, { showToast } from "./components/ToastSystem";
+import ToastSystem, { showToast, enrichTradeToast } from "./components/ToastSystem";
+import TradeAlertModal, { showTradeAlert } from "./components/TradeAlertModal";
 import CommandPalette from "./components/CommandPalette";
 import SystemHealthView from "./views/SystemHealthView";
 import PortfolioEvolutionView from "./views/PortfolioEvolutionView";
@@ -137,6 +138,8 @@ export default function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [systemHealth, setSystemHealth] = useState(null);
   const [systemReadiness, setSystemReadiness] = useState(null);
+  const [executionAssistant, setExecutionAssistant] = useState(null);
+  const [executionTickets, setExecutionTickets] = useState([]);
   const [intradayMonitor, setIntradayMonitor] = useState(null);
   const [intradayMonitorLoading, setIntradayMonitorLoading] = useState(false);
   const [portfolioEvolution, setPortfolioEvolution] = useState(null);
@@ -190,6 +193,13 @@ export default function App() {
   const loadAdherenceStats = useCallback(async () => { setAdherenceLoading(true); try { setAdherenceStats(await api.getAdherenceStats()); } catch (e) { console.error(e); } finally { setAdherenceLoading(false); } }, []);
   const loadSystemHealth = useCallback(async () => { try { setSystemHealth(await api.getSystemHealth()); } catch (e) { console.error(e); } }, []);
   const loadSystemReadiness = useCallback(async () => { try { setSystemReadiness(await api.getSystemReadiness()); } catch (e) { console.error(e); } }, []);
+  const loadExecutionAssistant = useCallback(async () => {
+    try {
+      const data = await api.getExecutionAssistant();
+      setExecutionAssistant(data);
+      setExecutionTickets(data?.summary ? await api.getExecutionTickets("open", 20).then((res) => res.tickets || []) : []);
+    } catch (e) { console.error(e); }
+  }, []);
   const loadIntradayMonitor = useCallback(async () => {
     setIntradayMonitorLoading(true);
     try { setIntradayMonitor(await api.getIntradayMonitorStatus()); } catch (e) { console.error(e); } finally { setIntradayMonitorLoading(false); }
@@ -206,7 +216,7 @@ export default function App() {
   }, [loggedIn, view, loadRanking]);
   useEffect(() => {
     if (!loggedIn) return;
-    if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); }
+    if (view === "operaciones") { loadTransactions(); loadPortfolioDB(); loadExecutionAssistant(); }
     if (view === "predicciones") { loadPredictions(); loadPerformance(); }
     if (view === "historial") loadSessions();
     if (view === "benchmarks") loadBenchmarks();
@@ -217,10 +227,11 @@ export default function App() {
     if (view === "adherence") loadAdherenceStats();
     if (view === "health") { loadSystemHealth(); loadSystemReadiness(); }
     if (view === "monitor") loadIntradayMonitor();
-    if (view === "readiness") loadSystemReadiness();
+    if (view === "readiness") { loadSystemReadiness(); loadExecutionAssistant(); }
+    if (view === "dashboard") loadExecutionAssistant();
     if (view === "evolution") loadPortfolioEvolution();
     if (view === "trackrecord") loadTrackRecord();
-  }, [view, loggedIn, loadTransactions, loadPortfolioDB, loadPredictions, loadPerformance, loadSessions, loadBenchmarks, loadCapitalHistory, loadVirtualPortfolio, loadVirtualRegret, loadPaperConfig, loadTradingSignals, loadRiskMetrics, loadAdherenceStats, loadSystemHealth, loadSystemReadiness, loadIntradayMonitor, loadPortfolioEvolution, loadTrackRecord]);
+  }, [view, loggedIn, loadTransactions, loadPortfolioDB, loadPredictions, loadPerformance, loadSessions, loadBenchmarks, loadCapitalHistory, loadVirtualPortfolio, loadVirtualRegret, loadPaperConfig, loadTradingSignals, loadRiskMetrics, loadAdherenceStats, loadSystemHealth, loadSystemReadiness, loadExecutionAssistant, loadIntradayMonitor, loadPortfolioEvolution, loadTrackRecord]);
   useEffect(() => {
     if (loggedIn && view === "dashboard" && portfolioDB.summary.length > 0 && !benchmarks) { loadBenchmarks(); loadCapitalHistory(); }
   }, [view, portfolioDB, loggedIn, benchmarks, loadBenchmarks, loadCapitalHistory]);
@@ -236,6 +247,9 @@ export default function App() {
   }, [loggedIn, view, loadIntradayMonitor]);
 
   // ── Toast alert polling ──
+  const TRADE_ALERT_CODES = ["portfolio_drawdown", "drawdown_alert", "take_profit", "stop_loss", "significant_move"];
+  const isTradeAlert = (code) => TRADE_ALERT_CODES.some((prefix) => String(code || "").startsWith(prefix));
+
   useEffect(() => {
     if (!loggedIn) return;
     const pollAlerts = async () => {
@@ -243,7 +257,18 @@ export default function App() {
         const data = await api.getRecentAlerts(5);
         if (data.alerts && data.alerts.length > 0) {
           data.alerts.forEach((alert) => {
-            showToast({ message: `${alert.code}: ${alert.message}`, type: alert.level === "critical" ? "error" : alert.level === "warning" ? "warning" : "info" });
+            if (isTradeAlert(alert.code)) {
+              // Critical trade alerts go to the modal
+              if (alert.level === "critical" || alert.level === "warning") {
+                showTradeAlert(alert);
+              } else {
+                // Non-critical trade alerts get enriched toasts
+                const enriched = enrichTradeToast(alert);
+                showToast({ message: enriched.message, type: enriched.type, duration: enriched.duration, title: enriched.title, icon: enriched.icon, pct: enriched.pct });
+              }
+            } else {
+              showToast({ message: alert.message, type: alert.level === "critical" ? "error" : alert.level === "warning" ? "warning" : "info" });
+            }
           });
         }
       } catch { /* ignore polling errors */ }
@@ -259,6 +284,8 @@ export default function App() {
       const d = await api.aiAnalyze(investCapital, profile);
       setAiAnalysis(d.analysis);
       if (d.investmentReadiness) setSystemReadiness(d.investmentReadiness);
+      if (d.executionAssistant) setExecutionAssistant(d.executionAssistant);
+      if (Array.isArray(d.tradeTickets)) setExecutionTickets(d.tradeTickets);
       const pickCount = d.analysis?.decision_mensual?.picks_activos?.length || 0;
       if (d.analysis?.sin_cambios_necesarios) {
         showToast({ message: "Análisis completado: cartera alineada, no hay cambios necesarios", type: "success" });
@@ -314,6 +341,10 @@ export default function App() {
       systemReadiness={systemReadiness}
       topPicks={topPicks}
       setView={setView}
+      executionAssistant={executionAssistant}
+      executionTickets={executionTickets}
+      onRefreshExecutionTickets={loadExecutionAssistant}
+      onConfirmState={setConfirmState}
     />
   );
 
@@ -331,7 +362,7 @@ export default function App() {
   );
 
   const renderDetail = () => (
-    <DetailView selectedTicker={selectedTicker} detailLoading={detailLoading} detail={detail} setSelectedTicker={setSelectedTicker} />
+    <DetailView selectedTicker={selectedTicker} detailLoading={detailLoading} detail={detail} setSelectedTicker={setSelectedTicker} portfolioSummary={portfolioDB.summary} />
   );
 
   const renderOperations = () => (
@@ -344,6 +375,7 @@ export default function App() {
           loadPortfolioDB(),
           loadTransactions(),
           loadSystemReadiness(),
+          loadExecutionAssistant(),
           loadAdherenceStats(),
         ]);
       }}
@@ -402,7 +434,15 @@ export default function App() {
 
   const renderSystemHealth = () => <SystemHealthView health={systemHealth} readiness={systemReadiness} />;
   const renderIntradayMonitor = () => <IntradayMonitorView data={intradayMonitor} loading={intradayMonitorLoading} onRefresh={loadIntradayMonitor} />;
-  const renderReadiness = () => <InvestmentReadinessView readiness={systemReadiness} onRefresh={loadSystemReadiness} />;
+  const renderReadiness = () => (
+    <InvestmentReadinessView
+      readiness={systemReadiness}
+      executionAssistant={executionAssistant}
+      onRefresh={async () => {
+        await Promise.all([loadSystemReadiness(), loadExecutionAssistant()]);
+      }}
+    />
+  );
   const renderEvolution = () => <PortfolioEvolutionView data={portfolioEvolution} days={evolutionDays} onDaysChange={setEvolutionDays} />;
   const renderTrackRecord = () => <TrackRecordView data={trackRecord} days={trackRecordDays} onDaysChange={setTrackRecordDays} />;
 
@@ -431,6 +471,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <ToastSystem />
+      <TradeAlertModal />
       <CommandPalette onNavigate={nav} ranking={ranking} />
       {showOnboarding && <Onboarding onComplete={() => setShowOnboarding(false)} />}
       <div style={{ minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.text, ...gridBg }}>

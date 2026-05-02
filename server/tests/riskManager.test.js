@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkTradeRisk, checkPortfolioDrawdown, sanitizePicksWithRiskLimits } from "../riskManager.js";
+import { checkTradeRisk, checkPortfolioDrawdown, sanitizePicksWithRiskLimits, checkCircuitBreakers } from "../riskManager.js";
 import { RISK_CONFIG } from "../config.js";
 
 // ============================================================
@@ -194,4 +194,49 @@ test("sanitizePicksWithRiskLimits retorna arrays vacíos si picks es nulo", () =
   const result = sanitizePicksWithRiskLimits(null, [], mockCedearDefs, "moderate");
   assert.equal(result.sanitizedPicks.length, 0);
   assert.equal(result.riskNotes.length, 0);
+});
+
+test("checkCircuitBreakers activa full_core_only con VIX extremo", () => {
+  const result = checkCircuitBreakers({
+    vixLevel: 38,
+    portfolioDrawdownPct: null,
+    trailingAlpha30d: null,
+    consecutiveLossMonths: 0,
+  });
+  assert.equal(result.triggered, true);
+  assert.equal(result.action, "full_core_only");
+  assert.equal(result.maxSatellitePct, 0);
+});
+
+test("sanitizePicksWithRiskLimits elimina picks cuando full_core_only está activo", () => {
+  const picks = [{ ticker: "AAPL", cantidad_cedears: 100, precio_aprox_ars: 1000, monto_total_ars: 100_000 }];
+  const breaker = {
+    triggered: true,
+    reasons: ["Stress test"],
+    action: "full_core_only",
+    maxSatellitePct: 0,
+  };
+  const result = sanitizePicksWithRiskLimits(picks, [], mockCedearDefs, "moderate", breaker);
+  assert.equal(result.sanitizedPicks.length, 0);
+  assert.ok(result.riskNotes.some((n) => n.includes("CIRCUIT BREAKER")));
+});
+
+test("sanitizePicksWithRiskLimits escala picks cuando reduce_satellite está activo", () => {
+  const picks = [
+    { ticker: "AAPL", cantidad_cedears: 100, precio_aprox_ars: 1000, monto_total_ars: 100_000 },
+    { ticker: "MSFT", cantidad_cedears: 200, precio_aprox_ars: 1000, monto_total_ars: 200_000 },
+  ];
+  const summary = [
+    { ticker: "SPY", total_shares: 200, weighted_avg_price: 5000 }, // total = 1M
+  ];
+  const breaker = {
+    triggered: true,
+    reasons: ["Alpha negativo"],
+    action: "reduce_satellite",
+    maxSatellitePct: 15,
+  };
+  const result = sanitizePicksWithRiskLimits(picks, summary, mockCedearDefs, "moderate", breaker);
+  const totalAfter = result.sanitizedPicks.reduce((sum, p) => sum + p.monto_total_ars, 0);
+  assert.ok(totalAfter <= 150_000);
+  assert.ok(result.riskNotes.some((n) => n.includes("reduce_satellite")));
 });

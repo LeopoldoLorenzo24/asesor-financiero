@@ -183,6 +183,22 @@ export default function WelcomeView({ setView, readiness, portfolioValue, capita
         </div>
       </div>
 
+      {/* Realistic expectations */}
+      <GlassCard style={{
+        borderColor: `${T.blue}15`,
+        background: `${T.blue}03`,
+        marginBottom: 16,
+      }}>
+        <h4 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 700, color: T.text }}>Expectativas Realistas</h4>
+        <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: T.textMuted, lineHeight: 1.8 }}>
+          <li>El sistema comienza en modo Paper (sin dinero real) hasta demostrar performance</li>
+          <li>La meta es superar a SPY, no "hacerse rico rápido"</li>
+          <li>Un buen año es +15-20% en USD. Un mal año puede ser -10-15%</li>
+          <li>Se requieren 180+ días de datos para decisiones confiables</li>
+          <li>Las comisiones reales (ida y vuelta) son ~0.6-1.2% por operación</li>
+        </ul>
+      </GlassCard>
+
       {/* Tip banner */}
       <GlassCard style={{
         borderColor: `${T.yellow}15`,

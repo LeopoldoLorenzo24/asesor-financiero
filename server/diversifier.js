@@ -1,10 +1,188 @@
 // ============================================================
 // ALGORITHMIC DIVERSIFICATION ENGINE
 // Pre-filters CEDEARs before sending to AI to save tokens
+// Includes correlation-based diversification validation
 // ============================================================
 
 import CEDEARS from "./cedears.js";
 import { getPortfolioSummary } from "./database.js";
+import { fetchHistory } from "./marketData.js";
+
+// ── CORRELATION UTILITIES ──
+
+/**
+ * Calculates Pearson correlation coefficient between daily returns of two price series.
+ * Used to detect highly correlated picks that don't add real diversification.
+ * Two mining stocks or two FAANG names often move together — holding both
+ * concentrates risk without the investor realizing it.
+ *
+ * @param {Array<{date: string, close: number}>} pricesA - Historical prices for ticker A
+ * @param {Array<{date: string, close: number}>} pricesB - Historical prices for ticker B
+ * @returns {number|null} Pearson correlation coefficient (-1 to +1), or null if insufficient data
+ */
+export function calculateCorrelation(pricesA, pricesB) {
+  // Build date-indexed maps for alignment
+  const mapA = {};
+  for (const p of pricesA) mapA[p.date] = p.close;
+  const mapB = {};
+  for (const p of pricesB) mapB[p.date] = p.close;
+
+  // Find overlapping dates (sorted)
+  const commonDates = Object.keys(mapA).filter((d) => d in mapB).sort();
+  if (commonDates.length < 21) return null; // Need at least 20 return data points (21 prices)
+
+  // Compute daily returns on overlapping dates
+  const returnsA = [];
+  const returnsB = [];
+  for (let i = 1; i < commonDates.length; i++) {
+    const prevDate = commonDates[i - 1];
+    const currDate = commonDates[i];
+    const retA = (mapA[currDate] - mapA[prevDate]) / mapA[prevDate];
+    const retB = (mapB[currDate] - mapB[prevDate]) / mapB[prevDate];
+    returnsA.push(retA);
+    returnsB.push(retB);
+  }
+
+  if (returnsA.length < 20) return null;
+
+  // Use last 60 data points max (approx 60 trading days)
+  const n = Math.min(returnsA.length, 60);
+  const rA = returnsA.slice(-n);
+  const rB = returnsB.slice(-n);
+
+  // Pearson correlation
+  const meanA = rA.reduce((s, v) => s + v, 0) / n;
+  const meanB = rB.reduce((s, v) => s + v, 0) / n;
+
+  let cov = 0, varA = 0, varB = 0;
+  for (let i = 0; i < n; i++) {
+    const dA = rA[i] - meanA;
+    const dB = rB[i] - meanB;
+    cov += dA * dB;
+    varA += dA * dA;
+    varB += dB * dB;
+  }
+
+  if (varA === 0 || varB === 0) return null;
+  return Math.round((cov / Math.sqrt(varA * varB)) * 1000) / 1000;
+}
+
+/**
+ * Post-selection correlation check. Removes highly correlated picks and replaces
+ * them with the next best alternative from a different sector.
+ *
+ * Rules:
+ * - correlation > 0.75 between any pair → remove the lower-scored pick
+ * - Max 2 picks with mutual correlation > 0.60
+ *
+ * @param {Array} picks - Selected picks with .cedear, .scores, .ticker
+ * @param {Array} allRanked - Full ranked list to find replacements
+ * @param {Object} historyMap - Map of ticker → price history (optional, fetched if missing)
+ * @returns {Promise<{picks: Array, warnings: string[]}>}
+ */
+export async function correlationFilter(picks, allRanked, historyMap = {}) {
+  if (picks.length < 2) return { picks, warnings: [] };
+
+  const warnings = [];
+  const tickers = picks.map((p) => p.cedear?.ticker || p.ticker);
+
+  // Ensure we have history for all picks
+  for (const ticker of tickers) {
+    if (!historyMap[ticker]) {
+      try {
+        historyMap[ticker] = await fetchHistory(`${ticker}.BA`, 6);
+      } catch {
+        try {
+          historyMap[ticker] = await fetchHistory(ticker, 6);
+        } catch {
+          historyMap[ticker] = [];
+        }
+      }
+    }
+  }
+
+  // Calculate pairwise correlations
+  const correlations = [];
+  for (let i = 0; i < picks.length; i++) {
+    for (let j = i + 1; j < picks.length; j++) {
+      const tickerA = picks[i].cedear?.ticker || picks[i].ticker;
+      const tickerB = picks[j].cedear?.ticker || picks[j].ticker;
+      const corr = calculateCorrelation(historyMap[tickerA] || [], historyMap[tickerB] || []);
+      if (corr != null) {
+        correlations.push({ i, j, tickerA, tickerB, corr });
+      }
+    }
+  }
+
+  // Remove picks with correlation > 0.75 (remove the lower-scored one)
+  const removed = new Set();
+  const usedTickers = new Set(tickers);
+
+  // Sort by correlation descending to handle worst cases first
+  correlations.sort((a, b) => b.corr - a.corr);
+
+  for (const { i, j, tickerA, tickerB, corr } of correlations) {
+    if (corr <= 0.75) break;
+    if (removed.has(i) || removed.has(j)) continue;
+
+    const scoreA = picks[i].scores?.composite || 0;
+    const scoreB = picks[j].scores?.composite || 0;
+    const removeIdx = scoreA >= scoreB ? j : i;
+    const removedTicker = removeIdx === i ? tickerA : tickerB;
+    const keptTicker = removeIdx === i ? tickerB : tickerA;
+
+    removed.add(removeIdx);
+    usedTickers.delete(removedTicker);
+    warnings.push(`Se eliminó ${removedTicker} por alta correlación (${corr.toFixed(2)}) con ${keptTicker}`);
+  }
+
+  // Enforce max 2 picks with correlation > 0.60
+  let highCorrCount = 0;
+  for (const { i, j, corr } of correlations) {
+    if (corr <= 0.60 || removed.has(i) || removed.has(j)) continue;
+    highCorrCount++;
+    if (highCorrCount > 2) {
+      const scoreA = picks[i].scores?.composite || 0;
+      const scoreB = picks[j].scores?.composite || 0;
+      const removeIdx = scoreA >= scoreB ? j : i;
+      const removedTicker = picks[removeIdx].cedear?.ticker || picks[removeIdx].ticker;
+      const keptTicker = picks[removeIdx === i ? j : i].cedear?.ticker || picks[removeIdx === i ? j : i].ticker;
+
+      if (!removed.has(removeIdx)) {
+        removed.add(removeIdx);
+        usedTickers.delete(removedTicker);
+        warnings.push(`Se eliminó ${removedTicker} por alta correlación (${corr.toFixed(2)}) con ${keptTicker} (límite de 2 pares con corr > 0.60)`);
+      }
+    }
+  }
+
+  // Build filtered picks
+  let filteredPicks = picks.filter((_, idx) => !removed.has(idx));
+
+  // Replace removed picks with next best from different sectors
+  if (removed.size > 0 && allRanked.length > 0) {
+    const usedSectors = new Set(filteredPicks.map((p) => p.cedear?.sector || p.sector));
+
+    for (const candidate of allRanked) {
+      if (filteredPicks.length >= picks.length) break;
+      const candTicker = candidate.cedear?.ticker || candidate.ticker;
+      const candSector = candidate.cedear?.sector || candidate.sector;
+      if (usedTickers.has(candTicker)) continue;
+
+      // Prefer candidates from sectors not already heavily represented
+      const sectorCount = filteredPicks.filter((p) => (p.cedear?.sector || p.sector) === candSector).length;
+      if (sectorCount >= 2) continue;
+
+      usedTickers.add(candTicker);
+      filteredPicks.push(candidate);
+    }
+  }
+
+  // Re-sort by composite score
+  filteredPicks.sort((a, b) => (b.scores?.composite || 0) - (a.scores?.composite || 0));
+
+  return { picks: filteredPicks, warnings };
+}
 
 // --- Profile configurations ---
 const PROFILES = {

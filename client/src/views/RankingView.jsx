@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { TrendingUp, TrendingDown, ChevronUp, ChevronDown, ChevronsUpDown, Medal, Filter, SlidersHorizontal, BarChart2 } from "lucide-react";
+import { TrendingUp, TrendingDown, ChevronUp, ChevronDown, ChevronsUpDown, Medal, Filter, SlidersHorizontal, BarChart2, Info } from "lucide-react";
 import { T, S, signalColors } from "../theme";
 import { GlassCard, Skeleton, SectionHeader, HeatBadge } from "../components/common";
 
@@ -110,6 +110,7 @@ function SortHeader({ label, field, sortBy, sortDir, onSort }) {
 export default function RankingView({ sectors, filterSector, setFilterSector, sortBy, setSortBy, loading, filtered, loadDetail }) {
   const [sortDir, setSortDir] = useState("desc");
   const [internalSort, setInternalSort] = useState(sortBy || "composite");
+  const [showScoreInfo, setShowScoreInfo] = useState(false);
 
   const handleSort = (field) => {
     const fieldMap = { composite: "composite", technical: "technical", fundamental: "fundamental", change: "change" };
@@ -192,6 +193,56 @@ export default function RankingView({ sectors, filterSector, setFilterSector, so
             <option value="change">Cambio 1M</option>
           </select>
         </div>
+      </div>
+
+      {/* ── Score composition explanation ── */}
+      <div style={{ marginBottom: 20 }}>
+        <button
+          onClick={() => setShowScoreInfo(!showScoreInfo)}
+          style={{
+            background: "transparent",
+            border: `1px solid ${T.border}`,
+            borderRadius: 10,
+            padding: "8px 14px",
+            color: T.textDim,
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 600,
+            fontFamily: T.font,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            transition: "all 0.2s",
+          }}
+        >
+          <Info size={13} />
+          {showScoreInfo ? "Ocultar composición del score" : "Ver composición del score"}
+        </button>
+        {showScoreInfo && (
+          <div style={{
+            marginTop: 12,
+            padding: "16px 20px",
+            background: T.bgCard,
+            border: `1px solid ${T.border}`,
+            borderRadius: 14,
+            fontSize: 12,
+            color: T.textMuted,
+            lineHeight: 1.8,
+          }}>
+            <div style={{ fontWeight: 700, color: T.text, marginBottom: 8, fontSize: 13 }}>
+              Score = 40% Técnico + 45% Fundamental + 15% Sentimiento
+            </div>
+            <div style={{ marginBottom: 4 }}>
+              <strong style={{ color: T.cyan }}>Técnico:</strong> RSI, MACD, SMA, Bollinger, volumen
+            </div>
+            <div style={{ marginBottom: 4 }}>
+              <strong style={{ color: T.green }}>Fundamental:</strong> P/E relativo al sector, EPS growth, dividendos, deuda
+            </div>
+            <div>
+              <strong style={{ color: T.purple }}>Sentimiento:</strong> consenso analistas, target price
+            </div>
+          </div>
+        )}
       </div>
 
       {loading ? (

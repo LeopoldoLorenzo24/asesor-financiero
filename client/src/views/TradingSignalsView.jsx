@@ -93,6 +93,11 @@ export default function TradingSignalsView({ signals, loading }) {
                 {list.map((s, idx) => {
                   const action = (s.action || "").toUpperCase();
                   const actionColor = action === "BUY" ? T.green : action === "SELL" ? T.red : T.textDim;
+                  const horizonLabel = s.horizon === "swing" ? "swing (5-15 días hábiles)"
+                    : s.horizon === "intraday" ? "intraday (mismo día)"
+                    : s.horizon === "position" ? "position (15-60 días)"
+                    : s.horizon || "—";
+                  const reasonText = s.reason || s.rationale || "No especificada — verificar manualmente antes de ejecutar";
                   return (
                     <tr key={idx} style={{ transition: "background 0.2s" }} onMouseEnter={(e) => e.currentTarget.style.background = "rgba(148,163,184,0.03)"} onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
                       <td style={S.td}><strong style={{ color: T.text, fontFamily: T.fontMono, fontSize: 14 }}>{s.ticker}</strong></td>
@@ -100,11 +105,11 @@ export default function TradingSignalsView({ signals, loading }) {
                         <span style={{ ...S.badge(actionColor), fontSize: 10 }}>{action}</span>
                       </td>
                       <td style={S.td}><HeatBadge value={s.confidence || 0} max={100} suffix="%" /></td>
-                      <td style={{ ...S.td, fontFamily: T.fontMono, color: T.textDim }}>{s.horizon || "—"}</td>
+                      <td style={{ ...S.td, fontFamily: T.fontMono, color: T.textDim, fontSize: 11 }}>{horizonLabel}</td>
                       <td style={{ ...S.td, fontFamily: T.fontMono, fontWeight: 700, color: T.text }}>${(s.entryPrice || 0).toLocaleString("es-AR")}</td>
                       <td style={{ ...S.td, fontFamily: T.fontMono, color: T.red }}>${(s.stopLoss || 0).toLocaleString("es-AR")}</td>
                       <td style={{ ...S.td, fontFamily: T.fontMono, color: T.green }}>${(s.takeProfit || 0).toLocaleString("es-AR")}</td>
-                      <td style={S.td}><span style={{ color: T.textMuted, fontSize: 12 }}>{s.reason}</span></td>
+                      <td style={S.td}><span style={{ color: T.textMuted, fontSize: 12 }}>{reasonText}</span></td>
                     </tr>
                   );
                 })}
@@ -113,6 +118,21 @@ export default function TradingSignalsView({ signals, loading }) {
           </div>
         )}
       </GlassCard>
+
+      {/* ── General disclaimer ── */}
+      <div style={{
+        marginTop: 16,
+        padding: "14px 18px",
+        background: T.bgCard,
+        border: `1px solid ${T.border}`,
+        borderRadius: 12,
+        fontSize: 12,
+        color: T.textDim,
+        fontStyle: "italic",
+        lineHeight: 1.6,
+      }}>
+        Las señales son indicativas. Verificá el contexto macro y tu situación personal antes de ejecutar.
+      </div>
     </div>
   );
 }
