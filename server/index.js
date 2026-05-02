@@ -152,7 +152,15 @@ const generalRateLimit = makeRateLimiter(200, 60_000); // 200 req/min general
 
 app.disable("x-powered-by");
 app.set("trust proxy", APP_CONFIG.trustProxy);
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      "script-src": ["'self'", "https://s3.tradingview.com"],
+      "frame-src": ["'self'", "https://s3.tradingview.com", "https://www.tradingview.com"],
+    },
+  },
+}));
 
 // Serve static files BEFORE CORS so assets don't get blocked by origin validation
 const clientDist = join(__dirname, "..", "client", "dist");
