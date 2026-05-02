@@ -157,7 +157,7 @@ app.use(helmet({
     directives: {
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
       "script-src": ["'self'", "https://s3.tradingview.com"],
-      "frame-src": ["'self'", "https://s3.tradingview.com", "https://www.tradingview.com"],
+      "frame-src": ["'self'", "https://s3.tradingview.com", "https://s.tradingview.com", "https://www.tradingview.com"],
     },
   },
 }));
