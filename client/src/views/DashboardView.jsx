@@ -644,10 +644,10 @@ export default function DashboardView({
                 </div>
                 <button
                   onClick={() => runAI(parseFloat(capitalToInvest) || 0)}
-                  disabled={aiLoading || preflightBlocked}
+                  disabled={aiLoading}
                   style={{
                     ...S.btn("primary"),
-                    opacity: aiLoading || preflightBlocked ? 0.6 : 1,
+                    opacity: aiLoading ? 0.6 : 1,
                     fontSize: 13, padding: "10px 18px",
                   }}
                 >
@@ -665,12 +665,12 @@ export default function DashboardView({
             ) : (
               <button
                 onClick={() => { setCapitalToInvest(""); setShowCapitalInput(true); }}
-                disabled={aiLoading || preflightBlocked}
+                disabled={aiLoading}
                 style={{
                   ...S.btn("primary"),
                   fontSize: 13, padding: "10px 18px",
-                  opacity: aiLoading || preflightBlocked ? 0.5 : 1,
-                  cursor: aiLoading || preflightBlocked ? "not-allowed" : "pointer",
+                  opacity: aiLoading ? 0.5 : 1,
+                  cursor: aiLoading ? "not-allowed" : "pointer",
                 }}
               >
                 <Zap size={13} strokeWidth={2.5} />
