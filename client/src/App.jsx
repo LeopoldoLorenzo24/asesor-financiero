@@ -30,6 +30,7 @@ import SystemHealthView from "./views/SystemHealthView";
 import PortfolioEvolutionView from "./views/PortfolioEvolutionView";
 import InvestmentReadinessView from "./views/InvestmentReadinessView";
 import IntradayMonitorView from "./views/IntradayMonitorView";
+import GoalView from "./views/GoalView";
 
 /* ─── RESPONSIVE STYLES ─── */
 const responsiveStyles = `
@@ -464,6 +465,7 @@ export default function App() {
     readiness: renderReadiness,
     evolution: renderEvolution,
     trackrecord: renderTrackRecord,
+    goal: () => <GoalView portfolioValue={portfolioValue} capital={capital} ccl={ccl} />,
   };
 
   const nav = (v) => { setView(v); setSelectedTicker(null); };

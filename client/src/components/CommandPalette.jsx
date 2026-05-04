@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { id: "evolution",    label: "Evolución",         group: "Performance",     Icon: LineChart,       desc: "Evolución del capital en el tiempo" },
   { id: "adherence",    label: "Seguimiento",       group: "Performance",     Icon: CheckSquare,     desc: "Adherencia a recomendaciones" },
   { id: "risk",         label: "Riesgo",            group: "Performance",     Icon: AlertTriangle,   desc: "Sharpe, drawdown, VaR, beta" },
+  { id: "goal",         label: "Meta $1M",          group: "Performance",     Icon: Target,          desc: "Proyección de crecimiento hasta $1M USD" },
   { id: "monitor",      label: "Monitor Intradía",  group: "Sistema",         Icon: Activity,        desc: "Snapshots intradía y eventos del mercado abierto" },
   { id: "health",       label: "Salud del Sistema", group: "Sistema",         Icon: Activity,        desc: "Estado operativo y providers" },
   { id: "historial",    label: "Historial",         group: "Sistema",         Icon: History,         desc: "Sesiones de análisis pasadas" },

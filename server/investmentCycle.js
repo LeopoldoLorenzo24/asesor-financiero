@@ -96,30 +96,35 @@ export async function buildMonthlyCycleContext({ capital, ccl, ranking }) {
       ? Math.round((value / portfolioValueARS) * 100) : 0;
   }
 
-  // Qué hizo el bot el mes pasado y qué pasó
+  // Qué hizo el bot en sesiones anteriores y qué pasó
   let lastMonthReview = "No hay sesión anterior (primer o segundo mes).";
   let cartEraYaAlineada = false;
-  if (lastSessions.length > 0) {
-    const last = lastSessions[0];
-    let lastResponse = last.full_response;
-    if (typeof lastResponse === "string") {
-      try {
-        lastResponse = JSON.parse(lastResponse);
-      } catch {
-        lastResponse = {};
-      }
-    }
-    const lastRecs =
-      lastResponse?.decision_mensual?.picks_activos ||
-      lastResponse?.nuevas_compras ||
-      lastResponse?.recomendaciones ||
-      [];
-    const lastActions = Array.isArray(lastResponse?.acciones_cartera_actual)
-      ? lastResponse.acciones_cartera_actual
-      : [];
 
-    // Detectar si el usuario ejecutó las recomendaciones anteriores
+  function parseSessionResponse(raw) {
+    if (!raw) return {};
+    if (typeof raw === "string") {
+      try { return JSON.parse(raw); } catch { return {}; }
+    }
+    return raw;
+  }
+
+  function extractSessionRecs(parsed) {
+    return parsed?.decision_mensual?.picks_activos || parsed?.nuevas_compras || parsed?.recomendaciones || [];
+  }
+
+  function extractSessionActions(parsed) {
+    return Array.isArray(parsed?.acciones_cartera_actual) ? parsed.acciones_cartera_actual : [];
+  }
+
+  if (lastSessions.length > 0) {
     const currentTickers = new Set(positionsWithData.map((p) => p.ticker));
+
+    // ── Sesión más reciente: chequeo completo de alineación ──
+    const last = lastSessions[0];
+    const lastParsed = parseSessionResponse(last.full_response);
+    const lastRecs = extractSessionRecs(lastParsed);
+    const lastActions = extractSessionActions(lastParsed);
+
     const vendasPendientes = lastActions.filter(
       (a) => (a.accion === "VENDER" || a.accion === "VENDER TODO") && currentTickers.has(a.ticker)
     );
@@ -128,7 +133,6 @@ export async function buildMonthlyCycleContext({ capital, ccl, ranking }) {
       if (a.accion !== "REDUCIR") return false;
       const pos = positionsWithData.find((p) => p.ticker === a.ticker);
       if (!pos || !a.cantidad_ajustar) return false;
-      // Si la cantidad actual es mayor a lo esperado después de reducir, todavía no lo hizo
       const cantidadActual = Number(a.cantidad_actual);
       const cantidadAjustarAbs = Math.abs(Number(a.cantidad_ajustar));
       if (!Number.isFinite(cantidadActual) || !Number.isFinite(cantidadAjustarAbs)) return false;
@@ -148,12 +152,38 @@ export async function buildMonthlyCycleContext({ capital, ccl, ranking }) {
       if (comprasPendientes.length > 0) alineacionStatus += `\n- Compras recomendadas no en cartera: ${comprasPendientes.map((r) => r.ticker).join(", ")}`;
     }
 
-    lastMonthReview = `SESIÓN ANTERIOR (${last.session_date?.slice(0, 10)}):
-Resumen: ${last.market_summary || "N/A"}
-Recomendaciones que dio: ${lastRecs.map((r) => `${r.accion || "COMPRAR"} ${r.ticker}`).join(", ") || "Ninguna"}
+    // Enriquecer lastRecs con P&L actual de las posiciones que sí se compraron
+    const recsConPnl = lastRecs.map((r) => {
+      const pos = positionsWithData.find((p) => p.ticker === r.ticker);
+      const pnlStr = pos
+        ? ` → hoy P&L: ${pos.pnl >= 0 ? "+" : ""}$${pos.pnl.toLocaleString()} ARS (${pos.pnlPct >= 0 ? "+" : ""}${pos.pnlPct}%)`
+        : " → no ejecutado";
+      return `${r.accion || "COMPRAR"} ${r.ticker}${pnlStr}`;
+    });
+
+    lastMonthReview = `HISTORIAL DE SESIONES ANTERIORES:
+
+[MES -1] SESIÓN (${last.session_date?.slice(0, 10)}):
+Resumen de mercado: ${last.market_summary || "N/A"}
+Picks recomendados: ${recsConPnl.join(", ") || "Ninguno"}
 Acciones sobre cartera: ${lastActions.map((a) => `${a.accion} ${a.ticker}${a.cantidad_ajustar ? ` (ajuste: ${a.cantidad_ajustar})` : ""}`).join(", ") || "Ninguna"}
-Capital en ese momento: $${last.capital_ars?.toLocaleString() || "N/A"} ARS
-CCL en ese momento: $${last.ccl_rate || "N/A"}${alineacionStatus}`;
+Capital: $${last.capital_ars?.toLocaleString() || "N/A"} ARS | CCL: $${last.ccl_rate || "N/A"}${alineacionStatus}`;
+
+    // ── Sesiones más antiguas: resumen compacto ──
+    for (let i = 1; i < lastSessions.length; i++) {
+      const s = lastSessions[i];
+      const parsed = parseSessionResponse(s.full_response);
+      const recs = extractSessionRecs(parsed);
+      const actions = extractSessionActions(parsed);
+      const recsStr = recs.map((r) => `${r.accion || "COMPRAR"} ${r.ticker}`).join(", ") || "Ninguno";
+      const actionsStr = actions.map((a) => `${a.accion} ${a.ticker}`).join(", ") || "Ninguna";
+      lastMonthReview += `
+
+[MES -${i + 1}] SESIÓN (${s.session_date?.slice(0, 10)}):
+Picks: ${recsStr}
+Acciones: ${actionsStr}
+Capital: $${s.capital_ars?.toLocaleString() || "N/A"} ARS | CCL: $${s.ccl_rate || "N/A"}`;
+    }
   }
 
   // Predicciones evaluables (las del mes pasado que ya se pueden verificar)

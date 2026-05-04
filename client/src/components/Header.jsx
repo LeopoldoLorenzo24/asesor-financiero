@@ -42,6 +42,7 @@ const NAV_GROUPS = [
       { id: "evolution",  label: "Evolución",         Icon: LineChart },
       { id: "adherence",  label: "Seguimiento",       Icon: CheckSquare },
       { id: "risk",       label: "Riesgo",            Icon: AlertTriangle },
+      { id: "goal",       label: "Meta $1M",          Icon: Target },
     ],
   },
   {

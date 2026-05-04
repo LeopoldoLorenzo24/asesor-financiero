@@ -622,16 +622,26 @@ export default function DashboardView({
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             {showCapitalInput ? (
               <>
-                <input
-                  type="number"
-                  value={capitalToInvest}
-                  onChange={(e) => setCapitalToInvest(e.target.value)}
-                  placeholder="Capital ARS"
-                  style={{
-                    ...S.input, width: 150, fontSize: 13,
-                    borderColor: `rgba(56,189,248,0.3)`,
-                  }}
-                />
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <input
+                    type="number"
+                    value={capitalToInvest}
+                    onChange={(e) => setCapitalToInvest(e.target.value)}
+                    placeholder="Cuánto invertís este mes (ARS)"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") runAI(parseFloat(capitalToInvest) || 0);
+                      if (e.key === "Escape") { setShowCapitalInput(false); setCapitalToInvest(""); }
+                    }}
+                    style={{
+                      ...S.input, width: 220, fontSize: 13,
+                      borderColor: `rgba(56,189,248,0.3)`,
+                    }}
+                  />
+                  <span style={{ fontSize: 10, color: T.textDim, fontFamily: T.fontMono, paddingLeft: 2 }}>
+                    Última disponibilidad registrada: ${(capital || 0).toLocaleString("es-AR")} ARS
+                  </span>
+                </div>
                 <button
                   onClick={() => runAI(parseFloat(capitalToInvest) || 0)}
                   disabled={aiLoading || preflightBlocked}
@@ -645,20 +655,26 @@ export default function DashboardView({
                   {aiLoading ? "Analizando…" : "Ejecutar"}
                 </button>
                 <button
-                  onClick={() => setShowCapitalInput(false)}
+                  onClick={() => { setShowCapitalInput(false); setCapitalToInvest(""); }}
                   style={{ ...S.btn("ghost"), fontSize: 13, padding: "10px 14px" }}
+                  title="Cancelar (Esc)"
                 >
                   <X size={13} strokeWidth={2.5} />
                 </button>
               </>
             ) : (
               <button
-                onClick={() => setShowCapitalInput(true)}
-                disabled={preflightBlocked}
-                style={{ ...S.btn("primary"), fontSize: 13, padding: "10px 18px", opacity: preflightBlocked ? 0.6 : 1 }}
+                onClick={() => { setCapitalToInvest(""); setShowCapitalInput(true); }}
+                disabled={aiLoading || preflightBlocked}
+                style={{
+                  ...S.btn("primary"),
+                  fontSize: 13, padding: "10px 18px",
+                  opacity: aiLoading || preflightBlocked ? 0.5 : 1,
+                  cursor: aiLoading || preflightBlocked ? "not-allowed" : "pointer",
+                }}
               >
                 <Zap size={13} strokeWidth={2.5} />
-                Nuevo Análisis
+                {aiLoading ? "Analizando…" : "Nuevo Análisis"}
               </button>
             )}
           </div>
